@@ -1,0 +1,20 @@
+# key material, evidence and images never belong in git
+*.vk
+*.key
+*.hdr
+*.lime
+*.raw
+*.img
+*.dd
+*.E01
+*.iso
+*.qcow2
+candidates*.txt
+triage_*/
+scan_*/
+work/
+
+# build output and scratch
+kcore-keyscan
+__pycache__/
+*.pyc
