@@ -18,8 +18,8 @@
 # Output in scan_<dump>_<time>/ in the current directory: triage.txt (this screen), scan.txt (the
 # scanner summary), verdict.json (schema keep-report/1) and manifest.sha256, none of which
 # holds a key value, and keys/ (mode 700) with candidates.txt, the schedules found, and one
-# NAME.vk per proven volume key for "cryptsetup open --volume-key-file". The viewer
-# keep-gui.py reads verdict.json. Exit status 0 when every located header is proven, else 1.
+# NAME.vk per proven volume key for "cryptsetup open --volume-key-file". keep-report.py
+# prints verdict.json. Exit status 0 when every located header is proven, else 1.
 set -u
 umask 077
 KIT=""

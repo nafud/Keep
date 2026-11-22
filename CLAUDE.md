@@ -19,10 +19,10 @@ README.
 |---|---|---|
 | `keytriage.sh` | scene, as root | The triage itself. Enumerates the open dm-crypt volumes, backs up LUKS headers, walks the route ladder, prints one verdict per volume, writes the evidence folder |
 | `kcore-keyscan.c` | scene and lab | Static C scanner. Finds AES-128 and AES-256 key schedules in `/proc/kcore` or in a memory image |
-| `keep-menu.sh` | scene and lab | Full-screen text front-end. Collects the choices and calls `keytriage.sh` or `offline-keyscan.sh` |
+| `keep-menu.sh` | scene and lab | Interactive front-end in the manner of `ewfacquire`. Asks for the parameters of one run as plain questions and calls `keytriage.sh` or `offline-keyscan.sh` |
 | `vkverify.py` | lab | Verifier. Proves which scanner candidates are the volume key of a LUKS1 or LUKS2 header |
 | `offline-keyscan.sh` | lab | Driver for a dump collected earlier. Runs the scanner on the dump and `vkverify.py` against disk images |
-| `keep-gui.py` | lab | Local viewer for the verdict reports, served on `127.0.0.1` only |
+| `keep-report.py` | lab | Prints the verdict reports as text in the manner of `ewfinfo`, and compares several reports |
 | `build-toolkit.sh` | workstation | Assembles the scene tool medium and writes it as an ISO |
 | `tests/make-schedule-fixture.py` | test | Writes a memory image with the schedules of known keys and four traps |
 | `tests/compat-check.sh` | test, throwaway guest only | Checks `keytriage.sh` on one distribution with two containers of known keys |
@@ -150,9 +150,55 @@ SHA-256.
 - Each volume: `name`, `type`, `cipher`, `key_bits`, `key_location`, `device`, `header_backup`,
   `route`, `verdict`, `key_sha256_16`, `note`. `vkverify.py` adds `uuid`, `digest`, `attempts`,
   `adjacent_places` and, with `--truth`, `ground_truth`.
-- `keep-gui.py` reads only this schema, passes on a fixed list of fields and drops the rest. A
-  change of a field name is a change of the schema string and of the viewer's field lists
+- `keep-report.py` reads only this schema, prints a fixed list of fields and drops the rest. A
+  change of a field name is a change of the schema string and of that script's field lists
   (`TOP`, `MEMORY`, `VOLUME`, `NUMBERS`).
+
+## Interaction
+
+Keep has no full-screen interface and opens no window. Every tool writes lines of text and, where
+it asks, reads lines of text. The model is the libewf tools: `keep-menu.sh` behaves like
+`ewfacquire` and `keep-report.py` like `ewfinfo`.
+
+`keep-menu.sh` runs once per start, in this order.
+
+1. It prints its name and version.
+2. It asks the questions, one per line. A question shows its choices in parentheses and its
+   default in square brackets, as in `Mode (live, live-memory, offline) [live]: `. Enter takes the
+   default. A value that cannot be used is reported and asked for again.
+3. For a live mode it first prints `System information:` with the host, the system, the kernel,
+   the lockdown mode, the memory size and the open dm-crypt volumes.
+4. It prints `The following parameters were provided:` with every value and the exact command.
+5. It asks `Continue with these values (yes, no) [yes]: `. `no` starts the questions again.
+6. It prints the start time, runs the command with its output shown as it runs, prints the end
+   time and ends with `keep-menu.sh: SUCCESS` or `keep-menu.sh: FAILURE (exit status N)`.
+
+| Mode | Questions | Runs |
+|---|---|---|
+| `live` | Evidence directory, proof attempts per volume | `keytriage.sh -e DIR -b N` |
+| `live-memory` | The same | `keytriage.sh -e DIR -b N -m` |
+| `offline`, where `python3` and `vkverify.py` are present | Memory dump, one or more disk images or header backups, output directory | `offline-keyscan.sh -k KIT DUMP IMAGE...` in the output directory |
+| `offline`, elsewhere (the tool medium) | Memory dump, output directory | `kcore-keyscan DUMP` into `DIR/scan_<dump>_<time>/keys/candidates.txt` |
+
+The rules of this interface:
+
+- No escape sequence, no cursor movement, no colour, no terminfo and no line editor. The dialogue
+  therefore works on a console, over SSH, on a serial line and through a pipe. Bash's `read -e`
+  is not used, because Readline would read the examined system's `inputrc`.
+- An input that ends before the parameters are complete ends the run with status 1, so a closed
+  pipe cannot loop.
+- Paths are made absolute before they are passed on. A dump or an image must be a readable regular
+  file, and an output directory must exist and be writable.
+- `-n` asks and lists everything and runs nothing. A live mode without root is refused, except
+  with `-n`.
+- Exit status: that of the script that was run, 0 after a dry run, 1 when the dialogue ended
+  without a run, 2 for a wrong option.
+
+`keep-report.py` asks nothing. It prints each report as labelled lines, with the class of every
+verdict in brackets (`key held`, `action needed`, `no key`), and for several reports a table of
+each volume across them. `--brief` prints one line per volume. Control characters in a value are
+replaced by spaces, so a crafted report cannot put an escape sequence on the terminal. Its exit
+status is 1 when a file could not be read as a report.
 
 ## The scene medium
 
@@ -169,7 +215,7 @@ sudo apt install bash-static busybox-static xorriso gcc
   binary of Microsoft AVML v0.21.0, accepted only when its SHA-256 equals the value pinned in the
   script.
 - `keytriage.sh` and `keep-menu.sh` are copied beside `bin/`. The medium carries no Python, so
-  `vkverify.py`, `offline-keyscan.sh` and `keep-gui.py` are lab tools.
+  `vkverify.py`, `offline-keyscan.sh` and `keep-report.py` are lab tools.
 - The build refuses a binary that is not statically linked, and writes `VERSIONS.txt` and
   `MANIFEST.sha256`.
 - `dmsetup` and `cryptsetup` are not on the medium. The examined system's own are used, and their
@@ -183,7 +229,7 @@ On scene, with the medium at `/media/tools` and an evidence medium at `/media/ev
 ```bash
 sudo /media/tools/bin/bash /media/tools/keytriage.sh -e /media/evidence        # keys
 sudo /media/tools/bin/bash /media/tools/keytriage.sh -e /media/evidence -m     # keys, then a memory image
-sudo /media/tools/bin/bash /media/tools/keep-menu.sh                           # the same through the menu, -n is a dry run
+sudo /media/tools/bin/bash /media/tools/keep-menu.sh                           # the same through questions, -n is a dry run
 ```
 
 The output folder is `triage_<host>_<UTC time>/` with `triage.txt`, `verdict.json`, `headers/`,
@@ -199,7 +245,7 @@ In the lab:
 ```bash
 ./offline-keyscan.sh [-k KIT] DUMP IMAGE...                # dump collected earlier, headers from disk images
 python3 -I vkverify.py CANDIDATES [HEADER...] [--image DISK]... [--out DIR] [--json FILE]
-python3 -I keep-gui.py REPORT.json [REPORT.json ...] [--check]
+python3 -I keep-report.py REPORT.json [REPORT.json ...] [--brief]
 ```
 
 `offline-keyscan.sh` writes `scan_<dump>_<UTC time>/` in the current directory with `triage.txt`,
@@ -219,13 +265,9 @@ bytes, which is not tested.
    read.
 4. The scene scripts run in the medium's static bash with its busybox applets first on `PATH`.
    A scene script uses no program that is not on the medium, apart from the examined system's
-   `dmsetup` and `cryptsetup`. `keep-menu.sh` draws with ANSI escape sequences from bash itself and
-   needs no `dialog`, no ncurses and no terminfo, so it works on a console and over SSH, and it
-   falls back to numbered lines without a terminal.
+   `dmsetup` and `cryptsetup`.
 5. A file of the examined system is read as text and never executed or sourced.
-6. Python is standard library only and is run with `-I`. `keep-gui.py` listens on `127.0.0.1`
-   only, answers only requests addressed to its own loopback name, loads nothing from the network
-   and writes no file.
+6. Python is standard library only and is run with `-I`.
 7. A downloaded binary is pinned by SHA-256 and refused on a mismatch.
 8. A change of behaviour raises the version of the file it is in (`VERSION` in `keytriage.sh` and
    in `vkverify.py`), since the version is written into every report.
@@ -239,7 +281,7 @@ bytes, which is not tested.
 ```bash
 for f in *.sh tests/*.sh; do bash -n "$f"; done
 shellcheck -S warning *.sh tests/*.sh
-python3 -I -m py_compile keep-gui.py vkverify.py tests/make-schedule-fixture.py
+python3 -I -m py_compile keep-report.py vkverify.py tests/make-schedule-fixture.py
 gcc -static -O2 -Wall -o kcore-keyscan kcore-keyscan.c
 ```
 
@@ -285,8 +327,8 @@ Fedora, the RHEL family, openSUSE and Arch are not checked yet.
 - Mounted file systems that encrypt by themselves (eCryptfs, ZFS, gocryptfs, CryFS, EncFS) are
   named in the report as not examined. Keep covers dm-crypt only.
 - Plain and tcrypt volumes have no header digest, so their keys cannot be proven on scene.
-- The boxed form of the menu is tested in a pseudo-terminal of 80 by 24 only, not yet on a real
-  console or in other terminal sizes.
+- `keep-menu.sh` is tested through a pipe and in a pseudo-terminal with the medium's static
+  bash, with `keytriage.sh` replaced by a stub. A real capture through it is not yet run.
 - The header search of `--image` is tested on a real LUKS partition image and on a small test disk
   image. Its run time on a whole disk of real size is not measured.
 
