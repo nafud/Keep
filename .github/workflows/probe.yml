@@ -1,0 +1,47 @@
+# Temporary: what the runner offers for guests, and what the distributions publish as cloud images.
+name: probe
+on:
+  push:
+    branches: ['claude/**']
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: KVM
+        run: |
+          ls -l /dev/kvm || echo "no /dev/kvm"
+          grep -c -E 'vmx|svm' /proc/cpuinfo || true
+          id
+          nproc; grep MemTotal /proc/meminfo; df -h "$RUNNER_TEMP"
+          apt-cache policy qemu-system-x86 | sed -n 1,3p
+      - name: Listings
+        run: |
+          show() { echo "#### $1"; curl -s -L --max-time 40 "$1" | grep -o 'href="[^"?]*"' | sed 's/href=//' | tr -d '"' | tr '\n' ' ' | fold -w 200; echo; }
+          text() { echo "#### $1"; curl -s -L --max-time 40 "$1" | head -n "${2:-40}"; echo; }
+          show https://dl.fedoraproject.org/pub/fedora/linux/releases/
+          for n in 43 44 45; do show https://dl.fedoraproject.org/pub/fedora/linux/releases/$n/Cloud/x86_64/images/; done
+          for n in 9 10; do show https://repo.almalinux.org/almalinux/$n/cloud/x86_64/images/; text https://repo.almalinux.org/almalinux/$n/cloud/x86_64/images/CHECKSUM 60; done
+          for n in 9 10; do show https://dl.rockylinux.org/pub/rocky/$n/images/x86_64/; text https://dl.rockylinux.org/pub/rocky/$n/images/x86_64/CHECKSUM 60; done
+          show https://cloud.debian.org/images/cloud/trixie/
+          text https://cloud.debian.org/images/cloud/trixie/latest/SHA512SUMS 80
+          show https://cloud.debian.org/images/cloud/bookworm/
+          show https://download.opensuse.org/distribution/leap/
+          for n in 15.6 16.0 16.1; do show https://download.opensuse.org/distribution/leap/$n/appliances/; done
+          show https://download.opensuse.org/tumbleweed/appliances/
+          show https://geo.mirror.pkgbuild.com/images/
+          show https://geo.mirror.pkgbuild.com/images/latest/
+          show https://cloud.centos.org/centos/10-stream/x86_64/images/
+      - name: Fedora checksum files
+        run: |
+          for n in 43 44 45; do
+            b=https://dl.fedoraproject.org/pub/fedora/linux/releases/$n/Cloud/x86_64/images/
+            f=$(curl -s -L --max-time 40 "$b" | grep -o 'href="[^"]*CHECKSUM"' | sed 's/href=//' | tr -d '"' | head -n 1)
+            [ -n "$f" ] && { echo "#### $b$f"; curl -s -L --max-time 40 "$b$f" | grep -v '^-----\|^Hash\|^$' | head -n 30; }
+          done
+          for u in https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2.SHA256 \
+                   https://download.opensuse.org/tumbleweed/appliances/openSUSE-Tumbleweed-Minimal-VM.x86_64-Cloud.qcow2.sha256; do
+            echo "#### $u"; curl -s -L --max-time 40 "$u" | head -n 5
+          done
