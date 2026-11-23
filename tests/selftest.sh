@@ -15,7 +15,8 @@
 #   verifier   LUKS2 and LUKS1 headers that cryptsetup makes from the same two keys: vkverify.py
 #              on the headers, offline-keyscan.sh on a disk image that holds both, keep-report.py
 #              on the report, and a candidate list without the keys, which must not prove. The
-#              same headers with their keyslots erased, cut short, malformed, and under one name
+#              same headers with their keyslots erased, cut short, malformed, and under one name.
+#              The disk image again as qemu-img writes it in the formats of virtual machines
 #   proof      the proof command of keytriage.sh on the same headers, with the key and with another
 #   triage     keytriage.sh itself on stand-ins for the examined system's dmsetup, cryptsetup
 #              status, /proc/kcore and AVML, with the same headers, the real header backup and proof
@@ -27,7 +28,7 @@
 # On real device-mapper and a real /proc/kcore keytriage.sh is checked by compat-check.sh.
 #
 # Programs: bash, gcc with a static libc and python3, and for the full run shellcheck,
-# cryptsetup and busybox. With bash-static installed keytriage.sh runs in it, as on the medium.
+# cryptsetup, busybox and qemu-img. With bash-static installed keytriage.sh runs in it, as on the medium.
 # Ends with "RESULT: PASS" and status 0, or with "RESULT: FAIL" and status 1.
 set -u
 umask 077
@@ -219,6 +220,63 @@ if command -v cryptsetup >/dev/null; then
         [ "$(python3 -I keep-report.py "$d/verdict.json" --brief | grep -c '^  key held .*: proven$')" -eq 2 ]
     }
     check "keep-report.py prints the report with both volumes as key held" report
+
+    # The same disk as the file of a virtual machine. qemu-img writes it in each format, and
+    # the verifier must read from each the disk as it is, byte for byte, find both headers at
+    # the offsets they have on the disk and prove both keys. A VHD is a little larger than the
+    # disk it was made from, because its size is rounded to whole cylinders: zeros follow.
+    if command -v qemu-img >/dev/null; then
+        mkdir "$T/vm"
+        vmdisk() {  # vmdisk FILE FORMAT [qemu-img option...]
+            local f=$T/vm/$1 fmt=$2; shift 2
+            qemu-img convert -f raw -O "$fmt" "$@" "$T/disk.dd" "$f" 2> "$T/vm.err" || { echo "qemu-img: $(cat "$T/vm.err")"; return 1; }
+            python3 -I -c 'import importlib.util, sys
+spec = importlib.util.spec_from_file_location("vkverify", "vkverify.py")
+vk = importlib.util.module_from_spec(spec); spec.loader.exec_module(vk)
+raw, files = open(sys.argv[1], "rb").read(), []
+disk = vk.open_disk(sys.argv[2], files)
+data = b"".join(disk.read_at(off, 1 << 20) for off in range(0, disk.size, 1 << 20))
+if disk.kind == "raw" or data[:len(raw)] != raw or any(data[len(raw):]):
+    sys.exit("%s is read as %s and differs from the disk" % (sys.argv[2], disk.kind))
+if disk.read_at(len(raw) // 2 - 7, 70001) != raw[len(raw) // 2 - 7:len(raw) // 2 + 69994]:
+    sys.exit("a read across the borders of blocks differs from the disk")' "$T/disk.dd" "$f" || return 1
+            rm -rf "$T/vm/keys"
+            python3 -I vkverify.py "$T/keys/cand.lime.txt" --image "$f" --out "$T/vm/keys" > "$T/vm.txt" 2>/dev/null || { echo "not every header is proven"; cat "$T/vm.txt"; return 1; }
+            cmp "$T/vm/keys/${f##*/}@0x100000.vk" "$T/keys/k256.vk" && cmp "$T/vm/keys/${f##*/}@0x2400000.vk" "$T/keys/k128.vk"
+        }
+        check "vkverify.py reads a qcow2 disk"                               vmdisk d.qcow2 qcow2
+        check "vkverify.py reads a qcow2 disk with compressed clusters"      vmdisk d-c.qcow2 qcow2 -c
+        check "vkverify.py reads a qcow2 disk of version 2"                  vmdisk d-v2.qcow2 qcow2 -o compat=0.10
+        check "vkverify.py reads a qcow2 disk with clusters of 4 KiB"        vmdisk d-4k.qcow2 qcow2 -o cluster_size=4k
+        check "vkverify.py reads a sparse VMDK disk"                         vmdisk d.vmdk vmdk
+        check "vkverify.py reads a stream-optimized VMDK disk"               vmdisk d-stream.vmdk vmdk -o subformat=streamOptimized
+        check "vkverify.py reads a VMDK descriptor with a sparse extent"     vmdisk d-2gbs.vmdk vmdk -o subformat=twoGbMaxExtentSparse
+        check "vkverify.py reads a VMDK descriptor with a flat extent"       vmdisk d-flat.vmdk vmdk -o subformat=monolithicFlat
+        check "vkverify.py reads a dynamic VDI disk"                         vmdisk d.vdi vdi
+        check "vkverify.py reads a fixed VDI disk"                           vmdisk d-static.vdi vdi -o static=on
+        check "vkverify.py reads a dynamic VHD disk"                         vmdisk d.vhd vpc
+        check "vkverify.py reads a fixed VHD disk"                           vmdisk d-fixed.vhd vpc -o subformat=fixed
+        check "vkverify.py reads a VHDX disk"                                vmdisk d.vhdx vhdx
+        check "vkverify.py reads a VHDX disk with blocks of 1 MiB"           vmdisk d-1m.vhdx vhdx -o block_size=1M
+        # What is recognised and not read is named, and is not searched as raw bytes, where an
+        # uncompressed image gives headers at offsets that are those of the file.
+        vm_refused() {
+            local f
+            qemu-img convert -f raw -O qcow2 -o extended_l2=on "$T/disk.dd" "$T/vm/r-el2.qcow2" 2>/dev/null || return 1
+            qemu-img convert -f raw -O qed "$T/disk.dd" "$T/vm/r.qed" 2>/dev/null || return 1
+            for f in r-el2.qcow2 r.qed; do
+                python3 -I vkverify.py "$T/keys/cand.lime.txt" --image "$T/vm/$f" > "$T/vm.txt" 2>/dev/null
+                [ $? -eq 1 ] && grep -q 'which \(is\|are\) not read' "$T/vm.txt" && ! grep -q 'header at offset' "$T/vm.txt" || { echo "$f is not refused"; cat "$T/vm.txt"; return 1; }
+            done
+            # an overlay holds nothing of its own: no header, and the backing file is named
+            qemu-img create -q -f qcow2 -b "$T/vm/d.qcow2" -F qcow2 "$T/vm/over.qcow2" || return 1
+            python3 -I vkverify.py "$T/keys/cand.lime.txt" --image "$T/vm/over.qcow2" > "$T/vm.txt" 2>/dev/null
+            [ $? -eq 1 ] && grep -q 'it has the backing file' "$T/vm.txt" && grep -q 'no LUKS header found' "$T/vm.txt"
+        }
+        check "vkverify.py names a disk format it does not read, and the backing file of an overlay" vm_refused
+    else
+        skip "qemu-img is not installed: the disks of virtual machines are not checked"
+    fi
 
     refuse() {
         python3 -I "$FIX" --format lime --size 8 "$T/other.lime" "$T/keys/other.vk" > /dev/null || return 1
