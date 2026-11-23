@@ -98,7 +98,7 @@ case $- in
     *p*) ;;
     *) printf '%s\n' "keytriage.sh: start this script with bash -p, on scene: sudo /media/tools/bin/bash -p /media/tools/keytriage.sh" >&2; exit 1 ;;
 esac
-VERSION="1.4.1 (2026-11)"
+VERSION="1.4.2 (2026-11)"
 umask 077                               # keys and the candidate list are written by this script
 case $0 in */*) KIT=${0%/*} ;; *) KIT=. ;; esac     # no dirname: no program runs before PATH is set
 KIT=$(cd "$KIT" && pwd)
@@ -213,7 +213,7 @@ over() {
 }
 # in_use NAME : what the open volume NAME carries, as one line: where it and the devices that
 # stand on it, such as the logical volumes of LVM, are mounted or used as swap. This is what a
-# copy of the mounted files would have to cover.
+# copy of the mounted files would have to cover. Eight mounts are named and further ones counted.
 in_use() {
     local d name devno dev mdev mp rest msrc path out="" count=0
     for d in /sys/block/dm-*; do
@@ -231,7 +231,7 @@ in_use() {
                 [ "$count" -le 8 ] && out+="${out:+, }$name at $mp"
             done < /proc/self/mountinfo
             while read -r path _; do
-                [ "$(blockdev_of "$path")" = "$dev" ] && { count=$(( count + 1 )); out+="${out:+, }$name as swap"; }
+                [ "$(blockdev_of "$path")" = "$dev" ] && out+="${out:+, }$name as swap"
             done < /proc/swaps
         done < <(over "$devno")
     done

@@ -22,9 +22,10 @@
 #             system on a loop device is accepted and takes every file (where the guest has
 #             mkfs.vfat and can mount FAT)
 #   kc_pv     a LUKS2 volume that carries an LVM volume group, as an installer lays out an
-#             encrypted system: the mapping below the logical volume is the one that is listed
-#             and proven, and an evidence directory on the logical volume is taken as lying on
-#             that dm-crypt volume (where the guest has lvm2 and mkfs.ext4)
+#             encrypted system, with a logical volume that is mounted and one that is swap:
+#             the mapping below them is the one that is listed and proven, both are named as
+#             what it carries, and an evidence directory on the logical volume is taken as
+#             lying on that dm-crypt volume (where the guest has lvm2 and mkfs.ext4)
 # A part that the guest cannot run is reported as SKIP and does not fail the check.
 #
 # Needs root, cryptsetup, dmsetup and losetup on the guest (package cryptsetup on Debian, Ubuntu,
@@ -45,12 +46,14 @@ fail() { echo "compat-check: $*" >&2; exit 1; }
 [ "$(id -u)" = 0 ] || fail "run as root"
 [ -x "$KIT/bin/bash" ] && [ -f "$KIT/keytriage.sh" ] || fail "no tool medium at $KIT (mount it with -o ro,exec)"
 for c in cryptsetup dmsetup losetup sha256sum; do command -v "$c" >/dev/null || fail "$c is not installed on this guest"; done
-for n in kc_l2 kc_l1 kc_null No kc_pv kc_vg-data; do [ ! -e "/dev/mapper/$n" ] || fail "the mapping $n is already open, close it first"; done
+for n in kc_l2 kc_l1 kc_null No kc_pv kc_vg-data kc_vg-swap; do [ ! -e "/dev/mapper/$n" ] || fail "the mapping $n is already open, close it first"; done
 
 LOOPS=()
 cleanup() {
     umount "$W/fat" 2>/dev/null
+    for b in "$W"/bind*; do [ -d "$b" ] && umount "$b" 2>/dev/null; done
     umount "$W/lvm" 2>/dev/null
+    swapoff /dev/mapper/kc_vg-swap 2>/dev/null
     vgchange -an kc_vg >/dev/null 2>&1
     vgremove -ff kc_vg >/dev/null 2>&1
     cryptsetup close kc_pv 2>/dev/null
@@ -195,8 +198,12 @@ fi
 mkdir "$W/lvm"
 if command -v vgcreate >/dev/null && command -v mkfs.ext4 >/dev/null; then
     SIZE=256M mk kc_pv luks2 --pbkdf pbkdf2 --pbkdf-force-iterations 1000
-    if vgcreate -q kc_vg /dev/mapper/kc_pv >/dev/null 2>"$W/lvm.txt" && lvcreate -q -y -n data -l 100%FREE kc_vg >/dev/null 2>>"$W/lvm.txt" \
-        && mkfs.ext4 -q /dev/mapper/kc_vg-data 2>>"$W/lvm.txt" && mount /dev/mapper/kc_vg-data "$W/lvm" 2>>"$W/lvm.txt"; then
+    if vgcreate -q kc_vg /dev/mapper/kc_pv >/dev/null 2>"$W/lvm.txt" && lvcreate -q -y -n swap -L 32M kc_vg >/dev/null 2>>"$W/lvm.txt" \
+        && lvcreate -q -y -n data -l 100%FREE kc_vg >/dev/null 2>>"$W/lvm.txt" \
+        && mkfs.ext4 -q /dev/mapper/kc_vg-data 2>>"$W/lvm.txt" && mount /dev/mapper/kc_vg-data "$W/lvm" 2>>"$W/lvm.txt" \
+        && mkswap /dev/mapper/kc_vg-swap >/dev/null 2>>"$W/lvm.txt" && swapon /dev/mapper/kc_vg-swap 2>>"$W/lvm.txt"; then
+        # the file system is mounted at ten places, of which the line names eight
+        for i in 1 2 3 4 5 6 7 8 9; do mkdir "$W/bind$i" && mount --bind "$W/lvm" "$W/bind$i"; done
         "$KIT/bin/bash" -p "$KIT/keytriage.sh" -e "$W/lvm" > "$W/screen-lvm.txt" 2>&1; rcl=$?
         L=$(ls -d "$W"/lvm/triage_* 2>/dev/null | tail -n 1)
         ok=1
@@ -206,15 +213,19 @@ if command -v vgcreate >/dev/null && command -v mkfs.ext4 >/dev/null; then
         cmp -s "$L/keys/kc_pv.vk" kc_pv.vk || ok=0
         grep -q '"name": "kc_vg-data"' "$L/verdict.json" 2>/dev/null && ok=0
         # what the volume carries is named: the logical volume and where it is mounted
-        grep -q "^  in use: kc_vg-data at $W/lvm\$" "$W/screen-lvm.txt" || ok=0
+        use=$(grep '^  in use: .*kc_vg' "$W/screen-lvm.txt")
+        case $use in *"kc_vg-data at $W/lvm,"*) ;; *) ok=0 ;; esac
+        [ "$(grep -o 'kc_vg-data at ' <<<"$use" | wc -l)" = 8 ] || ok=0
+        case $use in *"kc_vg-swap as swap"*) ;; *) ok=0 ;; esac
+        case $use in *" and 2 more mounts") ;; *) ok=0 ;; esac
         grep -A3 '^==== kc_l1$' "$W/screen-lvm.txt" | grep -q '^  in use: not mounted' || ok=0
         if [ "$ok" = 1 ]; then
-            echo "PASS   LVM on LUKS: kc_pv is captured and proven, the logical volume is not listed as a volume and is named as what kc_pv carries, the evidence directory on it is taken as lying on kc_pv"
+            echo "PASS   LVM on LUKS: kc_pv is captured and proven, the logical volumes are not listed as volumes and are named as what kc_pv carries, one mounted at ten places and one as swap, the evidence directory is taken as lying on kc_pv"
         else
             echo "FAIL   LVM on LUKS, status $rcl"; sed 's/^/       /' "$W/screen-lvm.txt"; PASS=0
         fi
     else
-        echo "FAIL   LVM on LUKS: the volume group, the logical volume or its file system could not be made: $(head -n 1 "$W/lvm.txt")"; PASS=0
+        echo "FAIL   LVM on LUKS: the volume group, a logical volume, the file system or the swap area could not be made: $(head -n 1 "$W/lvm.txt")"; PASS=0
     fi
 else
     echo "SKIP   no lvm2 or no mkfs.ext4, LVM on LUKS is not run"
