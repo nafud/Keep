@@ -205,8 +205,11 @@ if command -v vgcreate >/dev/null && command -v mkfs.ext4 >/dev/null; then
         grep '"name": "kc_pv"' "$L/verdict.json" 2>/dev/null | grep -q '"verdict": "captured and proven"' || ok=0
         cmp -s "$L/keys/kc_pv.vk" kc_pv.vk || ok=0
         grep -q '"name": "kc_vg-data"' "$L/verdict.json" 2>/dev/null && ok=0
+        # what the volume carries is named: the logical volume and where it is mounted
+        grep -q "^  in use: kc_vg-data at $W/lvm\$" "$W/screen-lvm.txt" || ok=0
+        grep -A3 '^==== kc_l1$' "$W/screen-lvm.txt" | grep -q '^  in use: not mounted' || ok=0
         if [ "$ok" = 1 ]; then
-            echo "PASS   LVM on LUKS: kc_pv is captured and proven, the logical volume is not listed, the evidence directory on it is taken as lying on kc_pv"
+            echo "PASS   LVM on LUKS: kc_pv is captured and proven, the logical volume is not listed as a volume and is named as what kc_pv carries, the evidence directory on it is taken as lying on kc_pv"
         else
             echo "FAIL   LVM on LUKS, status $rcl"; sed 's/^/       /' "$W/screen-lvm.txt"; PASS=0
         fi

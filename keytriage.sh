@@ -98,7 +98,7 @@ case $- in
     *p*) ;;
     *) printf '%s\n' "keytriage.sh: start this script with bash -p, on scene: sudo /media/tools/bin/bash -p /media/tools/keytriage.sh" >&2; exit 1 ;;
 esac
-VERSION="1.4.0 (2026-11)"
+VERSION="1.4.1 (2026-11)"
 umask 077                               # keys and the candidate list are written by this script
 case $0 in */*) KIT=${0%/*} ;; *) KIT=. ;; esac     # no dirname: no program runs before PATH is set
 KIT=$(cd "$KIT" && pwd)
@@ -190,6 +190,53 @@ mount_blockdev() {
     [ -b "$M_SRC" ] || return 0
     n=$(readlink -f "$M_SRC"); n=${n##*/}
     [ -r "/sys/class/block/$n/dev" ] && read -r n < "/sys/class/block/$n/dev" && printf '%s' "$n"
+}
+# blockdev_of PATH : the device number of the block device at PATH, as major:minor, or nothing
+blockdev_of() {
+    local n
+    [ -b "$1" ] || return 0
+    n=$(readlink -f "$1"); n=${n##*/}
+    [ -r "/sys/class/block/$n/dev" ] && read -r n < "/sys/class/block/$n/dev" && printf '%s' "$n"
+}
+# over MAJOR:MINOR : the devices that stand on a device, one "MAJOR:MINOR NAME" per line, itself
+# first. The reverse of under(): a device-mapper, md or bcache device is listed in holders/ of
+# what it stands on. NAME is the device-mapper name where the device has one.
+over() {
+    local p h n
+    p=$(readlink -f "/sys/dev/block/$1") && [ -d "$p" ] || return 0
+    n=${p##*/}
+    [ -r "$p/dm/name" ] && read -r n < "$p/dm/name"
+    printf '%s %s\n' "$1" "$n"
+    for h in "$p"/holders/*; do
+        [ -r "$h/dev" ] && read -r n < "$h/dev" && over "$n"
+    done
+}
+# in_use NAME : what the open volume NAME carries, as one line: where it and the devices that
+# stand on it, such as the logical volumes of LVM, are mounted or used as swap. This is what a
+# copy of the mounted files would have to cover.
+in_use() {
+    local d name devno dev mdev mp rest msrc path out="" count=0
+    for d in /sys/block/dm-*; do
+        [ -r "$d/dm/name" ] && read -r name < "$d/dm/name" && [ "$name" = "$1" ] || continue
+        read -r devno < "$d/dev"
+        while read -r dev name; do
+            while read -r _ _ mdev _ mp rest; do
+                if [ ! -e "/sys/dev/block/$mdev" ]; then        # btrfs: the device is the source
+                    rest=${rest#* - }; read -r _ msrc _ <<<"$rest"
+                    case $msrc in /*) mdev=$(blockdev_of "$msrc") ;; *) mdev="" ;; esac
+                fi
+                [ "$mdev" = "$dev" ] || continue
+                printf -v mp '%b' "$mp"
+                count=$(( count + 1 ))
+                [ "$count" -le 8 ] && out+="${out:+, }$name at $mp"
+            done < /proc/self/mountinfo
+            while read -r path _; do
+                [ "$(blockdev_of "$path")" = "$dev" ] && { count=$(( count + 1 )); out+="${out:+, }$name as swap"; }
+            done < /proc/swaps
+        done < <(over "$devno")
+    done
+    [ "$count" -gt 8 ] && out+=" and $(( count - 8 )) more mounts"
+    printf '%s' "$out"
 }
 # under MAJOR:MINOR : the block devices a device stands on, one "dev NAME" per line for itself
 # and every device beneath, and "disk NAME" for each whole disk at the bottom. In sysfs a
@@ -325,7 +372,7 @@ prove() {  # prove KEYFILE HEADER
 verdict() {  # verdict VERDICT ROUTE KEYHASH NOTE
     say "  VERDICT: $1${4:+ ($4)}"
     VERDICT[$m]=$1
-    JVOL+=("{\"name\": $(jstr "$m"), \"type\": $(jstr "$typ"), \"cipher\": $(jstr "$cip"), \"key_bits\": ${ksz:-null}, \"key_location\": $(jstr "$loc"), \"device\": $(jstr "$dev"), \"header_backup\": $(jstr "${hdr:+headers/$f.hdr}"), \"route\": $(jstr "$2"), \"verdict\": $(jstr "$1"), \"key_sha256_16\": $(jstr "$3"), \"note\": $(jstr "$4")}")
+    JVOL+=("{\"name\": $(jstr "$m"), \"type\": $(jstr "$typ"), \"cipher\": $(jstr "$cip"), \"key_bits\": ${ksz:-null}, \"key_location\": $(jstr "$loc"), \"device\": $(jstr "$dev"), \"in_use\": $(jstr "$use"), \"header_backup\": $(jstr "${hdr:+headers/$f.hdr}"), \"route\": $(jstr "$2"), \"verdict\": $(jstr "$1"), \"key_sha256_16\": $(jstr "$3"), \"note\": $(jstr "$4")}")
     say ""
 }
 
@@ -364,6 +411,8 @@ for m in "${MAPS[@]}"; do
     case $ksz in ''|*[!0-9]*) ksz="" ;; esac
     say "  type ${typ:-?}, cipher ${cip:-?}, keysize ${ksz:-?} bits, key location ${loc:-?}"
     say "  backing device ${dev:-?}"
+    use=$(in_use "$m")
+    say "  in use: $(clean "${use:-not mounted and not swap, also nothing that stands on it}")"
 
     # the table line of the crypt target: its cipher (4th token) and its key field (5th token),
     # which is the key in hexadecimal or a :size:type:description reference. The line is read

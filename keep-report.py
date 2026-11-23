@@ -27,12 +27,12 @@ import json
 import os
 import sys
 
-VERSION = "1.1"
+VERSION = "1.2"
 SCHEMA = "keep-report/1"
 TOP = ("tool", "host", "kernel", "os", "cryptsetup", "other_filesystems", "started_utc", "finished_utc",
        "lockdown", "secure_boot", "source", "evidence_medium")
 MEMORY = ("status", "file", "format", "sha256", "tool", "system_map", "note")
-VOLUME = ("name", "type", "cipher", "key_location", "device", "header_backup", "route", "verdict",
+VOLUME = ("name", "type", "cipher", "key_location", "device", "in_use", "header_backup", "route", "verdict",
           "key_sha256_16", "note", "uuid", "digest", "ground_truth")
 NUMBERS = ("key_bits", "attempts", "adjacent_places")
 
@@ -165,6 +165,7 @@ def print_report(r):
         row("Key SHA-256 (16)", v["key_sha256_16"], 2)
         row("Ground truth", v["ground_truth"], 2)
         row("Device", v["device"], 2)
+        row("In use", v["in_use"], 2)
         row("UUID", v["uuid"], 2)
         row("Header backup", v["header_backup"], 2)
         row("Header digest", v["digest"], 2)

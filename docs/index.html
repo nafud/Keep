@@ -24,7 +24,7 @@
   </div>
   <p class="tagline">Decryption-readiness triage for live Linux</p>
   <dl class="facts">
-    <div><dt>version</dt><dd>1.4.0</dd></div>
+    <div><dt>version</dt><dd>1.4.1</dd></div>
     <div><dt>author</dt><dd><a href="https://github.com/nafud">nafud</a></dd></div>
     <div><dt>source</dt><dd><a href="https://github.com/nafud/Keep">github.com/nafud/Keep</a></dd></div>
   </dl>
@@ -59,10 +59,11 @@
 <p>The evidence directory must lie on a medium of its own. A directory on the root file system of the examined system, or on a disk that also carries it, is refused, because a key written there changes the examined disk. <code>-f</code> accepts such a directory for a test.</p>
 <p>The same through plain questions, in the manner of <code>ewfacquire</code>. With <code>-n</code> it asks and lists everything and runs nothing.</p>
 <div class="code cmd"><pre><code>sudo /media/tools/bin/bash -p /media/tools/keep-menu.sh</code></pre></div>
-<p>One verdict is printed per volume. An example of the screen, shortened, with illustrative values:</p>
+<p>One verdict is printed per volume, with what the volume carries: where it and the devices that stand on it, such as logical volumes, are mounted or used as swap. An example of the screen, shortened, with illustrative values:</p>
 <div class="code sample"><pre><code>==== nvme0n1p3_crypt
   type LUKS2, cipher aes-xts-plain64, keysize 512 bits, key location keyring
   backing device /dev/nvme0n1p3
+  in use: vg-root at /, vg-swap as swap
   header backed up: headers/nvme0n1p3_crypt.hdr (16777216 bytes)
   R1 table: keyring reference :64:logon:cryptsetup:... (no key in the table)
   R3 memory: searching /proc/kcore for AES key schedules
@@ -75,7 +76,7 @@
   nvme0n1p3_crypt   captured and proven</code></pre></div>
 
 <h3 id="lab">3. In the lab</h3>
-<p>For a memory dump that was collected earlier. The dump is searched and every LUKS header in the disk images is located and tested. A disk image may be raw or the disk file of a virtual machine. The lab tools need Python 3 and the scanner, and they only read their inputs.</p>
+<p>For a memory dump that was collected earlier. The dump is searched and every LUKS header in the disk images is located and tested. A disk image may be raw, an EnCase image (<code>E01</code>) or the disk file of a virtual machine. The lab tools need Python 3 and the scanner, and they only read their inputs.</p>
 <div class="code cmd"><pre><code>./offline-keyscan.sh -k /path/to/work/tools memory.lime disk.dd</code></pre></div>
 <p>The result is a folder <code>scan_&lt;dump&gt;_&lt;UTC time&gt;/</code> with one <code>NAME.vk</code> per proven volume key, for <code>cryptsetup open --volume-key-file</code>. The report in it is printed as text, and several reports are compared in one table:</p>
 <div class="code cmd"><pre><code>python3 -I keep-report.py scan_*/verdict.json</code></pre></div>
@@ -136,6 +137,7 @@ python3 -I vkverify.py CANDIDATES [HEADER...] [--image DISK]... [--out DIR] [--j
 </tbody>
 </table></div>
 <p>What is recognised and not read is named and is not searched as raw bytes: a qcow2 image that is encrypted, has zstd clusters, extended L2 entries or an external data file, a sparse extent of ESXi, a VHDX file with a log, QED and Parallels. <code>qemu-img convert -O raw</code> writes such a disk as a raw image. A block that only a backing file or a parent disk holds reads as zeros, and that file is named. Each format is checked on images that <code>qemu-img</code> wrote, not on images from VMware, VirtualBox or Hyper-V.</p>
+<p>The image may also be an EnCase image, <code>E01</code>, with its further segment files beside it. Its chunks lie in the file compressed or with a checksum behind each, so a search of the raw file finds no header, also without compression. The chunks are decompressed and checked, and a missing or cut segment and a damaged chunk are named. Checked on images that <code>ewfacquirestream</code> of libewf wrote. Version 2 (<code>Ex01</code>) and AFF are named as not read.</p>
 </section>
 
 <section id="memory">
@@ -225,7 +227,7 @@ python3 -I vkverify.py CANDIDATES [HEADER...] [--image DISK]... [--out DIR] [--j
 <li>Keep covers dm-crypt only. Mounted file systems that encrypt by themselves (eCryptfs, ZFS, gocryptfs, CryFS, EncFS) are named in the report as not examined.</li>
 <li>Plain and tcrypt volumes have no header digest, so their keys cannot be proven on scene.</li>
 <li>A memory dump is read as an ELF core, a LiME image, a compressed AVML image or raw bytes. A kdump file and a file compressed as a whole are refused. The snapshot formats of QEMU and VMware, which Volatility 3 reads, are not read, and any other container format is searched as raw bytes, which is not tested.</li>
-<li>Forensic containers of a disk image, such as EWF (E01) and AFF, are not read.</li>
+<li>EnCase images of version 2 (<code>Ex01</code>) and AFF images are not read.</li>
 <li>The test of the evidence directory knows the disks only where the kernel names a block device for a file system. For a network share, tmpfs or ZFS only the test against the root file system applies, and a loop device counts as a disk of its own.</li>
 </ul>
 </section>

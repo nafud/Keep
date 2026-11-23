@@ -54,6 +54,13 @@ with a space.
 | R3 memory | The fifth field is a keyring reference, `:size:type:description`. This is the default for LUKS2, including systemd-homed | `kcore-keyscan` searches `/proc/kcore` once for all volumes. Candidates are proven against the header backup. The list is kept in `keys/` also when there is no header backup |
 | R5 live | No key route is open | Only a file-level copy of the mounted plaintext remains |
 
+Beside its type and its backing device the script names what each volume carries, as the line
+`in use:` and the field `in_use`: where the volume and the devices that stand on it, such as the
+logical volumes of LVM, are mounted or used as swap. It follows `holders/` in `/sys` upwards from
+the mapping and reads `/proc/self/mountinfo` and `/proc/swaps`. This is what a copy of the
+mounted files has to cover, and it tells a volume that holds the root file system from one that
+holds nothing in use.
+
 A fifth field of `-` is a key of size 0 (`crypt_status` in `dm-crypt.c`), which is the null
 cipher. Such a mapping has no key and gets the verdict `no key needed`. A field that is neither
 hexadecimal nor a keyring reference is reported as not understood. The table line is read by the
@@ -193,10 +200,19 @@ entries or an external data file, a sparse extent of ESXi (COWD, seSparse), a VH
 log, QED and Parallels. `qemu-img convert -O raw` writes such a disk as a raw image. A block that
 only a backing file or a parent disk holds reads as zeros, and that file is named.
 
-Each format is checked on images that `qemu-img` 8.2.2 wrote from one test disk: the reader
-gives the disk byte for byte and both keys are proven. A memory dump and the two qcow2 disks of
-a running QEMU guest gave both volume keys of that guest. Images that VMware, VirtualBox or
-Hyper-V wrote are not checked.
+`DISK` may also be an EnCase image, `E01` (Expert Witness Compression Format, as libewf
+documents it), with its further segment files `E02` and so on beside it. Such a file is a chain
+of sections, and the chunks of the disk lie in it compressed with zlib or as they are with an
+Adler-32 behind each, at offsets that are no sector boundaries. Searched as raw bytes it gave no
+header, also without compression. The chunks are decompressed, and a chunk that is stored as it
+is is compared with its checksum. A missing or cut segment file and a chunk that differs from
+its checksum end the reading of that image and are named. An image of version 2 (`Ex01`), a
+logical evidence file and AFF are named as not read.
+
+Each format is checked on images written from one test disk, by `qemu-img` 8.2.2 and by
+`ewfacquirestream` of libewf 20140814: the reader gives the disk byte for byte and both keys are
+proven. A memory dump and the two qcow2 disks of a running QEMU guest gave both volume keys of
+that guest. Images that VMware, VirtualBox, Hyper-V or EnCase itself wrote are not checked.
 
 A header file that ends inside the header, or whose fields cannot be read, is reported as
 `unreadable header` and the run goes on. Two headers with the same file name are kept apart as
@@ -211,8 +227,8 @@ SHA-256.
 - Top level from `keytriage.sh`: `schema`, `tool`, `host`, `kernel`, `os`, `cryptsetup`,
   `other_filesystems`, `started_utc`, `finished_utc`, `lockdown`, `secure_boot`, `source`,
   `evidence_medium`, `memory`, `binaries`, `volumes`.
-- Each volume: `name`, `type`, `cipher`, `key_bits`, `key_location`, `device`, `header_backup`,
-  `route`, `verdict`, `key_sha256_16`, `note`. `vkverify.py` names the file of the header in
+- Each volume: `name`, `type`, `cipher`, `key_bits`, `key_location`, `device`, `in_use`,
+  `header_backup`, `route`, `verdict`, `key_sha256_16`, `note`. `vkverify.py` names the file of the header in
   `device` and adds `uuid`, `digest`, `attempts`, `adjacent_places` and, with `--truth`,
   `ground_truth`.
 - `keep-report.py` reads only this schema, prints a fixed list of fields and drops the rest. A
@@ -355,8 +371,8 @@ python3 -I keep-report.py REPORT.json [REPORT.json ...] [--brief]
 `vkverify.py` are 0 only when at least one header was located and every located header is proven.
 `DUMP` is a raw dump, a LiME image, a compressed AVML image or an ELF core. The formats that the
 scanner refuses end the run. Any other container format is searched as raw bytes, which is not
-tested. `IMAGE` is a raw disk or partition image, a header backup or the disk file of a virtual
-machine.
+tested. `IMAGE` is a raw disk or partition image, a header backup, the disk file of a virtual
+machine or an EnCase image.
 
 ## Rules that every change keeps
 
@@ -426,8 +442,9 @@ python3 -I tests/make-schedule-fixture.py --format lime --size 8 fx.lime k.vk
 The self-test goes on with LUKS headers that cryptsetup makes from the fixture keys. It proves
 the keys with `vkverify.py`, `offline-keyscan.sh` and the on-scene proof command, also against
 headers whose keyslots were erased, and gives the verifier cut and malformed headers. With
-`qemu-img` it writes the disk image in fourteen forms of qcow2, VMDK, VDI, VHD and VHDX, and the
-verifier must read from each the disk byte for byte and prove both keys. It drives `keep-menu.sh`
+`qemu-img` it writes the disk image in fourteen forms of qcow2, VMDK, VDI, VHD and VHDX, and with
+`ewfacquirestream` as four EnCase images, one of them in segment files. The verifier must read
+from each the disk byte for byte and prove both keys. It drives `keep-menu.sh`
 through a pipe.
 
 `keytriage.sh` itself runs in the self-test without root and without device-mapper. A copy of it
@@ -447,7 +464,8 @@ SHA-256 of their key files. With `-m` or `-c` the memory image must be read by t
 its end and hold the schedules of both volume keys. It also checks that an evidence directory on
 the guest's own disk is refused, that a FAT evidence medium on a loop device is accepted, and the
 layout of an encrypted installation: a LUKS2 volume that carries an LVM volume group, where the
-mapping below the logical volume must be the one listed and proven.
+mapping below the logical volume must be the one listed and proven, and the logical volume with
+its mount point must be named as what that volume carries.
 
 `tests/compat-guest.sh WORKDIR NAME` runs that check unattended in a guest. It fetches the cloud
 image that `tests/compat-images.txt` pins for `NAME`, refuses it unless it has the pinned
@@ -554,8 +572,12 @@ on, where lockdown is `integrity`, with a version from 1.3 on.
   formats that the scanner does not: the snapshot of QEMU and the regions of a VMware snapshot.
   A `.vmem` file is searched as raw bytes, which is not checked on a file that VMware wrote.
 - The disk formats of virtual machines are checked on images that `qemu-img` wrote, not on
-  images from VMware, VirtualBox or Hyper-V. Forensic containers such as EWF (E01) and AFF are
-  not read.
+  images from VMware, VirtualBox or Hyper-V, and E01 on images that libewf wrote, not EnCase.
+  EnCase images of version 2 (`Ex01`) and AFF are not read. Reading an E01 image decompresses
+  every chunk, and its run time on an image of real size is not measured.
+- The line `in use` is checked for a logical volume on a LUKS volume. For btrfs, whose mounts
+  carry no device number of their own, it goes by the source of the mount, which is not
+  checked.
 
 ## Conventions
 
