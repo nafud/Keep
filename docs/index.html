@@ -55,7 +55,7 @@
 <div class="code cmd"><pre><code>sudo /media/tools/bin/bash -p /media/tools/keytriage.sh -e /media/evidence</code></pre></div>
 <p>The keys, and then a memory image. The keys come first, because an event can close their window within seconds and an image of a large machine takes minutes.</p>
 <div class="code cmd"><pre><code>sudo /media/tools/bin/bash -p /media/tools/keytriage.sh -e /media/evidence -m</code></pre></div>
-<p>With <code>-m -c</code> the image is written compressed, for an evidence medium with less free space than the machine has memory. How much this saves depends on what the memory holds: on the two machines of the pipeline where it was taken, the image had 87 % and 85 % of the size of the memory.</p>
+<p>With <code>-m -c</code> the image is written compressed, for an evidence medium with less free space than the machine has memory. How much this saves depends on what the memory holds: in the three runs of the pipeline that took it, the image had 85 % to 87 % of the size of the memory.</p>
 <p>The evidence directory must lie on a medium of its own. A directory on the root file system of the examined system, or on a disk that also carries it, is refused, because a key written there changes the examined disk. <code>-f</code> accepts such a directory for a test.</p>
 <p>The same through plain questions, in the manner of <code>ewfacquire</code>. With <code>-n</code> it asks and lists everything and runs nothing.</p>
 <div class="code cmd"><pre><code>sudo /media/tools/bin/bash -p /media/tools/keep-menu.sh</code></pre></div>
@@ -202,10 +202,10 @@ python3 -I vkverify.py CANDIDATES [HEADER...] [--image DISK]... [--out DIR] [--j
 <tr><td>Debian 13</td><td>6.12.117+deb13-amd64</td><td>2.7.5</td><td>1.4.2</td></tr>
 <tr><td>Debian 12</td><td>6.1.0-56-amd64</td><td>2.6.1</td><td>1.4.2</td></tr>
 <tr><td>Ubuntu 26.04.1</td><td>7.0.0-43-generic</td><td>2.8.4</td><td>1.4.2</td></tr>
-<tr><td>Ubuntu 24.04.5</td><td>6.8.0-147-generic</td><td>2.7.0</td><td>1.4.1</td></tr>
+<tr><td>Ubuntu 24.04.5</td><td>6.8.0-147-generic</td><td>2.7.0</td><td>1.4.2</td></tr>
 <tr><td>Fedora 45</td><td>7.2.11-300.fc45</td><td>2.8.8</td><td>1.4.2</td></tr>
 <tr><td>AlmaLinux 10.3</td><td>6.12.0-264.16.1.el10_3</td><td>2.8.6</td><td>1.4.2</td></tr>
-<tr><td>AlmaLinux 9.9</td><td>5.14.0-741.22.1.el9_9</td><td>2.8.6</td><td>1.4.1</td></tr>
+<tr><td>AlmaLinux 9.9</td><td>5.14.0-741.22.1.el9_9</td><td>2.8.6</td><td>1.4.2</td></tr>
 <tr><td>Rocky Linux 10.3</td><td>6.12.0-264.16.1.el10_3</td><td>2.8.6</td><td>1.4.2</td></tr>
 <tr><td>openSUSE Leap 16.1</td><td>6.12.0-160100.9-default</td><td>2.8.4</td><td>1.4.2</td></tr>
 <tr><td>Arch Linux</td><td>7.3.4-arch1-2</td><td>2.8.8</td><td>1.4.2</td></tr>
