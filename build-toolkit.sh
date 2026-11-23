@@ -1,7 +1,7 @@
 #!/bin/bash
 # build-toolkit.sh OUTDIR : assemble the Keep tool medium on the workstation and write it as an ISO.
 #
-#   sudo apt install bash-static busybox-static xorriso gcc
+#   sudo apt install bash-static busybox-static xorriso gcc curl file
 #   ./build-toolkit.sh /path/to/work      -> work/tools/ (the tree) and work/tools.iso
 #
 # The medium carries: bin/bash (bash-static), bin/busybox with one symlink per applet, bin/avml

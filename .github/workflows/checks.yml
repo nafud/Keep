@@ -1,0 +1,79 @@
+# The checks of Keep on every push and pull request.
+#
+#   selftest   tests/selftest.sh -a: the static checks, the scanner on fixtures, the verifier and
+#              the on-scene proof on LUKS headers made by cryptsetup, the menu through a pipe
+#   medium     build-toolkit.sh: the scene tool medium builds, its manifest verifies and its own
+#              static shell runs its scripts
+#
+# keytriage.sh needs root and device-mapper on a throwaway guest (tests/compat-check.sh), which
+# these runners do not offer, so a green run here is no statement about a distribution.
+#
+# Actions are pinned by commit, and .github/dependabot.yml proposes their updates.
+name: checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  selftest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install shellcheck and cryptsetup
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends shellcheck cryptsetup-bin
+      - name: Versions
+        run: |
+          bash --version | head -n 1
+          gcc --version | head -n 1
+          python3 --version
+          shellcheck --version | sed -n '2p'
+          cryptsetup --version
+      - name: Self-test
+        run: tests/selftest.sh -a
+
+  medium:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the parts of the medium
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends bash-static busybox-static xorriso
+      - name: Build the medium
+        run: ./build-toolkit.sh "$RUNNER_TEMP/work"
+      - name: The manifest verifies and the medium's shell runs its scripts
+        run: |
+          cd "$RUNNER_TEMP/work/tools"
+          sha256sum -c --quiet MANIFEST.sha256
+          env -i ./bin/bash ./keytriage.sh -h > /dev/null
+          printf 'live\n%s\n\nyes\n' "$RUNNER_TEMP" | env -i ./bin/bash ./keep-menu.sh -n | tee "$RUNNER_TEMP/menu.txt"
+          grep -q 'dry run, nothing was run' "$RUNNER_TEMP/menu.txt"
+          cat VERSIONS.txt
+      # The record of what was built. The ISO itself is not uploaded: it carries the bash and
+      # busybox binaries, and passing those on needs their source offered with them.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: medium-record
+          path: |
+            ${{ runner.temp }}/work/tools/VERSIONS.txt
+            ${{ runner.temp }}/work/tools/MANIFEST.sha256
+            ${{ runner.temp }}/work/tools.iso.sha256
+          if-no-files-found: error
+          retention-days: 30
