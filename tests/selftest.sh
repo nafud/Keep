@@ -18,8 +18,9 @@
 #              same headers with their keyslots erased, cut short, malformed, and under one name
 #   proof      the proof command of keytriage.sh on the same headers, with the key and with another
 #   triage     keytriage.sh itself on stand-ins for the examined system's dmsetup, cryptsetup
-#              status and /proc/kcore, with the same headers, the real header backup and proof
-#   menu       keep-menu.sh through a pipe: a dry run, an input that ends early, and an offline run
+#              status, /proc/kcore and AVML, with the same headers, the real header backup and proof
+#   menu       keep-menu.sh through a pipe: a dry run, the format of the memory image, an input
+#              that ends early, and an offline run
 #   page       docs/index.html shows the version of keytriage.sh, every link inside the page has
 #              its target, every file it names exists and nothing is loaded from another host
 #
@@ -290,6 +291,9 @@ open(sys.argv[2], "wb").write(raw)' "$T/l2.img" "$T/list.img" || return 1
     #   sync            notes what it is asked to flush, fails while $STUB/sync-fails exists and
     #                   is the applet otherwise
     #   hostname        says what $STUB/hostname holds, and is the applet without that file
+    #   avml            writes the fixture as the memory image, as LiME or with --compress as
+    #                   the compressed image, and a part of it with status 1 while
+    #                   $STUB/avml-fails exists
     # t_table is the LUKS1 header with its key in the table line (route R1), t_keyring the LUKS2
     # header with a keyring reference (route R3). t:plain and T:plain are plain mappings, whose
     # names FAT and exFAT refuse as file names and which differ only by case. The mappings of the
@@ -330,6 +334,18 @@ EOT
 printf '%s\\n' "\$*" >> "$T/sync.log"
 [ ! -e "$STUB/sync-fails" ] || { echo "sync: stand-in failure" >&2; exit 1; }
 exec "$BB" sync "\$@"
+EOT
+        # avml --version, avml acquire [--compress] FILE
+        standin "$KIT/bin/avml" <<EOT
+#!/bin/bash
+[ "\$1" = --version ] && { echo "avml stand-in"; exit 0; }
+[ "\$1" = acquire ] || exit 2
+shift
+src="$T/fx.lime"; [ "\$1" = --compress ] && { src="$T/fx.avml"; shift; }
+if [ -e "$STUB/avml-fails" ]; then
+    head -c 100000 "\$src" > "\$1"; echo "Error: No space left on device (stand-in)" >&2; exit 1
+fi
+cat "\$src" > "\$1"
 EOT
         standin "$KIT/bin/hostname" <<EOT
 #!/bin/bash
@@ -423,6 +439,41 @@ paths = sorted(b["path"] for b in json.load(open(sys.argv[1]))["binaries"])
 sys.exit(0 if paths == [sys.argv[2] + "/cryptsetup", sys.argv[2] + "/dmsetup"] else "recorded: %r" % paths)' "$T/both.d/verdict.json" "$SYS"
         }
         check "keytriage.sh runs nothing from outside the medium but the dmsetup and cryptsetup of -p" triage_medium_only
+        # The memory image, as LiME and compressed: the file, its format in the report, its line
+        # in the manifest, and for the compressed one that the scanner reads what was written.
+        triage_memory() {
+            local d=$T/mem.d c=$T/memc.d
+            triage mem -m || { echo "-m ended with status $?"; cat "$T/mem.txt"; return 1; }
+            cmp "$d/memory/memory.lime" "$T/fx.lime" && grep -q ' memory/memory.lime$' "$d/manifest.sha256" || { echo "no LiME image"; return 1; }
+            ( cd "$d" && sha256sum -c --quiet manifest.sha256 ) || return 1
+            triage memc -m -c || { echo "-m -c ended with status $?"; cat "$T/memc.txt"; return 1; }
+            cmp "$c/memory/memory.avml" "$T/fx.avml" && [ ! -e "$c/memory/memory.lime" ] && grep -q ' memory/memory.avml$' "$c/manifest.sha256" || { echo "no compressed image"; return 1; }
+            ( cd "$c" && sha256sum -c --quiet manifest.sha256 ) || return 1
+            [ "$("$SCAN" "$c/memory/memory.avml" 2>/dev/null | wc -l)" -eq 8 ] || { echo "the scanner does not read the compressed image"; return 1; }
+            python3 -I -c 'import json, sys
+a, b = (json.load(open(p + "/verdict.json"))["memory"] for p in sys.argv[1:3])
+ok = ((a["status"], a["file"], a["format"]) == ("captured", "memory/memory.lime", "lime")
+      and (b["status"], b["file"], b["format"]) == ("captured", "memory/memory.avml", "avml compressed"))
+sys.exit(0 if ok else "the reports say %r and %r" % (a, b))' "$d" "$c" || return 1
+            python3 -I keep-report.py "$c/verdict.json" | grep -q 'avml compressed' || { echo "keep-report.py does not print the format"; return 1; }
+        }
+        check "keytriage.sh -m writes the memory image as LiME, and compressed with -c" triage_memory
+        # An image that AVML could not finish, as on a medium that ran full: the part is removed,
+        # the image counts as failed, and the keys and the report are complete all the same.
+        triage_memory_fail() {
+            local d=$T/memf.d rc
+            : > "$STUB/avml-fails"; triage memf -m -c; rc=$?; rm -f "$STUB/avml-fails"
+            [ "$rc" -eq 0 ] || { echo "status $rc"; cat "$T/memf.txt"; return 1; }
+            [ ! -e "$d/memory/memory.avml" ] || { echo "the part of the image is kept"; return 1; }
+            grep -q 'memory image  *failed' "$T/memf.txt" && grep -q 'No space left' "$d/verdict.json" || { echo "the failure is not reported"; return 1; }
+            [ "$(verdict_of "$d" t_table)" = "captured and proven" ] && ( cd "$d" && sha256sum -c --quiet manifest.sha256 )
+        }
+        check "keytriage.sh removes the part of a memory image that could not be finished" triage_memory_fail
+        triage_c_alone() {
+            "$TSH" -p "$KIT/keytriage.sh" -f -c -p "$SYS" -e "$T/tevid" > "$T/calone.txt" 2>&1
+            [ $? -eq 2 ] && grep -q -e '-c belongs to -m' "$T/calone.txt"
+        }
+        check "keytriage.sh refuses -c without -m with status 2" triage_c_alone
         triage_shell() {
             "$TSH" "$KIT/keytriage.sh" -f -p "$SYS" -e "$T/tevid" > "$T/nop.txt" 2>&1
             [ $? -eq 1 ] && grep -q 'start this script with bash -p' "$T/nop.txt" || { echo "a start without -p is not refused"; return 1; }
@@ -519,13 +570,21 @@ menu_dry() {
     grep -q "keytriage.sh -e $T/evid -b 64\$" "$T/menu.txt" && grep -q 'dry run, nothing was run' "$T/menu.txt"
 }
 check "keep-menu.sh asks, lists the command and runs nothing with -n" menu_dry
+# the mode with a memory image asks for its format, and "compressed" adds -c to the command
+menu_memory() {
+    printf 'live-memory\n%s\n\ncompressed\nyes\n' "$T/evid" | bash -p keep-menu.sh -n > "$T/menu-m.txt" 2>&1 || return 1
+    grep -q -e ' -m -c$' "$T/menu-m.txt" || { echo "no -m -c in the command"; cat "$T/menu-m.txt"; return 1; }
+    printf 'live-memory\n%s\n\n\nyes\n' "$T/evid" | bash -p keep-menu.sh -n > "$T/menu-m.txt" 2>&1 || return 1
+    grep -q -e ' -m$' "$T/menu-m.txt" || { echo "the default is not -m alone"; cat "$T/menu-m.txt"; return 1; }
+}
+check "keep-menu.sh asks for the format of the memory image" menu_memory
 menu_eof() { printf 'offline\n' | bash -p keep-menu.sh -n > /dev/null 2>&1; [ $? -eq 1 ]; }
 check "keep-menu.sh ends with status 1 when the input ends early" menu_eof
 # -h prints the whole comment at the head of a script, whatever its length, and a wrong option
 # is an error
 usage_text() {
     local f
-    for f in keytriage.sh keep-menu.sh offline-keyscan.sh tests/selftest.sh; do
+    for f in keytriage.sh keep-menu.sh offline-keyscan.sh tests/selftest.sh tests/compat-guest.sh; do
         bash -p "$f" -h > "$T/usage.txt" || return 1
         awk 'NR == 1 { next } !/^#/ { exit } { print }' "$f" | cmp -s - "$T/usage.txt" || { echo "$f -h does not print its head comment"; return 1; }
         [ "$(wc -l < "$T/usage.txt")" -gt 5 ] || return 1

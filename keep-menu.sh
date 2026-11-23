@@ -13,7 +13,8 @@
 # through its "#!" line, which would name the bash of the examined system.
 #
 #   Mode live          keytriage.sh -e DIR -b N       the keys of the open volumes of this system
-#   Mode live-memory   keytriage.sh -e DIR -b N -m    the same, and then a memory image
+#   Mode live-memory   keytriage.sh -e DIR -b N -m    the same, and then a memory image, which
+#                      -c writes compressed where that is chosen
 #   Mode offline       a memory dump collected earlier. Where python3 and vkverify.py are present
 #                      (the lab) offline-keyscan.sh scans it and proves the keys against disk
 #                      images. Otherwise (the tool medium carries no Python) the dump is scanned
@@ -37,7 +38,7 @@ case $- in
 esac
 set -u
 umask 077                               # a candidate list holds key material
-VERSION="2.3 (2026-11)"
+VERSION="2.4 (2026-11)"
 ME=keep-menu.sh
 case $0 in */*) HERE=${0%/*} ;; *) HERE=. ;; esac   # no dirname: nothing external before PATH is set
 HERE=$(cd "$HERE" && pwd)
@@ -164,7 +165,13 @@ live() {  # live 0|1 : 1 adds the memory image
     ROWS+=("Evidence directory|$evid ($(free_of "$evid"))" "Proof attempts per volume|$budget")
     if [ "$1" = 1 ]; then
         CMD+=(-m)
-        ROWS+=("Memory image|after the keys, AVML, LiME format, the size of the memory above")
+        choose "Memory image format" "lime compressed" lime
+        if [ "$REPLY" = compressed ]; then
+            CMD+=(-c)
+            ROWS+=("Memory image|after the keys, AVML, compressed format, at most the size of the memory above")
+        else
+            ROWS+=("Memory image|after the keys, AVML, LiME format, the size of the memory above")
+        fi
     else
         ROWS+=("Memory image|no")
     fi

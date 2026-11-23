@@ -5,8 +5,9 @@
 #              for the examined system, the menu through a pipe
 #   medium     build-toolkit.sh: the scene tool medium builds, its manifest verifies and its own
 #              static shell runs its scripts
-#   compat     tests/compat-check.sh -m as root on two runner images: keytriage.sh from the medium
-#              on real device-mapper, a real /proc/kcore and real mounts, with a memory image
+#   compat     tests/compat-check.sh as root on two runner images: keytriage.sh from the medium on
+#              real device-mapper, a real /proc/kcore and real mounts, with a memory image, in
+#              LiME format on one image and compressed on the other
 #
 # A green compat job is a statement about the kernel and the cryptsetup of that runner image and
 # about nothing else. Its first step prints both.
@@ -37,7 +38,7 @@ jobs:
       - name: Install shellcheck, cryptsetup and the shell and applets of the medium
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends shellcheck cryptsetup-bin bash-static busybox-static
+          sudo apt-get install -y -q --no-install-recommends shellcheck cryptsetup-bin bash-static busybox-static qemu-utils
       - name: Versions
         run: |
           bash --version | head -n 1
@@ -88,7 +89,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, ubuntu-22.04]
+        include:
+          - os: ubuntu-24.04
+            image: -c       # the compressed memory image
+          - os: ubuntu-22.04
+            image: -m       # the memory image in LiME format
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
@@ -114,7 +119,7 @@ jobs:
         run: ./build-toolkit.sh "$RUNNER_TEMP/work"
       - name: compat-check.sh
         run: |
-          sudo bash tests/compat-check.sh -m "$RUNNER_TEMP/work/tools" | tee "$RUNNER_TEMP/compat.txt"
+          sudo bash tests/compat-check.sh ${{ matrix.image }} "$RUNNER_TEMP/work/tools" | tee "$RUNNER_TEMP/compat.txt"
           grep -q '^RESULT: PASS$' "$RUNNER_TEMP/compat.txt"
           # on these runners no part may be skipped
           ! grep '^SKIP' "$RUNNER_TEMP/compat.txt"

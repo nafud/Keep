@@ -1,5 +1,5 @@
 #!/bin/bash
-# compat-guest.sh [-m] [-k] WORKDIR NAME [IMAGE] : boot a distribution's cloud image as a
+# compat-guest.sh [-m] [-c] [-k] WORKDIR NAME [IMAGE] : boot a distribution's cloud image as a
 # throwaway guest in QEMU, run tests/compat-check.sh in it and print what it printed.
 #
 #   tests/compat-guest.sh -m work fedora-45
@@ -23,6 +23,7 @@
 # SSH through sudo, as an examiner would start it, on the port PORT of this machine (2222).
 #
 #   -m   compat-check.sh also takes the memory image and searches it
+#   -c   the same with the compressed image
 #   -k   keep the guest running afterwards and print how to log in
 #
 # Output: what compat-check.sh printed, also in WORKDIR/guest/NAME/compat.txt, and the serial
@@ -37,17 +38,18 @@ usage() {
     done < "$0"
 }
 MEMFLAG=""; KEEP=0
-while getopts "mkh" opt; do
+while getopts "mckh" opt; do
     case $opt in
         m) MEMFLAG=-m ;;
+        c) MEMFLAG=-c ;;
         k) KEEP=1 ;;
         h) usage; exit 0 ;;
-        *) printf 'usage: compat-guest.sh [-m] [-k] WORKDIR NAME [IMAGE], -h prints the description\n' >&2; exit 2 ;;
+        *) printf 'usage: compat-guest.sh [-m] [-c] [-k] WORKDIR NAME [IMAGE], -h prints the description\n' >&2; exit 2 ;;
     esac
 done
 shift $((OPTIND - 1))
 die() { printf 'compat-guest.sh: %s\n' "$*" >&2; exit 1; }
-[ $# -eq 2 ] || [ $# -eq 3 ] || { printf 'usage: compat-guest.sh [-m] [-k] WORKDIR NAME [IMAGE], -h prints the description\n' >&2; exit 2; }
+[ $# -eq 2 ] || [ $# -eq 3 ] || { printf 'usage: compat-guest.sh [-m] [-c] [-k] WORKDIR NAME [IMAGE], -h prints the description\n' >&2; exit 2; }
 for c in qemu-system-x86_64 qemu-img xorriso ssh scp ssh-keygen; do
     command -v "$c" >/dev/null || die "$c is not installed"
 done

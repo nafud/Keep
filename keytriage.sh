@@ -2,11 +2,13 @@
 # keytriage.sh, the scene-side script of Keep: decryption-readiness triage for an unlocked
 # Linux system.
 #
-#   sudo /media/tools/bin/bash -p /media/tools/keytriage.sh [-e DIR] [-b BUDGET] [-m] [-f] [-p DIRS]
+#   sudo /media/tools/bin/bash -p /media/tools/keytriage.sh [-e DIR] [-b BUDGET] [-m [-c]] [-f] [-p DIRS]
 #
 #   -e DIR   evidence directory, on the evidence medium (default /media/evidence)
 #   -b N     memory-route proof budget: stop after N proof attempts per volume (default 64)
 #   -m       after the keys, also write a memory image to the evidence medium (see below)
+#   -c       with -m: write the image compressed, for a medium with less free space than the
+#            machine has memory
 #   -f       accept an evidence directory on the examined system's own disk (for a test)
 #   -p DIRS  where the examined system keeps dmsetup and cryptsetup, directories with full paths
 #            separated by colons (default /usr/sbin:/usr/bin:/sbin:/bin:/usr/local/sbin:/usr/local/bin)
@@ -53,7 +55,14 @@
 # kernel banner (/proc/version), the release, os-release and System.map (where the system has one
 # with symbols; Debian keeps a placeholder in /boot), which the lab needs to
 # pick or build the Volatility 3 symbol table of exactly this kernel. The image needs as much
-# free space on the evidence medium as the machine has memory. Lockdown confidentiality refuses it.
+# free space on the evidence medium as the machine has memory, and is not started with less.
+# Lockdown confidentiality refuses it.
+#
+# With -c AVML writes its compressed format (version 2, Snappy) to memory/memory.avml, which
+# kcore-keyscan reads and Volatility 3 reads where the Snappy library is installed. How much
+# space it takes is known only at the end, so it is started whatever space is free. Where the
+# medium runs full the part that was written is removed, so that the report still has room, and
+# the image counts as failed.
 #
 # The evidence directory. A key that is written to the examined disk changes that disk, and a
 # key that is written into an encrypted volume of the examined system is locked in with the data
@@ -89,7 +98,7 @@ case $- in
     *p*) ;;
     *) printf '%s\n' "keytriage.sh: start this script with bash -p, on scene: sudo /media/tools/bin/bash -p /media/tools/keytriage.sh" >&2; exit 1 ;;
 esac
-VERSION="1.3.1 (2026-11)"
+VERSION="1.4.0 (2026-11)"
 umask 077                               # keys and the candidate list are written by this script
 case $0 in */*) KIT=${0%/*} ;; *) KIT=. ;; esac     # no dirname: no program runs before PATH is set
 KIT=$(cd "$KIT" && pwd)
@@ -101,6 +110,7 @@ SYSDIRS=/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/sbin:/usr/local/bin
 EVID=/media/evidence
 BUDGET=64
 MEMORY=0
+COMPRESS=0
 FORCE=0
 MOUNTS=/proc/mounts
 # the comment at the head of this file, read by the shell itself, so that -h needs no medium
@@ -110,17 +120,19 @@ usage() {
         case $line in '#!'*) ;; '#'*) printf '%s\n' "$line" ;; *) break ;; esac
     done < "$0"
 }
-while getopts "e:b:mfp:h" opt; do
+while getopts "e:b:mcfp:h" opt; do
     case $opt in
         e) EVID=$OPTARG ;;
         b) BUDGET=$OPTARG ;;
         m) MEMORY=1 ;;
+        c) COMPRESS=1 ;;
         f) FORCE=1 ;;
         p) SYSDIRS=$OPTARG ;;
         h) usage; exit 0 ;;
-        *) printf 'usage: keytriage.sh [-e DIR] [-b BUDGET] [-m] [-f] [-p DIRS], -h prints the description\n' >&2; exit 2 ;;
+        *) printf 'usage: keytriage.sh [-e DIR] [-b BUDGET] [-m [-c]] [-f] [-p DIRS], -h prints the description\n' >&2; exit 2 ;;
     esac
 done
+[ "$COMPRESS" = 0 ] || [ "$MEMORY" = 1 ] || { printf 'keytriage.sh: -c belongs to -m, there is no image to compress without it\n' >&2; exit 2; }
 
 die()  { printf 'keytriage.sh: %s\n' "$*" >&2; exit 1; }
 now()  { printf '%(%Y-%m-%dT%H:%M:%SZ)T' -1; }
@@ -506,13 +518,19 @@ done
 
 # ---- optional: a memory image for the lab ------------------------------------------------------
 # The keys are done, so the image no longer competes with them for time. AVML writes LiME, the
-# format that Volatility 3 and kcore-keyscan read without conversion.
+# format that Volatility 3 and kcore-keyscan read without conversion, or with -c its compressed
+# format, whose size is not known before it is written.
 MEMJ=""
 MEMHASH=""
 if [ "$MEMORY" = 1 ]; then
     say "==== memory image"
     mkdir -p "$OUT/memory"
-    img=$OUT/memory/memory.lime
+    if [ "$COMPRESS" = 1 ]; then
+        memfile=memory.avml; memfmt="avml compressed"; memwhat="AVML compressed format"; memopt=(--compress)
+    else
+        memfile=memory.lime; memfmt=lime; memwhat="LiME format"; memopt=()
+    fi
+    img=$OUT/memory/$memfile
     avmlv=$("$BIN/avml" --version 2>/dev/null | head -n 1)
     # the size to expect: the sum of the System RAM ranges, which is what AVML reads
     ram=0
@@ -522,18 +540,22 @@ if [ "$MEMORY" = 1 ]; then
     [ "$ram" -gt 0 ] || ram=$(( $(awk '/^MemTotal:/{print $2}' /proc/meminfo) * 1024 ))
     free=$(( $(df -k -P "$OUT" | awk 'NR==2{print $4}') * 1024 ))
     mstatus=""; mnote=""; mbytes=null; msecs=null
-    if [ "$free" -lt $(( ram + 67108864 )) ]; then
+    if [ "$COMPRESS" = 0 ] && [ "$free" -lt $(( ram + 67108864 )) ]; then
         mstatus="skipped"
-        mnote="the evidence medium has $(( free / 1048576 )) MiB free and the image can take $(( ram / 1048576 )) MiB"
+        mnote="the evidence medium has $(( free / 1048576 )) MiB free and the image can take $(( ram / 1048576 )) MiB. -c writes it compressed"
         say "  skipped: $mnote"
     else
-        say "  writing up to $(( ram / 1048576 )) MiB with ${avmlv:-avml}"
+        if [ "$COMPRESS" = 1 ]; then
+            say "  writing $(( ram / 1048576 )) MiB of memory compressed with ${avmlv:-avml}, $(( free / 1048576 )) MiB are free"
+        else
+            say "  writing up to $(( ram / 1048576 )) MiB with ${avmlv:-avml}"
+        fi
         t0=$SECONDS
-        if "$BIN/avml" acquire "$img" > "$OUT/log/avml.txt" 2>&1 && flush "$img" "$OUT/memory"; then
+        if "$BIN/avml" acquire "${memopt[@]}" "$img" > "$OUT/log/avml.txt" 2>&1 && flush "$img" "$OUT/memory"; then
             msecs=$(( SECONDS - t0 )); mbytes=$(stat -c%s "$img")
             MEMHASH=$(sha256sum "$img" | cut -c1-64)
             mstatus="captured"
-            say "  memory/memory.lime, $mbytes bytes, LiME format, written in $msecs s"
+            say "  memory/$memfile, $mbytes bytes, $memwhat, written in $msecs s"
             say "  sha256 $MEMHASH"
         else
             rc=$?
@@ -541,6 +563,7 @@ if [ "$MEMORY" = 1 ]; then
             mstatus="failed"
             mnote=$(grep -v '^[[:space:]]*$' "$OUT/log/avml.txt" | head -n 6 | tr -s ' \t\n' ' ')
             mnote="avml exit $rc: ${mnote% }"
+            [ "$COMPRESS" = 1 ] && mnote="$mnote. The part that was written is removed"
             say "  failed: $mnote"
             [ "$LOCKDOWN" = confidentiality ] && say "  lockdown confidentiality refuses every memory source"
         fi
@@ -568,7 +591,7 @@ if [ "$MEMORY" = 1 ]; then
     else
         say "  kernel banner, release and os-release kept in memory/, no System.map found on this system"
     fi
-    MEMJ="{\"status\": $(jstr "$mstatus"), \"file\": $(jstr "${MEMHASH:+memory/memory.lime}"), \"format\": $(jstr "${MEMHASH:+lime}"), \"bytes\": $mbytes, \"seconds\": $msecs, \"sha256\": $(jstr "$MEMHASH"), \"tool\": $(jstr "$avmlv"), \"system_map\": $(jstr "$smap"), \"note\": $(jstr "$mnote")}"
+    MEMJ="{\"status\": $(jstr "$mstatus"), \"file\": $(jstr "${MEMHASH:+memory/$memfile}"), \"format\": $(jstr "${MEMHASH:+$memfmt}"), \"bytes\": $mbytes, \"seconds\": $msecs, \"sha256\": $(jstr "$MEMHASH"), \"tool\": $(jstr "$avmlv"), \"system_map\": $(jstr "$smap"), \"note\": $(jstr "$mnote")}"
     say ""
 fi
 
@@ -599,8 +622,8 @@ say "finished $FINISHED"
 (
     cd "$OUT" || exit 1
     {
-        find triage.txt verdict.json keys headers log memory -type f ! -name memory.lime -print0 2>/dev/null | xargs -0 sha256sum 2>/dev/null
-        [ -n "$MEMHASH" ] && printf '%s  memory/memory.lime\n' "$MEMHASH"
+        find triage.txt verdict.json keys headers log memory -type f ! -name memory.lime ! -name memory.avml -print0 2>/dev/null | xargs -0 sha256sum 2>/dev/null
+        [ -n "$MEMHASH" ] && printf '%s  memory/%s\n' "$MEMHASH" "$memfile"
     } | sort -k 2 > manifest.sha256
 ) || WRITEFAIL=1
 

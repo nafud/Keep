@@ -1,8 +1,9 @@
 #!/bin/bash
-# compat-check.sh [-m] [KIT] : check keytriage.sh of Keep on one distribution.
+# compat-check.sh [-m] [-c] [KIT] : check keytriage.sh of Keep on one distribution.
 #
 #   sudo bash compat-check.sh            the tool medium is mounted at /media/tools
 #   sudo bash compat-check.sh -m         also take the memory image and search it
+#   sudo bash compat-check.sh -c         the same with the compressed image (keytriage.sh -m -c)
 #
 # For a throwaway test guest only, never for a system under examination: it makes two small
 # encrypted containers with keys it has just drawn, opens them, runs the triage on them and
@@ -30,8 +31,14 @@
 # Fedora, the RHEL family, openSUSE and Arch). dosfstools and lvm2 are needed for the parts with
 # FAT and LVM.
 set -u
-MEM=""
-[ "${1:-}" = -m ] && { MEM=-m; shift; }
+MEM=""; IMAGE=memory.lime
+while :; do
+    case ${1:-} in
+        -m) MEM=-m; shift ;;
+        -c) MEM="-m -c"; IMAGE=memory.avml; shift ;;
+        *) break ;;
+    esac
+done
 KIT=${1:-/media/tools}
 W=/root/kc-compat
 fail() { echo "compat-check: $*" >&2; exit 1; }
@@ -125,10 +132,19 @@ else
 fi
 [ "$RC" = 0 ] || { echo "FAIL   keytriage.sh ended with status $RC"; PASS=0; }
 if [ -n "$MEM" ]; then
-    img=$O/memory/memory.lime
+    img=$O/memory/$IMAGE
     if [ -s "$img" ]; then
-        "$KIT/bin/kcore-keyscan" "$img" > "$W/image-candidates.txt" 2> "$W/image-scan.txt"
-        echo "PASS   memory image: $(stat -c%s "$img") bytes, $(wc -l < "$W/image-candidates.txt") key schedules found in it"
+        # the image was taken while the containers were open, so the scanner must read it to its
+        # end and find in it the schedules of both halves of both volume keys
+        "$KIT/bin/kcore-keyscan" "$img" > "$W/image-candidates.txt" 2> "$W/image-scan.txt"; rcs=$?
+        inimg=1
+        for n in kc_l2 kc_l1; do
+            for o in 0 32; do
+                grep -q " key $(od -An -v -tx1 -j "$o" -N 32 "$n.vk" | tr -d ' \n')\$" "$W/image-candidates.txt" || inimg=0
+            done
+        done
+        if [ "$rcs" = 0 ] && [ "$inimg" = 1 ]; then res=PASS; else res=FAIL; PASS=0; fi
+        echo "$res   memory image $IMAGE: $(stat -c%s "$img") bytes, $(sed -n 's/^kcore-keyscan [^,]*, \(.*\), [0-9]* segments*, \([0-9]* bytes\).*/\1, \2 of memory/p' "$W/image-scan.txt"), $(wc -l < "$W/image-candidates.txt") key schedules, $([ "$inimg" = 1 ] && echo "the keys of both containers among them" || echo "the keys of the containers are not all among them"), scanner status $rcs"
         echo "       banner: $(cut -c1-100 "$O/memory/banner.txt")"
         echo "       $(grep -m 1 'System.map' "$W/screen.txt" | sed 's/^ *//')"
         [ -s "$O/memory/System.map" ] && echo "       System.map: $(stat -c%s "$O/memory/System.map") bytes, $(wc -l < "$O/memory/System.map") lines"
