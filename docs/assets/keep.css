@@ -140,7 +140,7 @@ body::before {
 /* The text has the width of Kiln's, 900px, and the two columns beside it share the rest. */
 .page {
   display: grid;
-  grid-template-columns: minmax(11rem, 1fr) minmax(0, 900px) minmax(11rem, 1fr);
+  grid-template-columns: minmax(14rem, 1fr) minmax(0, 900px) minmax(11rem, 1fr);
   gap: 2rem;
   align-items: start;
   padding: calc(var(--row) + 0.6rem) calc(var(--inset) + 1.2rem) calc(var(--row) + 0.6rem);
@@ -160,9 +160,9 @@ body::before {
 /* ---- the word ---- */
 /* keep.js turns the word into a grid of characters, in the faint colour of Kiln's logo. Before
    it has done so, and without it, the word stands as plain text in its typeface. Kiln's logo
-   has the width of its text column and cells of 0.5rem. This column is half as wide, so the
-   size of a cell follows the width of the column and the word keeps about eighty cells across,
-   which at the widest is a cell of 0.4rem. */
+   has the width of its text column, cells of 0.5rem and about 120 of them across. This column
+   is half as wide, so the size of a cell follows the width of the column and the word keeps
+   as many cells across as Kiln's: with fewer the letters do not read. */
 .side { container-type: inline-size; }
 .logo {
   display: grid;
@@ -175,8 +175,8 @@ body::before {
 }
 .logo pre {
   margin: 0;
-  font: 400 0.4rem/1.2 var(--mono);
-  font-size: 2.08cqw;
+  font: 400 0.27rem/1.2 var(--mono);
+  font-size: 1.36cqw;
   letter-spacing: 0;
   white-space: pre;
   color: var(--faint);

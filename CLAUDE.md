@@ -544,8 +544,8 @@ be opened and emulated otherwise, and starts the check over SSH through `sudo`.
 - The word is drawn by `keep.js` in the manner of Kiln's logo: set in a blackletter typeface
   and sampled into a grid of ASCII characters in the faint colour, which shimmer while the
   pointer moves. Its column is half as wide as Kiln's, so the size of a cell follows the width
-  of the column and the word keeps about eighty cells across. Without JavaScript the plain
-  word stands in its place.
+  of the column and the word keeps as many cells across as Kiln's, about 120. Without
+  JavaScript the plain word stands in its place.
 
 ## Systems checked
 
