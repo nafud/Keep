@@ -176,11 +176,12 @@ python3 -I vkverify.py CANDIDATES [HEADER...] [--image DISK]... [--out DIR] [--j
 
 <section id="systems">
 <h2>Systems checked</h2>
-<p>A distribution counts as checked only after <code>tests/compat-check.sh</code> ended with <code>RESULT: PASS</code> on it. That test makes a LUKS2 and a LUKS1 container from keys it has just drawn, a mapping named <code>No</code> and one with the null cipher, runs the triage and compares the captured keys with the known ones. The pipeline on GitHub runs it on every push on the first two systems of this table, which are its runner images. The last column is the version of <code>keytriage.sh</code> that was checked. The other four systems were checked on guests with a version before 1.3.</p>
+<p>A distribution counts as checked only after <code>tests/compat-check.sh</code> ended with <code>RESULT: PASS</code> on it. That test makes a LUKS2 and a LUKS1 container from keys it has just drawn, a mapping named <code>No</code> and one with the null cipher, runs the triage and compares the captured keys with the known ones. The pipeline on GitHub runs it on every push on its two runner images, which are the first three rows of this table. The machine behind a runner image differs from run to run and with it the kernel, so a row names the kernel of the run it stands for. The last column is the version of <code>keytriage.sh</code> that was checked. The other four systems were checked on guests with a version before 1.3.</p>
 <div class="table"><table>
 <thead><tr><th>System</th><th>Kernel</th><th>cryptsetup</th><th>Key option</th><th>Lockdown</th><th>Version</th></tr></thead>
 <tbody>
-<tr><td>Ubuntu 24.04.5, runner</td><td>7.0.0-1017-azure</td><td>2.7.0</td><td><code>--volume-key-file</code></td><td>none</td><td>1.3.1</td></tr>
+<tr><td>Ubuntu 24.04.5, runner</td><td>7.0.0-1014-aws</td><td>2.7.0</td><td><code>--volume-key-file</code></td><td>none</td><td>1.3.1</td></tr>
+<tr><td>Ubuntu 24.04.5, runner</td><td>7.0.0-1017-azure</td><td>2.7.0</td><td><code>--volume-key-file</code></td><td>none</td><td>1.3.0</td></tr>
 <tr><td>Ubuntu 22.04.5, runner</td><td>6.8.0-1070-azure</td><td>2.4.3</td><td><code>--master-key-file</code></td><td>none</td><td>1.3.1</td></tr>
 <tr><td>Ubuntu Server 26.04.1</td><td>7.0.0-44-generic</td><td>2.8.4</td><td><code>--volume-key-file</code></td><td>integrity</td><td>before 1.3</td></tr>
 <tr><td>Debian 13</td><td>6.12</td><td>2.7.5</td><td><code>--volume-key-file</code></td><td>none</td><td>before 1.3</td></tr>

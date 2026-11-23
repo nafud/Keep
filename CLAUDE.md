@@ -421,14 +421,16 @@ starts such a guest from a cloud image with the medium attached.
 
 ## Systems checked
 
-`compat-check.sh` or a full run passed on these x86-64 systems. The first two are the runner
-images of the pipeline, where the check runs on every push and its output is kept as an
-artifact. The other four were checked on guests with a version before 1.3, and their outputs are
-not kept.
+`compat-check.sh` or a full run passed on these x86-64 systems. The first three rows are the
+runner images of the pipeline, where the check runs on every push and its output is kept as an
+artifact. The machine behind a runner image differs from run to run and with it the kernel, so a
+row names the kernel of the run it stands for. The other four systems were checked on guests
+with a version before 1.3, and their outputs are not kept.
 
 | System | Kernel | cryptsetup | Key option | Lockdown | XTS driver | `keytriage.sh` |
 |---|---|---|---|---|---|---|
-| Ubuntu 24.04.5, runner image | 7.0.0-1017-azure | 2.7.0 | `--volume-key-file` | none | `xts-aes-vaes-avx512` | 1.3.1 |
+| Ubuntu 24.04.5, runner image | 7.0.0-1014-aws | 2.7.0 | `--volume-key-file` | none | `xts-aes-vaes-avx512` | 1.3.1 |
+| Ubuntu 24.04.5, runner image | 7.0.0-1017-azure | 2.7.0 | `--volume-key-file` | none | `xts-aes-vaes-avx512` | 1.3.0 |
 | Ubuntu 22.04.5, runner image | 6.8.0-1070-azure | 2.4.3 | `--master-key-file` | none | `xts-aes-aesni` | 1.3.1 |
 | Ubuntu Server 26.04.1 | 7.0.0-44-generic | 2.8.4 | `--volume-key-file` | integrity | not recorded | before 1.3 |
 | Debian 13 | 6.12 | 2.7.5 | `--volume-key-file` | none | not recorded | before 1.3 |
@@ -451,7 +453,9 @@ Fedora, the RHEL family, openSUSE and Arch are not checked yet.
   for a file system. For a network share, tmpfs or ZFS only the test against the root file system
   applies, and a loop device counts as a disk of its own. The step from a partition to its disk
   is checked on the runners, where `/boot/efi` is refused as lying on the disk of the root file
-  system. A stack of LVM over dm-crypt is not checked.
+  system. On the runner with the kernel 7.0.0-1014-aws the root file system was the
+  device-mapper device `/dev/mapper/cow-root`, so there the step through `slaves/` was taken as
+  well. A stack of LVM over dm-crypt is not checked.
 - A mapping whose name holds a line break is not listed. A mapping whose name begins with `-` is
   not tested.
 - The memory image with `-m` is taken in the `compat` job on both runner images, to the disk of
