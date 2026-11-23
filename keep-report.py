@@ -27,10 +27,10 @@ import json
 import os
 import sys
 
-VERSION = "1.0"
+VERSION = "1.1"
 SCHEMA = "keep-report/1"
 TOP = ("tool", "host", "kernel", "os", "cryptsetup", "other_filesystems", "started_utc", "finished_utc",
-       "lockdown", "secure_boot", "source")
+       "lockdown", "secure_boot", "source", "evidence_medium")
 MEMORY = ("status", "file", "format", "sha256", "tool", "system_map", "note")
 VOLUME = ("name", "type", "cipher", "key_location", "device", "header_backup", "route", "verdict",
           "key_sha256_16", "note", "uuid", "digest", "ground_truth")
@@ -42,6 +42,7 @@ VERDICTS = {
     "proven": "ok",
     "captured, in use": "ok",
     "found in memory": "ok",
+    "no key needed": "none",
     "captured, not proven": "warn",
     "needs a memory read": "warn",
     "live copy only": "bad",
@@ -50,6 +51,7 @@ VERDICTS = {
     "unreadable header": "bad",
 }
 CLASSES = (("ok", "key held", "the volume key is held and opens the volume"),
+           ("none", "no key needed", "the mapping has no key, the device holds the data as they are"),
            ("warn", "action needed", "a memory image is needed before power-off, or the proof is open"),
            ("bad", "no key", "no key from this source, on scene only a live copy keeps the data"),
            ("unknown", "unknown verdict", "a verdict this version does not know"))
@@ -132,6 +134,7 @@ def print_report(r):
     row("Started (UTC)", r["started_utc"])
     row("Finished (UTC)", r["finished_utc"])
     row("Key source", r["source"])
+    row("Evidence medium", r["evidence_medium"])
     row("Not examined", r["other_filesystems"])
     c = r.get("candidates")
     if c:
@@ -177,7 +180,7 @@ def print_report(r):
     print("\nVerdicts:")
     for key, name, meaning in CLASSES:
         n = sum(v["class"] == key for v in r["volumes"])
-        if n or key != "unknown":
+        if n or key not in ("none", "unknown"):
             row(name.capitalize(), f"{n}  ({meaning})")
 
 

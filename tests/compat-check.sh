@@ -13,6 +13,15 @@
 # any dump. The check passes when both verdicts are "captured and proven" and the SHA-256 of each
 # captured key equals that of its key file. No key is printed.
 #
+# Around these two it checks what only real device-mapper and real mounts can show:
+#   No        a mapping of that name, made with dmsetup from a known key: "captured, in use"
+#   kc_null   a mapping with the null cipher and no key: "no key needed"
+#   the evidence directory: one on the guest's own disk is refused without -f, also on another
+#             partition of that disk (/boot/efi or /boot, where the guest has one), and a FAT file
+#             system on a loop device is accepted and takes every file (where the guest has
+#             mkfs.vfat and can mount FAT)
+# A part that the guest cannot run is reported as SKIP and does not fail the check.
+#
 # Needs root, cryptsetup, dmsetup and losetup on the guest (package cryptsetup on Debian, Ubuntu,
 # Fedora, the RHEL family, openSUSE and Arch).
 set -u
@@ -24,11 +33,16 @@ fail() { echo "compat-check: $*" >&2; exit 1; }
 [ "$(id -u)" = 0 ] || fail "run as root"
 [ -x "$KIT/bin/bash" ] && [ -f "$KIT/keytriage.sh" ] || fail "no tool medium at $KIT (mount it with -o ro,exec)"
 for c in cryptsetup dmsetup losetup sha256sum; do command -v "$c" >/dev/null || fail "$c is not installed on this guest"; done
-[ ! -e /dev/mapper/kc_l2 ] && [ ! -e /dev/mapper/kc_l1 ] || fail "kc_l2 or kc_l1 is already open, close it first"
+for n in kc_l2 kc_l1 kc_null No; do [ ! -e "/dev/mapper/$n" ] || fail "the mapping $n is already open, close it first"; done
 
+LOOPS=()
 cleanup() {
+    umount "$W/fat" 2>/dev/null
     cryptsetup close kc_l2 2>/dev/null
     cryptsetup close kc_l1 2>/dev/null
+    dmsetup remove kc_null 2>/dev/null
+    dmsetup remove No 2>/dev/null
+    for l in "${LOOPS[@]}"; do losetup -d "$l" 2>/dev/null; done
     rm -rf "$W"
 }
 trap cleanup EXIT
@@ -48,6 +62,17 @@ mk() {  # mk NAME TYPE [options]
 }
 mk kc_l2 luks2 --pbkdf pbkdf2 --pbkdf-force-iterations 1000
 mk kc_l1 luks1 --pbkdf pbkdf2 --pbkdf-force-iterations 1000
+# two mappings straight from a table line, as the kernel takes it: one with a key that is known
+# here and a name that reads like the first word of "No devices found", one without a key
+dm() {  # dm NAME CIPHER KEYFIELD
+    local l
+    truncate -s 16M "$1.img"; l=$(losetup --find --show "$1.img") || fail "losetup $1 failed"
+    LOOPS+=("$l")
+    dmsetup create "$1" --table "0 32768 crypt $2 $3 0 $l 0" || fail "dmsetup create $1 failed"
+}
+head -c 64 /dev/urandom > No.vk
+dm No aes-xts-plain64 "$(od -An -v -tx1 No.vk | tr -d ' \n')"
+dm kc_null cipher_null-ecb -
 
 # $W is on the disk of this guest, which keytriage.sh refuses as an evidence directory unless -f
 "$KIT/bin/bash" "$KIT/keytriage.sh" -e "$W/evid" > "$W/refused.txt" 2>&1
@@ -78,6 +103,18 @@ for n in kc_l2 kc_l1; do
     printf '%-6s %-5s verdict "%s", route "%s", key %s\n' "$res" "$n" "${v:-none}" "${r:-none}" \
         "$([ "$h" = "$want" ] && echo "equals the ground truth" || echo "differs from the ground truth or is missing")"
 done
+want=$(sha256sum < No.vk | cut -c1-16)
+if [ "$(field No verdict)" = "captured, in use" ] && [ "$(field No key_sha256_16)" = "$want" ]; then
+    echo "PASS   No    verdict \"captured, in use\", key equals the ground truth"
+else
+    echo "FAIL   No    verdict \"$(field No verdict)\", the mapping is missing or its key differs"; PASS=0
+fi
+if [ "$(field kc_null verdict)" = "no key needed" ] && [ ! -e "$O/keys/kc_null.vk" ]; then
+    echo "PASS   kc_null verdict \"no key needed\""
+else
+    echo "FAIL   kc_null verdict \"$(field kc_null verdict)\""; PASS=0
+fi
+[ "$RC" = 0 ] || { echo "FAIL   keytriage.sh ended with status $RC"; PASS=0; }
 if [ -n "$MEM" ]; then
     img=$O/memory/memory.lime
     if [ -s "$img" ]; then
@@ -96,6 +133,38 @@ if [ "$REFUSED" = 1 ] && grep -q 'is refused: it lies on' "$W/refused.txt" && [ 
     echo "PASS   an evidence directory on the guest's own disk is refused without -f"
 else
     echo "FAIL   an evidence directory on the guest's own disk is not refused: $(head -n 1 "$W/refused.txt")"; PASS=0
+fi
+# another partition of the disk that carries the root file system
+OTHER=""
+for d in /boot/efi /boot; do
+    [ "$(stat -c %d "$d" 2>/dev/null)" != "$(stat -c %d /)" ] && [ -d "$d" ] && grep -q " $d " /proc/self/mountinfo && { OTHER=$d; break; }
+done
+if [ -n "$OTHER" ]; then
+    "$KIT/bin/bash" "$KIT/keytriage.sh" -e "$OTHER" > "$W/refused2.txt" 2>&1
+    if [ $? = 1 ] && grep -q 'is refused: it lies on the disk' "$W/refused2.txt" && ! ls -d "$OTHER"/triage_* >/dev/null 2>&1; then
+        echo "PASS   $OTHER is refused: $(sed -n 's/.*\(it lies on the disk [^,]*\),.*/\1/p' "$W/refused2.txt")"
+    else
+        echo "FAIL   $OTHER, a partition beside the root file system, is not refused: $(head -n 1 "$W/refused2.txt")"; PASS=0
+    fi
+else
+    echo "SKIP   no /boot/efi or /boot on a partition of its own, the test of a second partition is not run"
+fi
+# an evidence medium with FAT, on a disk of its own: accepted without -f, and every name is taken
+mkdir "$W/fat"; truncate -s 96M fat.img
+if command -v mkfs.vfat >/dev/null && mkfs.vfat fat.img >/dev/null 2>&1 && mount -o loop fat.img "$W/fat" 2>/dev/null; then
+    "$KIT/bin/bash" "$KIT/keytriage.sh" -e "$W/fat" > "$W/screen-fat.txt" 2>&1; rcf=$?
+    F=$(ls -d "$W"/fat/triage_* 2>/dev/null | tail -n 1)
+    ok=1
+    [ "$rcf" = 0 ] && grep -q '(vfat) mounted at' "$W/screen-fat.txt" || ok=0
+    for n in kc_l2 kc_l1 No; do cmp -s "$F/keys/$n.vk" "$n.vk" || ok=0; done
+    (cd "$F" 2>/dev/null && sha256sum -c --quiet manifest.sha256 >/dev/null 2>&1) || ok=0
+    if [ "$ok" = 1 ]; then
+        echo "PASS   evidence medium with FAT: accepted without -f, three keys equal the ground truth, manifest"
+    else
+        echo "FAIL   evidence medium with FAT, status $rcf"; sed 's/^/       /' "$W/screen-fat.txt"; PASS=0
+    fi
+else
+    echo "SKIP   no mkfs.vfat or no FAT in this kernel, the evidence medium with FAT is not run"
 fi
 echo
 if [ "$PASS" = 1 ]; then echo "RESULT: PASS"; else echo "RESULT: FAIL"; echo; echo "---- screen output of the tool"; cat "$W/screen.txt"; fi

@@ -10,7 +10,8 @@
 #   static     bash -n and shellcheck -S warning on every script, a compile of every Python file
 #              and a static build of kcore-keyscan with -Wall -Werror
 #   scanner    a fixture with the schedules of two known XTS keys and four traps, in each of the
-#              three formats, and once with a step of 16
+#              three formats, and once with a step of 16. A gzip file and a compressed AVML image
+#              are refused
 #   verifier   LUKS2 and LUKS1 headers that cryptsetup makes from the same two keys: vkverify.py
 #              on the headers, offline-keyscan.sh on a disk image that holds both, keep-report.py
 #              on the report, and a candidate list without the keys, which must not prove
@@ -29,10 +30,17 @@
 set -u
 umask 077
 export LC_ALL=C
+# the comment at the head of this file, read by the shell itself
+usage() {
+    local line
+    while IFS= read -r line; do
+        case $line in '#!'*) ;; '#'*) printf '%s\n' "$line" ;; *) break ;; esac
+    done < "$0"
+}
 ALL=0
 case ${1:-} in
     -a) ALL=1 ;;
-    -h|--help) sed -n '2,29p' "$0"; exit 0 ;;
+    -h|--help) usage; exit 0 ;;
     '') ;;
     *) printf 'usage: selftest.sh [-a]\n' >&2; exit 2 ;;
 esac
@@ -123,6 +131,20 @@ done
 # with a step of 16 only the four schedules of the keys lie on the step
 step16() { [ "$("$SCAN" -s 16 "$T/fx.raw" 2>/dev/null | wc -l)" -eq 4 ]; }
 check "scanner with -s 16 lists only the aligned schedules" step16
+# A file that holds memory in a compressed form is not searched as raw bytes, where it would give
+# a part of the schedules or none with status 0. The AVML file is its header alone, as
+# "avml convert --format lime_compressed" writes it: the magic, version 2, the range, padding.
+packed() {
+    gzip -c "$T/fx.raw" > "$T/fx.raw.gz"
+    { printf 'AVML\002\000\000\000'; head -c 24 /dev/zero; head -c 4096 /dev/urandom; } > "$T/fx.avml"
+    local f
+    for f in fx.raw.gz fx.avml; do
+        "$SCAN" "$T/$f" > "$T/packed.out" 2> "$T/packed.err"
+        [ $? -eq 1 ] && [ ! -s "$T/packed.out" ] && grep -q 'begins like' "$T/packed.err" || { echo "$f is not refused"; return 1; }
+    done
+    "$SCAN" -r "$T/fx.raw.gz" > /dev/null 2> "$T/packed.err" && grep -q ', raw, ' "$T/packed.err"
+}
+check "scanner refuses a gzip file and a compressed AVML image, and searches them with -r" packed
 
 # ---- verifier, proof ---------------------------------------------------------------------------
 if command -v cryptsetup >/dev/null; then
@@ -204,7 +226,10 @@ if command -v cryptsetup >/dev/null; then
     #   hostname        says what $STUB/hostname holds, and is the applet without that file
     # t_table is the LUKS1 header with its key in the table line (route R1), t_keyring the LUKS2
     # header with a keyring reference (route R3). t:plain and T:plain are plain mappings, whose
-    # names FAT and exFAT refuse as file names and which differ only by case.
+    # names FAT and exFAT refuse as file names and which differ only by case. The mappings of the
+    # second list are the cases at the edge: the names "No" and "my data", the null cipher, a
+    # mapping whose table dmsetup does not give, a key field that is no key, and in a list of its
+    # own a LUKS2 mapping whose header cannot be backed up.
     if command -v busybox >/dev/null; then
         KIT=$T/kit; SYS=$T/sys; STUB=$T/stub; REALCS=$(command -v cryptsetup); BB=$(command -v busybox)
         TSH=$(command -v bash-static || command -v bash)
@@ -262,6 +287,24 @@ EOT
         done
         printf '0 16384 crypt aes-xts-plain64 %s 0 7:0 4096\n' "$(hexof "$T/keys/k128.vk")" > "$STUB/t_table.table"
         printf '0 32768 crypt aes-xts-plain64 :64:logon:cryptsetup:selftest-d0 0 7:1 32768\n' > "$STUB/t_keyring.table"
+        for n in No "my data"; do
+            printf '0 16384 crypt aes-xts-plain64 %s 0 7:2 0\n' "$(hexof "$T/keys/other.vk")" > "$STUB/$n.table"
+            status "$n" PLAIN aes-xts-plain64 512 dm-crypt /dev/loop2
+        done
+        printf '0 16384 crypt cipher_null-ecb - 0 7:3 0\n' > "$STUB/t_null.table"
+        status t_null PLAIN cipher_null-ecb 0 dm-crypt /dev/loop3
+        status t_notable LUKS2 aes-xts-plain64 512 keyring "$T/l2.img"
+        printf '0 16384 crypt aes-xts-plain64 zz 0 7:4 0\n' > "$STUB/t_odd.table"
+        status t_odd PLAIN aes-xts-plain64 512 dm-crypt /dev/loop4
+        printf '0 32768 crypt aes-xts-plain64 :64:logon:cryptsetup:selftest-d1 0 7:5 32768\n' > "$STUB/t_nohdr.table"
+        status t_nohdr LUKS2 aes-xts-plain64 512 keyring "$T/no-such-device"
+        # with_list LINES NAME : a run NAME with another listing of dmsetup
+        with_list() {
+            local rc
+            cp "$STUB/ls.txt" "$STUB/ls.saved"; printf '%b' "$1" > "$STUB/ls.txt"
+            triage "$2"; rc=$?
+            mv "$STUB/ls.saved" "$STUB/ls.txt"; return "$rc"
+        }
         status t_table LUKS1 aes-xts-plain64 256 dm-crypt "$T/l1.img"
         status t_keyring LUKS2 aes-xts-plain64 512 keyring "$T/l2.img"
 
@@ -345,6 +388,34 @@ host = json.load(open(sys.argv[1]))["host"]
 sys.exit(0 if host == "pc/../../out [2Jside" else "host in the report: %r" % host)' "$T/names.d/verdict.json"
         }
         check "keytriage.sh keeps host and mapping names inside the evidence folder and off the terminal" triage_names
+        triage_edge() {
+            local d=$T/edge.d n
+            with_list 'No\t(253:4)\nmy data\t(253:5)\nt_null\t(253:6)\nt_notable\t(253:7)\nt_odd\t(253:8)\n' edge ||
+                { echo "keytriage.sh ended with status $?"; cat "$T/edge.txt"; return 1; }
+            for n in No "my data"; do
+                [ "$(verdict_of "$d" "$n")" = "captured, in use" ] || { echo "the mapping \"$n\" has the verdict \"$(verdict_of "$d" "$n")\""; return 1; }
+            done
+            cmp "$d/keys/No.vk" "$T/keys/other.vk" && cmp "$d/keys/my_data.vk" "$T/keys/other.vk" || return 1
+            [ "$(verdict_of "$d" t_null)" = "no key needed" ] && [ ! -e "$d/keys/t_null.vk" ] || { echo "the null cipher: $(verdict_of "$d" t_null)"; return 1; }
+            grep -q 'gave no table line' "$T/edge.txt" && [ "$(verdict_of "$d" t_notable)" = "captured and proven" ] || { echo "the mapping without a table line"; return 1; }
+            [ "$(verdict_of "$d" t_odd)" = "needs a memory read" ] && [ ! -e "$d/keys/t_odd.vk" ] || { echo "a key field that is no key: $(verdict_of "$d" t_odd)"; return 1; }
+            python3 -I keep-report.py "$d/verdict.json" --brief | grep -q '^  no key needed  *t_null: no key needed$' || { echo "keep-report.py does not class the null cipher"; return 1; }
+            python3 -I keep-report.py "$d/verdict.json" | grep -q '^    Evidence medium: ' || { echo "keep-report.py does not print the evidence medium"; return 1; }
+        }
+        check "keytriage.sh takes mappings named No and with a space, the null cipher, a missing table and a bad key field" triage_edge
+        triage_nohdr() {
+            with_list 't_nohdr\t(253:9)\n' nohdr || return 1
+            [ "$(verdict_of "$T/nohdr.d" t_nohdr)" = "needs a memory read" ] || return 1
+            [ "$(wc -l < "$T/nohdr.d/keys/kcore-candidates.txt")" -eq 7 ] || { echo "the candidate list is not kept"; return 1; }
+            grep -q ' keys/kcore-candidates.txt$' "$T/nohdr.d/manifest.sha256"
+        }
+        check "keytriage.sh keeps the candidate list of a volume whose header could not be backed up" triage_nohdr
+        triage_none() {
+            with_list 'No devices found\n' none || return 1
+            grep -q '^no open dm-crypt volumes$' "$T/none.txt" || return 1
+            [ "$(python3 -I -c 'import json, sys; print(len(json.load(open(sys.argv[1]))["volumes"]))' "$T/none.d/verdict.json")" = 0 ]
+        }
+        check "keytriage.sh reports no volume when dmsetup says that it found no devices" triage_none
     else
         skip "busybox is not installed: keytriage.sh is not run"
     fi
@@ -360,8 +431,18 @@ menu_dry() {
 check "keep-menu.sh asks, lists the command and runs nothing with -n" menu_dry
 menu_eof() { printf 'offline\n' | bash keep-menu.sh -n > /dev/null 2>&1; [ $? -eq 1 ]; }
 check "keep-menu.sh ends with status 1 when the input ends early" menu_eof
-usage() { local f; for f in keytriage.sh keep-menu.sh offline-keyscan.sh tests/selftest.sh; do bash "$f" -h | grep -q . || return 1; done; }
-check "the scripts print their usage with -h" usage
+# -h prints the whole comment at the head of a script, whatever its length, and a wrong option
+# is an error
+usage_text() {
+    local f
+    for f in keytriage.sh keep-menu.sh offline-keyscan.sh tests/selftest.sh; do
+        bash "$f" -h > "$T/usage.txt" || return 1
+        awk 'NR == 1 { next } !/^#/ { exit } { print }' "$f" | cmp -s - "$T/usage.txt" || { echo "$f -h does not print its head comment"; return 1; }
+        [ "$(wc -l < "$T/usage.txt")" -gt 5 ] || return 1
+        bash "$f" -Z > /dev/null 2>&1; [ $? -eq 2 ] || { echo "$f does not end with status 2 for a wrong option"; return 1; }
+    done
+}
+check "the scripts print their head comment with -h and refuse a wrong option with status 2" usage_text
 
 # ---- page --------------------------------------------------------------------------------------
 if [ -f docs/index.html ]; then

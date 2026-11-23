@@ -22,6 +22,8 @@
 #   captured, not proven  a key is read but no proof was possible or the proof failed
 #   needs a memory read   the key is not in reach of this run. A memory image keeps the route open
 #   live copy only        no key route is open, so only the mounted plaintext can be copied
+#   no key needed         the mapping has no key (key size 0, the null cipher): the device holds
+#                         the data as they are
 #
 # The ladder, in order, per volume:
 #   R1 table    the device-mapper table carries the key (LUKS1, plain, tcrypt, LUKS2 opened with
@@ -30,6 +32,8 @@
 #               key schedules are searched in /proc/kcore with kcore-keyscan, once for all volumes,
 #               and proven against the header. Blocked by kernel lockdown confidentiality. The
 #               search finds AES keys only, so a volume with another cipher gets no memory route.
+#               The list of the schedules found is kept in keys/ also when there is no header
+#               backup to prove against, because the lab verifier can prove from it.
 #   R5 live     the floor: nothing but a file-level copy of the mounted plaintext.
 #
 # No key is printed. A captured or recovered key is written only to the evidence medium (the header
@@ -75,7 +79,7 @@
 # hands a volume key to cryptsetup is chosen by what the installed release offers
 # (--volume-key-file from 2.5.0, --master-key-file before).
 
-VERSION="1.2.5 (2026-11)"
+VERSION="1.3.0 (2026-11)"
 umask 077                               # keys and the candidate list are written by this script
 case $0 in */*) KIT=${0%/*} ;; *) KIT=. ;; esac     # no dirname: no program runs before PATH is set
 KIT=$(cd "$KIT" && pwd)
@@ -254,7 +258,14 @@ say "  ${CSVER:-cryptsetup of unknown version}, a volume key is handed over with
 say ""
 
 # ---- enumerate the open crypt volumes ----------------------------------------------------------
-mapfile -t MAPS < <("$DMSETUP" ls --target crypt 2>/dev/null | awk 'NF>=1 && $1!="No" {print $1}' | sort)
+# "dmsetup ls" prints a mapping as its name, a tab and the device number in parentheses
+# (_display_name in dmsetup.c), and "No devices found" where there is no mapping at all. Only a
+# line of the first form is taken, and the name is all of it before the last tab, so a mapping
+# may be called "No" and may have a space in its name.
+MAPS=()
+while IFS= read -r line; do
+    case $line in *$'\t('*')') MAPS+=("${line%$'\t('*}") ;; esac
+done < <("$DMSETUP" ls --target crypt 2>/dev/null | sort)
 [ "${#MAPS[@]}" -gt 0 ] || say "no open dm-crypt volumes"
 [ "${#MAPS[@]}" -gt 0 ] && say "${#MAPS[@]} open dm-crypt volume(s): $(clean "${MAPS[*]}")"
 # The file name of each mapping. FAT and exFAT fold the case of a name, so two names that are the
@@ -334,9 +345,9 @@ for m in "${MAPS[@]}"; do
     # the table line of the crypt target: its cipher (4th token) and its key field (5th token),
     # which is the key in hexadecimal or a :size:type:description reference. The line is read
     # through a pipe by the shell itself, so the key passes no other program and no file.
-    tcip=""; keyfield=""
+    tcip=""; keyfield=""; tabled=0
     while read -r _ _ target c k _; do
-        [ "$target" = crypt ] && { tcip=$c; keyfield=$k; break; }
+        [ "$target" = crypt ] && { tabled=1; tcip=$c; keyfield=$k; break; }
     done < <("$DMSETUP" table --showkeys "$m" 2>/dev/null)
     # the class of the cipher, from the kernel's own table line when it is there
     case ${tcip:-$cip} in
@@ -358,8 +369,21 @@ for m in "${MAPS[@]}"; do
             fi ;;
     esac
 
+    # ---- the table names no key: dm-crypt writes "-" for a key of size 0 (crypt_status in
+    # dm-crypt.c), which is how cryptsetup sets up the null cipher ----
+    if [ "$keyfield" = - ]; then
+        say "  R1 table: the mapping has no key (key size 0), the device holds the data as they are"
+        verdict "no key needed" "R1 table" "" "key size 0 in the table, cipher ${tcip:-?}"
+        continue
+    fi
     # ---- R1: the table carries the key ----
-    if [ -n "$keyfield" ] && [ "${keyfield:0:1}" != ":" ]; then
+    case $keyfield in ''|:*) hexkey=0 ;; *[!0-9a-fA-F]*) hexkey=0 ;; *) hexkey=$(( ${#keyfield} % 2 == 0 )) ;; esac
+    if [ "$tabled" = 1 ] && [ "$hexkey" = 0 ] && [ "${keyfield:0:1}" != ":" ]; then
+        say "  R1 table: the key field of the table line is neither a key in hexadecimal nor a keyring reference"
+        verdict "needs a memory read" "" "" "the key field of the table line is not understood"
+        continue
+    fi
+    if [ "$hexkey" = 1 ]; then
         kf=$OUT/keys/$f.vk
         if ! { printf '%s' "$keyfield" | hex2bin > "$kf"; } || ! flush "$kf" "$OUT/keys"; then
             say "  R1 table: the key is in the table and could not be written to the evidence medium"
@@ -383,8 +407,12 @@ for m in "${MAPS[@]}"; do
         continue
     fi
 
-    # ---- the table carries only a keyring reference ----
-    say "  R1 table: keyring reference ${keyfield} (no key in the table)"
+    # ---- the table carries only a keyring reference, or could not be read ----
+    if [ "$tabled" = 1 ]; then
+        say "  R1 table: keyring reference ${keyfield} (no key in the table)"
+    else
+        say "  R1 table: dmsetup gave no table line of a crypt target, so the table route is not open"
+    fi
     if [ "$cclass" = other ]; then
         say "  R3 memory: the cipher ${tcip:-${cip:-?}} is not AES, so the AES schedule search does not apply"
         verdict "live copy only" "" "" "a memory image keeps another method open"
@@ -395,11 +423,6 @@ for m in "${MAPS[@]}"; do
         verdict "live copy only" "" "" "lockdown confidentiality"
         continue
     fi
-    if [ -z "$hdr" ] || [ -z "$ksz" ]; then
-        say "  R3 memory: no header to prove against"
-        verdict "needs a memory read" "" "" "no header backup, the lab searches the image"
-        continue
-    fi
 
     # ---- R3: search the schedules in /proc/kcore and prove against the header ----
     scan_once
@@ -408,6 +431,11 @@ for m in "${MAPS[@]}"; do
             *"not permitted"*) verdict "live copy only" "" "" "the kernel refused the read of /proc/kcore" ;;
             *)                 verdict "needs a memory read" "" "" "the search of /proc/kcore failed" ;;
         esac
+        continue
+    fi
+    if [ -z "$hdr" ] || [ -z "$ksz" ]; then
+        say "  R3 memory: no header backup or no key size to prove against"
+        verdict "needs a memory read" "" "" "no proof on scene, the candidate list is kept for the lab verifier"
         continue
     fi
     kf=$OUT/keys/$f.vk

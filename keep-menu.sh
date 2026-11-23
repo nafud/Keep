@@ -26,7 +26,7 @@
 # dialogue ended without a run, 2 for a wrong option.
 set -u
 umask 077                               # a candidate list holds key material
-VERSION="2.1 (2026-11)"
+VERSION="2.2 (2026-11)"
 ME=keep-menu.sh
 case $0 in */*) HERE=${0%/*} ;; *) HERE=. ;; esac   # no dirname: nothing external before PATH is set
 HERE=$(cd "$HERE" && pwd)
@@ -37,10 +37,17 @@ if [ -x "$HERE/bin/busybox" ]; then PATH=$HERE/bin; else PATH=$SYSDIRS; fi
 export PATH LC_ALL=C TZ=UTC
 TRIAGE=$HERE/keytriage.sh
 OFFLINE=$HERE/offline-keyscan.sh
+# the comment at the head of this file, read by the shell itself
+usage() {
+    local line
+    while IFS= read -r line; do
+        case $line in '#!'*) ;; '#'*) printf '%s\n' "$line" ;; *) break ;; esac
+    done < "$0"
+}
 DRY=0
 case ${1:-} in
     -n) DRY=1 ;;
-    -h|--help) sed -n '2,26p' "$0"; exit 0 ;;
+    -h|--help) usage; exit 0 ;;
     '') ;;
     *) printf 'usage: %s [-n]\n' "$ME" >&2; exit 2 ;;
 esac
@@ -110,7 +117,10 @@ sysinfo() {
     irow "Memory" "$(awk '/^MemTotal:/ {printf "%d MiB", $2 / 1024}' /proc/meminfo)"
     local dmsetup; dmsetup=$(sysprog dmsetup)
     if [ "$(id -u)" = 0 ] && [ -n "$dmsetup" ]; then
-        mapfile -t names < <("$dmsetup" ls --target crypt 2>/dev/null | awk 'NF>=1 && $1!="No" {print $1}' | sort)
+        # a mapping is a line with a tab before the device number, as in keytriage.sh
+        while IFS= read -r f; do
+            case $f in *$'\t('*')') names+=("${f%$'\t('*}") ;; esac
+        done < <("$dmsetup" ls --target crypt 2>/dev/null | sort)
         irow "Open dm-crypt volumes" "${#names[@]}${names[*]:+ (${names[*]})}"
     else
         irow "Open dm-crypt volumes" "not listed, that needs root and dmsetup"

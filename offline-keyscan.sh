@@ -19,14 +19,23 @@
 # scanner summary), verdict.json (schema keep-report/1) and manifest.sha256, none of which
 # holds a key value, and keys/ (mode 700) with candidates.txt, the schedules found, and one
 # NAME.vk per proven volume key for "cryptsetup open --volume-key-file". keep-report.py
-# prints verdict.json. Exit status 0 when every located header is proven, else 1.
+# prints verdict.json. Exit status 0 when every located header is proven, 2 for a wrong option,
+# else 1.
 set -u
 umask 077
+# the comment at the head of this file, read by the shell itself
+usage() {
+    local line
+    while IFS= read -r line; do
+        case $line in '#!'*) ;; '#'*) printf '%s\n' "$line" ;; *) break ;; esac
+    done < "$0"
+}
 KIT=""
 while getopts "k:h" opt; do
     case $opt in
         k) KIT=$OPTARG ;;
-        *) sed -n '2,22p' "$0"; exit 0 ;;
+        h) usage; exit 0 ;;
+        *) printf 'usage: offline-keyscan.sh [-k KIT] DUMP IMAGE..., -h prints the description\n' >&2; exit 2 ;;
     esac
 done
 shift $((OPTIND - 1))

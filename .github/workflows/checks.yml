@@ -96,7 +96,7 @@ jobs:
       - name: Install the parts of the medium, cryptsetup and dmsetup
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends bash-static busybox-static xorriso cryptsetup-bin dmsetup
+          sudo apt-get install -y -q --no-install-recommends bash-static busybox-static xorriso cryptsetup-bin dmsetup dosfstools
       - name: What the runner offers
         run: |
           uname -r
@@ -112,6 +112,8 @@ jobs:
         run: |
           sudo bash tests/compat-check.sh "$RUNNER_TEMP/work/tools" | tee "$RUNNER_TEMP/compat.txt"
           grep -q '^RESULT: PASS$' "$RUNNER_TEMP/compat.txt"
+          # on these runners no part may be skipped
+          ! grep '^SKIP' "$RUNNER_TEMP/compat.txt"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:

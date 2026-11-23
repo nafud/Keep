@@ -1,7 +1,10 @@
 /*
  * kcore-keyscan: find AES-128 and AES-256 key schedules in memory.
  *
- *   kcore-keyscan [-s STEP] [FILE]        FILE defaults to /proc/kcore
+ *   kcore-keyscan [-s STEP] [-r] [FILE]   FILE defaults to /proc/kcore
+ *
+ *   -s STEP   test only the addresses that are a multiple of STEP
+ *   -r        read FILE as raw bytes, whatever its first bytes are
  *
  * FILE is the running kernel's /proc/kcore (route R3, nothing is written), or a memory image
  * (route R4). The format is recognised from the first bytes:
@@ -10,6 +13,11 @@
  *                areas the physical address -1, so those are left out and RAM is read once.
  *   LiME         the image AVML writes: a 32-byte header with the physical range, then the range.
  *   raw          anything else, scanned from the first byte to the last.
+ * A schedule is found only where it lies in the file as it lay in memory. A file that begins
+ * like a compressed AVML image, a kdump or makedumpfile file, or a gzip, xz, zstd, bzip2 or lz4
+ * file holds memory in another form, and searching it as raw bytes finds some schedules or none
+ * and looks like a search that found no key. Such a file is refused with status 1. -r searches
+ * it all the same, for a raw image that happens to begin with one of those marks.
  *
  * A key schedule is the list of round keys that AES derives from a key (FIPS-197, section 5.2).
  * The kernel keeps the schedule, not only the key, and the first 16 or 32 bytes of the schedule
@@ -41,6 +49,7 @@
 #define CHUNK   (1u << 20)      /* bytes read at once */
 #define KEEP    240             /* longest schedule: bytes kept in front of the next chunk */
 #define MAXHIT  4096
+#define VERSION "1.1"
 #define NONE    (~0ULL)
 
 static uint8_t sbox[256];
@@ -202,19 +211,39 @@ static int full_read(int fd, void *p, size_t n, uint64_t off)
     return pread(fd, p, n, (off_t)off) == (ssize_t)n;
 }
 
+/*
+ * The first bytes of the formats that hold memory in another form than it had, each from the
+ * specification or the source of its format, and what to do with such a file.
+ */
+static const struct { const char *mark; size_t len; const char *name, *advice; } packed[] = {
+    /* AVML src/image.rs: AVML_MAGIC 0x4c4d5641 little-endian, with version 2 for snappy blocks */
+    {"AVML\2\0\0\0", 8, "a compressed AVML image", "\"avml convert FILE OUT\" writes it as a LiME image"},
+    /* makedumpfile diskdump_mod.h: KDUMP_SIGNATURE and DISK_DUMP_SIGNATURE; makedumpfile.h: MAKEDUMPFILE_SIGNATURE */
+    {"KDUMP   ", 8, "a kdump file of makedumpfile", "a dump that \"makedumpfile -E\" writes is in the ELF format, which is read"},
+    {"DISKDUMP", 8, "a diskdump file", "a dump that \"makedumpfile -E\" writes is in the ELF format, which is read"},
+    {"makedumpfile", 12, "a makedumpfile file in the flattened format", "\"makedumpfile -R OUT < FILE\" rebuilds the dump file"},
+    {"\x1f\x8b", 2, "a gzip file", "decompress it first"},              /* RFC 1952, 2.3.1 */
+    {"\xfd" "7zXZ", 6, "an xz file", "decompress it first"},           /* .xz file format, 2.1.1.1 */
+    {"\x28\xb5\x2f\xfd", 4, "a zstd file", "decompress it first"},    /* RFC 8878, 3.1.1: 0xFD2FB528 */
+    {"BZh", 3, "a bzip2 file", "decompress it first"},
+    {"\x04\x22\x4d\x18", 4, "an lz4 file", "decompress it first"},    /* LZ4 frame format: 0x184D2204 */
+};
+
 int main(int argc, char **argv)
 {
     const char *path = "/proc/kcore", *format;
     unsigned char head[64];
     struct timespec t0, t1;
     struct stat st;
-    int fd, i, j, nseg = 0, n128 = 0, n256 = 0, u128 = 0, u256 = 0;
+    int fd, i, j, raw = 0, nseg = 0, n128 = 0, n256 = 0, u128 = 0, u256 = 0;
 
     while (argc > 1 && argv[1][0] == '-') {
         if (!strcmp(argv[1], "-s") && argc > 2 && atoi(argv[2]) > 0) {
             step = (unsigned)atoi(argv[2]); argv += 2; argc -= 2;
+        } else if (!strcmp(argv[1], "-r")) {
+            raw = 1; argv++; argc--;
         } else {
-            fprintf(stderr, "usage: kcore-keyscan [-s STEP] [FILE]   (FILE defaults to /proc/kcore)\n");
+            fprintf(stderr, "usage: kcore-keyscan [-s STEP] [-r] [FILE]   (FILE defaults to /proc/kcore)\n");
             return 2;
         }
     }
@@ -231,9 +260,21 @@ int main(int argc, char **argv)
         fprintf(stderr, "kcore-keyscan: %s: %s\n", path, strerror(errno));
         return 1;
     }
+    for (i = 0; !raw && i < (int)(sizeof packed / sizeof packed[0]); i++)
+        if (!memcmp(head, packed[i].mark, packed[i].len)) {
+            fprintf(stderr, "kcore-keyscan: %s begins like %s. Such a file holds memory in another form, and a "
+                    "search of its bytes misses key schedules, so it is not searched: %s. -r searches it as "
+                    "raw bytes all the same.\n",
+                    path, packed[i].name, packed[i].advice);
+            return 1;
+        }
     clock_gettime(CLOCK_MONOTONIC, &t0);
 
-    if (!memcmp(head, ELFMAG, SELFMAG) && head[EI_CLASS] == ELFCLASS64 && head[EI_DATA] == ELFDATA2LSB) {
+    if (raw) {
+        format = "raw";
+        scan(fd, 0, (uint64_t)st.st_size, 0, NONE);
+        nseg = 1;
+    } else if (!memcmp(head, ELFMAG, SELFMAG) && head[EI_CLASS] == ELFCLASS64 && head[EI_DATA] == ELFDATA2LSB) {
         Elf64_Ehdr eh;
         Elf64_Phdr ph;
 
@@ -277,8 +318,8 @@ int main(int argc, char **argv)
         if (hits[i].nk == 4) { n128++; u128 += j == i; } else { n256++; u256 += j == i; }
     }
     fflush(stdout);
-    fprintf(stderr, "kcore-keyscan: %s, %s, %d segment%s, %llu bytes (%.2f GiB), %.1f seconds\n",
-            path, format, nseg, nseg == 1 ? "" : "s", nbytes, nbytes / 1073741824.0,
+    fprintf(stderr, "kcore-keyscan %s: %s, %s, %d segment%s, %llu bytes (%.2f GiB), %.1f seconds\n",
+            VERSION, path, format, nseg, nseg == 1 ? "" : "s", nbytes, nbytes / 1073741824.0,
             (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9);
     fprintf(stderr, "kcore-keyscan: AES-128 schedules: %d (%d different keys), "
             "AES-256 schedules: %d (%d different keys)\n", n128, u128, n256, u256);
