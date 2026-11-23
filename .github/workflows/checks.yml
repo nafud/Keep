@@ -98,7 +98,7 @@ jobs:
       - name: Install the parts of the medium, cryptsetup and dmsetup
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends bash-static busybox-static xorriso cryptsetup-bin dmsetup dosfstools
+          sudo apt-get install -y -q --no-install-recommends bash-static busybox-static xorriso cryptsetup-bin dmsetup dosfstools lvm2
       - name: What the runner offers
         run: |
           uname -r
