@@ -17,6 +17,7 @@
 #              on the report, and a candidate list without the keys, which must not prove. The
 #              same headers with their keyslots erased, cut short, malformed, and under one name.
 #              The disk image again as qemu-img writes it in the formats of virtual machines
+#              and as ewfacquirestream writes it as an EnCase image
 #   proof      the proof command of keytriage.sh on the same headers, with the key and with another
 #   triage     keytriage.sh itself on stand-ins for the examined system's dmsetup, cryptsetup
 #              status, /proc/kcore and AVML, with the same headers, the real header backup and proof
@@ -28,7 +29,7 @@
 # On real device-mapper and a real /proc/kcore keytriage.sh is checked by compat-check.sh.
 #
 # Programs: bash, gcc with a static libc and python3, and for the full run shellcheck,
-# cryptsetup, busybox and qemu-img. With bash-static installed keytriage.sh runs in it, as on the medium.
+# cryptsetup, busybox, qemu-img and ewfacquirestream. With bash-static installed keytriage.sh runs in it, as on the medium.
 # Ends with "RESULT: PASS" and status 0, or with "RESULT: FAIL" and status 1.
 set -u
 umask 077
@@ -225,12 +226,10 @@ if command -v cryptsetup >/dev/null; then
     # the verifier must read from each the disk as it is, byte for byte, find both headers at
     # the offsets they have on the disk and prove both keys. A VHD is a little larger than the
     # disk it was made from, because its size is rounded to whole cylinders: zeros follow.
-    if command -v qemu-img >/dev/null; then
-        mkdir "$T/vm"
-        vmdisk() {  # vmdisk FILE FORMAT [qemu-img option...]
-            local f=$T/vm/$1 fmt=$2; shift 2
-            qemu-img convert -f raw -O "$fmt" "$@" "$T/disk.dd" "$f" 2> "$T/vm.err" || { echo "qemu-img: $(cat "$T/vm.err")"; return 1; }
-            python3 -I -c 'import importlib.util, sys
+    mkdir "$T/vm"
+    as_disk() {  # as_disk FILE : the reader gives the disk, and both keys are proven from it
+        local f=$1
+        python3 -I -c 'import importlib.util, sys
 spec = importlib.util.spec_from_file_location("vkverify", "vkverify.py")
 vk = importlib.util.module_from_spec(spec); spec.loader.exec_module(vk)
 raw, files = open(sys.argv[1], "rb").read(), []
@@ -240,9 +239,15 @@ if disk.kind == "raw" or data[:len(raw)] != raw or any(data[len(raw):]):
     sys.exit("%s is read as %s and differs from the disk" % (sys.argv[2], disk.kind))
 if disk.read_at(len(raw) // 2 - 7, 70001) != raw[len(raw) // 2 - 7:len(raw) // 2 + 69994]:
     sys.exit("a read across the borders of blocks differs from the disk")' "$T/disk.dd" "$f" || return 1
-            rm -rf "$T/vm/keys"
-            python3 -I vkverify.py "$T/keys/cand.lime.txt" --image "$f" --out "$T/vm/keys" > "$T/vm.txt" 2>/dev/null || { echo "not every header is proven"; cat "$T/vm.txt"; return 1; }
-            cmp "$T/vm/keys/${f##*/}@0x100000.vk" "$T/keys/k256.vk" && cmp "$T/vm/keys/${f##*/}@0x2400000.vk" "$T/keys/k128.vk"
+        rm -rf "$T/vm/keys"
+        python3 -I vkverify.py "$T/keys/cand.lime.txt" --image "$f" --out "$T/vm/keys" > "$T/vm.txt" 2>/dev/null || { echo "not every header is proven"; cat "$T/vm.txt"; return 1; }
+        cmp "$T/vm/keys/${f##*/}@0x100000.vk" "$T/keys/k256.vk" && cmp "$T/vm/keys/${f##*/}@0x2400000.vk" "$T/keys/k128.vk"
+    }
+    if command -v qemu-img >/dev/null; then
+        vmdisk() {  # vmdisk FILE FORMAT [qemu-img option...]
+            local f=$T/vm/$1 fmt=$2; shift 2
+            qemu-img convert -f raw -O "$fmt" "$@" "$T/disk.dd" "$f" 2> "$T/vm.err" || { echo "qemu-img: $(cat "$T/vm.err")"; return 1; }
+            as_disk "$f"
         }
         check "vkverify.py reads a qcow2 disk"                               vmdisk d.qcow2 qcow2
         check "vkverify.py reads a qcow2 disk with compressed clusters"      vmdisk d-c.qcow2 qcow2 -c
@@ -276,6 +281,38 @@ if disk.read_at(len(raw) // 2 - 7, 70001) != raw[len(raw) // 2 - 7:len(raw) // 2
         check "vkverify.py names a disk format it does not read, and the backing file of an overlay" vm_refused
     else
         skip "qemu-img is not installed: the disks of virtual machines are not checked"
+    fi
+    # The same disk as an EnCase image, as ewfacquirestream of libewf writes it: with and without
+    # compression, in the older format of SMART, and in segment files of 8 MiB. Searched as raw
+    # bytes such an image gives no header, also without compression. A missing segment, a cut
+    # one and a chunk that differs from its checksum are named.
+    if command -v ewfacquirestream >/dev/null; then
+        ewf() {  # ewf NAME [ewfacquirestream option...]
+            local n=$1; shift
+            ewfacquirestream -C c -D d -e e -E e -N n -t "$T/vm/$n" "$@" < "$T/disk.dd" > "$T/ewf.log" 2>&1 || { tail -n 3 "$T/ewf.log"; return 1; }
+            as_disk "$T/vm/$n.E01"
+        }
+        check "vkverify.py reads an E01 image with compressed chunks"        ewf e-fast -c fast
+        check "vkverify.py reads an E01 image without compression"           ewf e-none -c none
+        check "vkverify.py reads an E01 image in the SMART format"           ewf e-smart -f smart -c fast
+        check "vkverify.py reads an E01 image in several segment files"      ewf e-split -c fast -S 8M
+        ewf_damaged() {
+            local d=$T/vm/dmg
+            [ -f "$T/vm/e-split.E03" ] || { echo "the image has fewer than three segment files"; return 1; }
+            mkdir "$d" "$d/miss" "$d/cut" && cp "$T/vm/e-split.E01" "$d/miss/" && cp "$T/vm/e-split.E01" "$T/vm/e-split.E02" "$d/cut/" || return 1
+            head -c 100000 "$T/vm/e-split.E03" > "$d/cut/e-split.E03"
+            python3 -I -c 'import sys
+d = bytearray(open(sys.argv[1], "rb").read()); d[len(d) // 2] ^= 1; open(sys.argv[2], "wb").write(d)' "$T/vm/e-none.E01" "$d/flip.E01" || return 1
+            local f want
+            for f in "miss/e-split.E01:is not beside the first one" "cut/e-split.E01:it is cut" "flip.E01:differs from its checksum"; do
+                want=${f#*:}; f=${f%%:*}
+                python3 -I vkverify.py "$T/keys/cand.lime.txt" --image "$d/$f" > "$T/vm.txt" 2>/dev/null
+                [ $? -eq 1 ] && grep -q "$want" "$T/vm.txt" || { echo "$f: not named as \"$want\""; cat "$T/vm.txt"; return 1; }
+            done
+        }
+        check "vkverify.py names a missing or cut segment and a damaged chunk of an E01 image" ewf_damaged
+    else
+        skip "ewfacquirestream is not installed: EnCase images are not checked"
     fi
 
     refuse() {

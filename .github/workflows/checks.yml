@@ -38,7 +38,7 @@ jobs:
       - name: Install shellcheck, cryptsetup and the shell and applets of the medium
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends shellcheck cryptsetup-bin bash-static busybox-static qemu-utils
+          sudo apt-get install -y -q --no-install-recommends shellcheck cryptsetup-bin bash-static busybox-static qemu-utils ewf-tools
       - name: Versions
         run: |
           bash --version | head -n 1

@@ -26,10 +26,14 @@ HEADER is a LUKS1 or LUKS2 header that starts at the beginning of the file: a fi
                 VDI     dynamic and fixed
                 VHD     dynamic and fixed
                 VHDX    dynamic and fixed, without a log to replay
+              DISK may also be an EnCase image, E01, with its further segment files (E02 and
+              so on) beside it. Its chunks are decompressed and, where they are stored as
+              they are, compared with their checksums.
               What is recognised and not read is named and not searched as raw bytes: a qcow2
               image that is encrypted, has zstd clusters, extended L2 entries or an external
-              data file, an ESXi sparse extent, a VHDX file with a log, QED and Parallels.
-              "qemu-img convert -O raw" writes such a disk as a raw image. A block that only a
+              data file, an ESXi sparse extent, a VHDX file with a log, QED, Parallels, an
+              EnCase image of version 2 (Ex01) and AFF.
+              "qemu-img convert -O raw" writes such a disk of a virtual machine as a raw image. A block that only a
               parent or backing image holds reads as zeros, and that image is named.
 
 The proof. A LUKS header stores a digest of its volume key: PBKDF2 over the key, with the salt
@@ -79,7 +83,7 @@ import time
 import uuid
 import zlib
 
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 XTS_DISTANCE = 496      # data schedule minus tweak schedule, struct aesni_xts_ctx
 LINE = re.compile(r"^AES-(128|256) phys (0x[0-9a-f]+) virt (\S+) key ([0-9a-f]+)\s*$")
 SHOW = False
@@ -587,6 +591,103 @@ class Vhdx(Mapped):
         return (e >> 20) << 20 if e & 7 in (6, 7) else None
 
 
+class Ewf(Mapped):
+    """An EnCase image, E01 (Expert Witness Compression Format, as libewf documents it): one or
+    more segment files, each a 13-byte file header and a chain of sections. The volume section
+    gives the size of a chunk and of the disk, and each table section one 32-bit entry per
+    chunk: its offset in the file, with the highest bit set for a chunk compressed with zlib.
+    A chunk that is stored as it is has its Adler-32 behind it. Little-endian."""
+    kind = "EWF (E01)"
+
+    def __init__(self, path, f, files):
+        self.files, self.chunks, self.block, self.size = [], [], 0, 0
+        self.notes = []
+        number, name = 1, path
+        while True:
+            f.seek(0)
+            head = f.read(13)
+            if head[:8] != b"EVF\x09\x0d\x0a\xff\x00" or struct.unpack("<H", head[9:11])[0] != number:
+                raise DiskError(f"{os.path.basename(name)} is not segment {number} of the EWF image"
+                                + (". Give its first segment file, which ends in E01" if number == 1 else ""))
+            self.files.append(f)
+            last = self.sections(f, len(self.files) - 1, os.path.getsize(name))
+            if last == b"done":
+                break
+            if last != b"next":
+                raise DiskError(f"{os.path.basename(name)} ends without the section that closes a segment, it is cut")
+            number += 1
+            name = self.segment(path, number)
+            try:
+                f = open(name, "rb")
+            except OSError:
+                raise DiskError(f"segment {number} of the EWF image, {os.path.basename(name)}, is not beside the first one") from None
+            files.append(f)
+        if not self.block or not self.size:
+            raise DiskError("the EWF image has no volume section")
+        if len(self.chunks) * self.block < self.size:
+            raise DiskError(f"the EWF image holds {len(self.chunks)} chunks, fewer than its disk of {self.size} bytes needs")
+        if len(self.files) > 1:
+            self.kind = f"EWF (E01) in {len(self.files)} segment files"
+
+    @staticmethod
+    def segment(path, number):
+        """The file of a segment: .E01 to .E99, then .EAA, .EAB and so on, in the case of the first."""
+        stem, first = path[:-2], path[-3]
+        if number <= 99:
+            return f"{stem}{number:02d}"
+        n = number - 100
+        letters = chr(ord(first.upper()) + n // 676) + chr(65 + n // 26 % 26) + chr(65 + n % 26)
+        return path[:-3] + (letters if first.isupper() else letters.lower())
+
+    def sections(self, f, index, fsize):
+        """Walk the sections of one segment file and return the type of the last one."""
+        off, kind = 13, b""
+        while off + 76 <= fsize:
+            d = need(f, off, 76, "a section of the EWF image")
+            kind = d[:16].split(b"\0")[0]
+            nxt, size = struct.unpack("<QQ", d[16:32])
+            if kind in (b"volume", b"disk") and not self.block:
+                v = need(f, off + 76, 24, "the volume section of the EWF image")
+                chunks, per_chunk, sector = struct.unpack("<III", v[4:16])
+                # the section of EnCase is 1052 bytes with a 64-bit number of sectors, that of
+                # the older SMART format 94 bytes with a 32-bit one
+                sectors = struct.unpack("<Q", v[16:24])[0] if size - 76 >= 1052 else struct.unpack("<I", v[16:20])[0]
+                if not per_chunk or not sector or per_chunk * sector > 1 << 26:
+                    raise DiskError("chunk size of the EWF image out of range")
+                self.block, self.size = per_chunk * sector, sectors * sector
+            elif kind == b"table":
+                t = need(f, off + 76, 24, "a table of the EWF image")
+                count, base = struct.unpack("<I", t[:4])[0], struct.unpack("<Q", t[8:16])[0]
+                if count > 1 << 24 or count * 4 > fsize:
+                    raise DiskError("a table of the EWF image does not fit the file")
+                for e in struct.unpack(f"<{count}I", need(f, off + 100, count * 4, "a table of the EWF image")):
+                    self.chunks.append((index, base + (e & 0x7FFFFFFF), bool(e >> 31)))
+            if kind in (b"done", b"next") or nxt <= off:
+                break
+            off = nxt
+        return kind
+
+    def where(self, i):
+        if i >= len(self.chunks):
+            return None
+        index, off, packed = self.chunks[i]
+        f = self.files[index]
+        want = min(self.block, self.size - i * self.block)
+        f.seek(off)
+        if packed:
+            try:
+                return zlib.decompressobj().decompress(f.read(self.block + 1024), self.block)
+            except zlib.error as err:
+                raise DiskError(f"chunk {i} of the EWF image cannot be decompressed ({err})") from None
+        data = f.read(want + 4)
+        if len(data) != want + 4 or zlib.adler32(data[:want]) != struct.unpack("<I", data[want:])[0]:
+            raise DiskError(f"chunk {i} of the EWF image is cut or differs from its checksum")
+        return data[:want]
+
+    def stored(self, i):
+        return True
+
+
 def open_disk(path, files):
     """The disk in the image file at path, as the guest saw it. The kind is told from the first
     bytes of the file, and for a VHD from its last 512. Every file that is opened is added to
@@ -595,6 +696,14 @@ def open_disk(path, files):
     files.append(f)
     size = os.path.getsize(path)
     head = f.read(4096)
+    if head[:8] == b"EVF\x09\x0d\x0a\xff\x00":
+        return Ewf(path, f, files)
+    if head[:8] == b"EVF2\x0d\x0a\x81\x00":
+        raise DiskError('it is an EnCase image of version 2 (Ex01), which is not read. "ewfexport" of libewf writes it as a raw image')
+    if head[:8] in (b"LVF\x09\x0d\x0a\xff\x00", b"LEF2\x0d\x0a\x81\x00"):
+        raise DiskError("it is a logical evidence file of EnCase, which holds files and no disk")
+    if head[:7] == b"AFF10\x0d\x0a":
+        raise DiskError('it is an AFF image, which is not read. "affconvert -r" of AFFLIB writes it as a raw image')
     if head[:4] == b"QFI\xfb":
         return Qcow2(f, size)
     if head[:4] == b"KDMV":
