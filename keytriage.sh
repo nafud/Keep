@@ -2,12 +2,14 @@
 # keytriage.sh, the scene-side script of Keep: decryption-readiness triage for an unlocked
 # Linux system.
 #
-#   sudo /media/tools/bin/bash /media/tools/keytriage.sh [-e DIR] [-b BUDGET] [-m] [-f]
+#   sudo /media/tools/bin/bash /media/tools/keytriage.sh [-e DIR] [-b BUDGET] [-m] [-f] [-p DIRS]
 #
 #   -e DIR   evidence directory, on the evidence medium (default /media/evidence)
 #   -b N     memory-route proof budget: stop after N proof attempts per volume (default 64)
 #   -m       after the keys, also write a memory image to the evidence medium (see below)
 #   -f       accept an evidence directory on the examined system's own disk (for a test)
+#   -p DIRS  where the examined system keeps dmsetup and cryptsetup, directories with full paths
+#            separated by colons (default /usr/sbin:/usr/bin:/sbin:/bin:/usr/local/sbin:/usr/local/bin)
 #   -h       this text
 #
 # The machine is met running with its encrypted storage unlocked. Powering it off turns the data
@@ -66,30 +68,43 @@
 # name cannot leave the evidence directory and FAT and exFAT take it.
 #
 # Needs root. The shell is the kit's bash-static and the utilities its static busybox, so the
-# script does not depend on the distribution. dmsetup and cryptsetup are the suspect's own. They
-# are looked up in the usual system directories, and the option that hands a volume key to
-# cryptsetup is chosen by what the installed release offers (--volume-key-file from 2.5.0,
-# --master-key-file before).
+# script does not depend on the distribution. PATH is the bin/ of the medium and nothing else, so
+# a program that the medium lacks is an error and is never taken from the examined system.
+# dmsetup and cryptsetup are the suspect's own and the only programs run from outside the medium.
+# They are looked up in the directories of -p and run by their full paths, and the option that
+# hands a volume key to cryptsetup is chosen by what the installed release offers
+# (--volume-key-file from 2.5.0, --master-key-file before).
 
-VERSION="1.2.4 (2026-11)"
+VERSION="1.2.5 (2026-11)"
 umask 077                               # keys and the candidate list are written by this script
-KIT=$(cd "$(dirname "$0")" && pwd)
+case $0 in */*) KIT=${0%/*} ;; *) KIT=. ;; esac     # no dirname: no program runs before PATH is set
+KIT=$(cd "$KIT" && pwd)
 BIN=$KIT/bin
-PATH=$BIN:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/sbin:/usr/local/bin
+PATH=$BIN
 export PATH LC_ALL=C TZ=UTC
+SYSDIRS=/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/sbin:/usr/local/bin
 
 EVID=/media/evidence
 BUDGET=64
 MEMORY=0
 FORCE=0
 MOUNTS=/proc/mounts
-while getopts "e:b:mfh" opt; do
+# the comment at the head of this file, read by the shell itself, so that -h needs no medium
+usage() {
+    local line
+    while IFS= read -r line; do
+        case $line in '#!'*) ;; '#'*) printf '%s\n' "$line" ;; *) break ;; esac
+    done < "$0"
+}
+while getopts "e:b:mfp:h" opt; do
     case $opt in
         e) EVID=$OPTARG ;;
         b) BUDGET=$OPTARG ;;
         m) MEMORY=1 ;;
         f) FORCE=1 ;;
-        *) sed -n '2,52p' "$0"; exit 0 ;;
+        p) SYSDIRS=$OPTARG ;;
+        h) usage; exit 0 ;;
+        *) printf 'usage: keytriage.sh [-e DIR] [-b BUDGET] [-m] [-f] [-p DIRS], -h prints the description\n' >&2; exit 2 ;;
     esac
 done
 
@@ -107,6 +122,15 @@ jesc() {                                        # a string as the inside of a JS
     local s=${1//\\/\\\\}; s=${s//\"/\\\"}; s=${s//[$'\001'-$'\037']/ }; printf '%s' "$s"
 }
 jstr() { if [ -n "$1" ]; then printf '"%s"' "$(jesc "$1")"; else printf 'null'; fi; }
+# sysprog NAME : the full path of a program of the examined system, from the directories of -p
+sysprog() {
+    local d IFS=:
+    for d in $SYSDIRS; do
+        case $d in /*) ;; *) continue ;; esac
+        [ -f "$d/$1" ] && [ -x "$d/$1" ] && { printf '%s' "$d/$1"; return 0; }
+    done
+    return 1
+}
 # a name of the examined system for the screen: the kernel takes any byte in a host name and in a
 # mapping name, so control characters are replaced before the name reaches a terminal
 clean() { printf '%s' "${1//[$'\001'-$'\037'$'\177']/ }"; }
@@ -158,6 +182,7 @@ under() {
 }
 
 # ---- preflight ---------------------------------------------------------------------------------
+[ -x "$BIN/busybox" ] || die "no medium beside this script: $BIN/busybox is missing (build-toolkit.sh makes the medium)"
 [ "$(id -u)" = 0 ] || die "must run as root (sudo)"
 [ -d "$EVID" ] || die "the evidence directory $EVID does not exist"
 EVID=$(cd "$EVID" && pwd -P) || die "cannot enter the evidence directory"
@@ -181,10 +206,10 @@ fi
 case ,$M_OPTS, in *,ro,*) die "$EVID is on a file system that is mounted read-only: $MEDIUM" ;; esac
 [ -w "$EVID" ] || die "$EVID is not writable"
 case $BUDGET in ''|*[!0-9]*) die "the budget must be a number" ;; esac
-command -v dmsetup   >/dev/null || die "dmsetup not found on the suspect"
-command -v cryptsetup>/dev/null || die "cryptsetup not found on the suspect"
-command -v kcore-keyscan >/dev/null || die "kcore-keyscan not on PATH (tool medium)"
-[ "$MEMORY" = 0 ] || command -v avml >/dev/null || die "avml not on PATH (tool medium), needed for -m"
+DMSETUP=$(sysprog dmsetup) || die "no dmsetup of the examined system in $SYSDIRS (see -p)"
+CRYPTSETUP=$(sysprog cryptsetup) || die "no cryptsetup of the examined system in $SYSDIRS (see -p)"
+[ -x "$BIN/kcore-keyscan" ] || die "kcore-keyscan is not on the medium ($BIN)"
+[ "$MEMORY" = 0 ] || [ -x "$BIN/avml" ] || die "avml is not on the medium ($BIN), needed for -m"
 
 HOST=$(clean "$(hostname)")
 OUT=$EVID/triage_$(fname "$HOST")_$(stamp)
@@ -202,8 +227,8 @@ for f in /etc/os-release /usr/lib/os-release; do
     [ -r "$f" ] && { OSNAME=$(sed -n 's/^PRETTY_NAME=//p' "$f" | head -n 1 | tr -d '"'); break; }
 done
 # the option that hands a volume key to cryptsetup: renamed in release 2.5.0
-CSVER=$(cryptsetup --version 2>/dev/null | head -n 1 | awk '{print $1, $2}')
-if cryptsetup --help 2>&1 | grep -q -e '--volume-key-file'; then VKOPT=--volume-key-file; else VKOPT=--master-key-file; fi
+CSVER=$("$CRYPTSETUP" --version 2>/dev/null | head -n 1 | awk '{print $1, $2}')
+if "$CRYPTSETUP" --help 2>&1 | grep -q -e '--volume-key-file'; then VKOPT=--volume-key-file; else VKOPT=--master-key-file; fi
 
 # ---- banner ------------------------------------------------------------------------------------
 : > "$REPORT"
@@ -220,8 +245,8 @@ say ""
 # the suspect's R1 binaries, recorded for the later archive check
 say "R1 binaries (suspect's own, hashes to be checked against the archive):"
 JBIN=()
-for b in dmsetup cryptsetup; do
-    p=$(command -v "$b"); rp=$(readlink -f "$p"); h=$(sha256sum "$rp" | cut -c1-64)
+for p in "$DMSETUP" "$CRYPTSETUP"; do
+    b=${p##*/}; rp=$(readlink -f "$p"); h=$(sha256sum "$rp" | cut -c1-64)
     say "  $b  $rp  sha256 $h"
     JBIN+=("{\"name\": $(jstr "$b"), \"path\": $(jstr "$rp"), \"sha256\": $(jstr "$h")}")
 done
@@ -229,7 +254,7 @@ say "  ${CSVER:-cryptsetup of unknown version}, a volume key is handed over with
 say ""
 
 # ---- enumerate the open crypt volumes ----------------------------------------------------------
-mapfile -t MAPS < <(dmsetup ls --target crypt 2>/dev/null | awk 'NF>=1 && $1!="No" {print $1}' | sort)
+mapfile -t MAPS < <("$DMSETUP" ls --target crypt 2>/dev/null | awk 'NF>=1 && $1!="No" {print $1}' | sort)
 [ "${#MAPS[@]}" -gt 0 ] || say "no open dm-crypt volumes"
 [ "${#MAPS[@]}" -gt 0 ] && say "${#MAPS[@]} open dm-crypt volume(s): $(clean "${MAPS[*]}")"
 # The file name of each mapping. FAT and exFAT fold the case of a name, so two names that are the
@@ -259,7 +284,7 @@ JVOL=()
 
 # prove a key file against a LUKS header backup with the suspect's cryptsetup; 0 if it opens
 prove() {  # prove KEYFILE HEADER
-    cryptsetup open --test-passphrase "$VKOPT" "$1" "$2" >/dev/null 2>&1
+    "$CRYPTSETUP" open --test-passphrase "$VKOPT" "$1" "$2" >/dev/null 2>&1
 }
 
 # close a volume: print the verdict and keep it for the summary and for verdict.json
@@ -280,7 +305,7 @@ scan_once() {
     fi
     SCANNED=1
     say "  R3 memory: searching /proc/kcore for AES key schedules"
-    if kcore-keyscan /proc/kcore > "$CAND" 2> "$OUT/log/kcore-keyscan.txt"; then
+    if "$BIN/kcore-keyscan" /proc/kcore > "$CAND" 2> "$OUT/log/kcore-keyscan.txt"; then
         SCANOK=1
         say "  $(wc -l < "$CAND") schedules found, list in keys/kcore-candidates.txt"
         flush "$CAND" "$OUT/keys" || say "  the list could not be flushed to the evidence medium"
@@ -299,18 +324,20 @@ for m in "${MAPS[@]}"; do
     f=${FN[$m]}
     say "==== $(clean "$m")"
     status=$OUT/log/$f.status.txt
-    cryptsetup status "$m" > "$status" 2>&1 || true
+    "$CRYPTSETUP" status "$m" > "$status" 2>&1 || true
     typ=$(field type); cip=$(field cipher); loc=$(field "key location"); dev=$(field device)
     ksz=$(awk '/keysize:/{print $2}' "$status")
     case $ksz in ''|*[!0-9]*) ksz="" ;; esac
     say "  type ${typ:-?}, cipher ${cip:-?}, keysize ${ksz:-?} bits, key location ${loc:-?}"
     say "  backing device ${dev:-?}"
 
-    # the table line: its cipher (4th token) and its key field (5th token), which is the key in
-    # hexadecimal or a :size:type:description reference
-    table=$(dmsetup table --showkeys "$m" 2>/dev/null)
-    tcip=$(awk '{print $4}' <<<"$table")
-    keyfield=$(awk '{print $5}' <<<"$table")
+    # the table line of the crypt target: its cipher (4th token) and its key field (5th token),
+    # which is the key in hexadecimal or a :size:type:description reference. The line is read
+    # through a pipe by the shell itself, so the key passes no other program and no file.
+    tcip=""; keyfield=""
+    while read -r _ _ target c k _; do
+        [ "$target" = crypt ] && { tcip=$c; keyfield=$k; break; }
+    done < <("$DMSETUP" table --showkeys "$m" 2>/dev/null)
     # the class of the cipher, from the kernel's own table line when it is there
     case ${tcip:-$cip} in
         aes-xts-*|capi:xts\(aes\)-*) cclass=xts ;;      # two AES keys, data then tweak
@@ -323,7 +350,7 @@ for m in "${MAPS[@]}"; do
     case $typ in
         LUKS1|LUKS2)
             hdr=$OUT/headers/$f.hdr
-            if cryptsetup luksHeaderBackup "$dev" --header-backup-file "$hdr" 2>/dev/null; then
+            if "$CRYPTSETUP" luksHeaderBackup "$dev" --header-backup-file "$hdr" 2>/dev/null; then
                 say "  header backed up: headers/$f.hdr ($(stat -c%s "$hdr") bytes)"
                 flush "$hdr" "$OUT/headers" || say "  the header backup could not be flushed to the evidence medium"
             else
@@ -447,7 +474,7 @@ if [ "$MEMORY" = 1 ]; then
     say "==== memory image"
     mkdir -p "$OUT/memory"
     img=$OUT/memory/memory.lime
-    avmlv=$(avml --version 2>/dev/null | head -n 1)
+    avmlv=$("$BIN/avml" --version 2>/dev/null | head -n 1)
     # the size to expect: the sum of the System RAM ranges, which is what AVML reads
     ram=0
     while read -r range _; do
@@ -463,7 +490,7 @@ if [ "$MEMORY" = 1 ]; then
     else
         say "  writing up to $(( ram / 1048576 )) MiB with ${avmlv:-avml}"
         t0=$SECONDS
-        if avml acquire "$img" > "$OUT/log/avml.txt" 2>&1 && flush "$img" "$OUT/memory"; then
+        if "$BIN/avml" acquire "$img" > "$OUT/log/avml.txt" 2>&1 && flush "$img" "$OUT/memory"; then
             msecs=$(( SECONDS - t0 )); mbytes=$(stat -c%s "$img")
             MEMHASH=$(sha256sum "$img" | cut -c1-64)
             mstatus="captured"

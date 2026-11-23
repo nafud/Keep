@@ -192,7 +192,8 @@ if command -v cryptsetup >/dev/null; then
     # ---- triage --------------------------------------------------------------------------------
     # keytriage.sh itself, without root and without device-mapper. A copy of it runs from a kit
     # that is laid out like the medium, with the busybox applets in bin/. The examined system is
-    # played by stand-ins, and everything else is the real thing:
+    # played by stand-ins, and everything else is the real thing. dmsetup and cryptsetup lie in
+    # a directory of their own, which -p names, and the other stand-ins in the bin/ of the kit:
     #   dmsetup         prints its listing and the table lines from files
     #   cryptsetup      prints "status" from a file and hands every other call, so the header
     #                   backup and the proof, to the real cryptsetup
@@ -205,11 +206,17 @@ if command -v cryptsetup >/dev/null; then
     # header with a keyring reference (route R3). t:plain and T:plain are plain mappings, whose
     # names FAT and exFAT refuse as file names and which differ only by case.
     if command -v busybox >/dev/null; then
-        KIT=$T/kit; SYS=$T/kit/bin; STUB=$T/stub; REALCS=$(command -v cryptsetup); BB=$(command -v busybox)
+        KIT=$T/kit; SYS=$T/sys; STUB=$T/stub; REALCS=$(command -v cryptsetup); BB=$(command -v busybox)
         TSH=$(command -v bash-static || command -v bash)
-        mkdir -p "$KIT/bin" "$STUB" "$T/tevid"
-        for a in $(busybox --list); do
-            case $a in busybox|bash) ;; *) ln -s "$BB" "$KIT/bin/$a" ;; esac
+        mkdir -p "$KIT/bin" "$SYS" "$STUB" "$T/tevid" "$T/foreign"
+        for a in busybox $(busybox --list); do
+            case $a in bash) ;; *) ln -s "$BB" "$KIT/bin/$a" 2>/dev/null ;; esac
+        done
+        # A program of every name the kit has, and dirname, in the directory of dmsetup and first
+        # on the PATH of the caller. Whichever of them runs, notes its name.
+        for a in $( { echo dirname; busybox --list; } | sort -u ); do
+            printf '#!/bin/bash\necho "%s" >> "%s"\n' "$a" "$T/foreign.log" > "$T/foreign/$a"; chmod 755 "$T/foreign/$a"
+            ln -s "$T/foreign/$a" "$SYS/$a"
         done
         cp keytriage.sh "$KIT/"
         standin() { rm -f "$1"; cat > "$1"; chmod 755 "$1"; }   # standin FILE : the script on standard input
@@ -265,7 +272,7 @@ EOT
             local name=$1 rc; shift
             mkdir "$T/tevid/$name" || return 1
             : > "$T/sync.log"
-            ( umask 022; "$TSH" "$KIT/keytriage.sh" -f -e "$T/tevid/$name" "$@" > "$T/$name.txt" 2>&1 ); rc=$?
+            ( umask 022; PATH=$T/foreign:$PATH "$TSH" "$KIT/keytriage.sh" -f -p "/nowhere:$SYS" -e "$T/tevid/$name" "$@" > "$T/$name.txt" 2>&1 ); rc=$?
             ln -s "$(echo "$T/tevid/$name"/triage_*)" "$T/$name.d"
             return "$rc"
         }
@@ -292,6 +299,14 @@ for v in json.load(open(sys.argv[1] + "/verdict.json"))["volumes"]:
             [ -z "$open" ] || { echo "open to the group or to others:"; echo "$open"; return 1; }
         }
         check "keytriage.sh writes nothing that the group or others can read" triage_modes
+        triage_medium_only() {
+            [ ! -s "$T/foreign.log" ] || { echo "programs from outside the medium were run:"; sort "$T/foreign.log" | uniq -c; return 1; }
+            ! grep -q 'not found' "$T/both.txt" || { grep 'not found' "$T/both.txt"; return 1; }
+            python3 -I -c 'import json, sys
+paths = sorted(b["path"] for b in json.load(open(sys.argv[1]))["binaries"])
+sys.exit(0 if paths == [sys.argv[2] + "/cryptsetup", sys.argv[2] + "/dmsetup"] else "recorded: %r" % paths)' "$T/both.d/verdict.json" "$SYS"
+        }
+        check "keytriage.sh runs nothing from outside the medium but the dmsetup and cryptsetup of -p" triage_medium_only
         triage_flush() {
             local f d; d=$(readlink "$T/both.d")
             for f in keys/t_table.vk keys/t_keyring.vk keys/kcore-candidates.txt headers/t_table.hdr headers/t_keyring.hdr manifest.sha256; do

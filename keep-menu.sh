@@ -26,11 +26,14 @@
 # dialogue ended without a run, 2 for a wrong option.
 set -u
 umask 077                               # a candidate list holds key material
-VERSION="2.0 (2026-11)"
+VERSION="2.1 (2026-11)"
 ME=keep-menu.sh
 case $0 in */*) HERE=${0%/*} ;; *) HERE=. ;; esac   # no dirname: nothing external before PATH is set
 HERE=$(cd "$HERE" && pwd)
-PATH=$HERE/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/sbin:/usr/local/bin
+# On the medium PATH is its bin/ and nothing else, as in keytriage.sh. Without a medium beside
+# this script it is the lab, where python3 and the scanner are the workstation's own.
+SYSDIRS=/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/sbin:/usr/local/bin
+if [ -x "$HERE/bin/busybox" ]; then PATH=$HERE/bin; else PATH=$SYSDIRS; fi
 export PATH LC_ALL=C TZ=UTC
 TRIAGE=$HERE/keytriage.sh
 OFFLINE=$HERE/offline-keyscan.sh
@@ -84,6 +87,14 @@ ask_dir() {  # ask_dir PROMPT DEFAULT : a directory that can be written to, abso
 }
 free_of() { df -k -P "$1" 2>/dev/null | awk 'NR==2 {printf "%d MiB free", $4 / 1024}'; }
 
+# sysprog NAME : the full path of a program of the examined system, which is run by that path as
+# keytriage.sh runs it
+sysprog() {
+    local d IFS=:
+    for d in $SYSDIRS; do [ -f "$d/$1" ] && [ -x "$d/$1" ] && { printf '%s' "$d/$1"; return 0; }; done
+    return 1
+}
+
 # what a live capture will meet. The files of the examined system are read as text only.
 sysinfo() {
     local os="" f lock names=()
@@ -97,8 +108,9 @@ sysinfo() {
     irow "Kernel" "$(uname -r)"
     irow "Kernel lockdown" "${lock:-unknown}"
     irow "Memory" "$(awk '/^MemTotal:/ {printf "%d MiB", $2 / 1024}' /proc/meminfo)"
-    if [ "$(id -u)" = 0 ] && command -v dmsetup >/dev/null; then
-        mapfile -t names < <(dmsetup ls --target crypt 2>/dev/null | awk 'NF>=1 && $1!="No" {print $1}' | sort)
+    local dmsetup; dmsetup=$(sysprog dmsetup)
+    if [ "$(id -u)" = 0 ] && [ -n "$dmsetup" ]; then
+        mapfile -t names < <("$dmsetup" ls --target crypt 2>/dev/null | awk 'NF>=1 && $1!="No" {print $1}' | sort)
         irow "Open dm-crypt volumes" "${#names[@]}${names[*]:+ (${names[*]})}"
     else
         irow "Open dm-crypt volumes" "not listed, that needs root and dmsetup"
