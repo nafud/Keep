@@ -55,6 +55,7 @@
 <div class="code cmd"><pre><code>sudo /media/tools/bin/bash -p /media/tools/keytriage.sh -e /media/evidence</code></pre></div>
 <p>The keys, and then a memory image. The keys come first, because an event can close their window within seconds and an image of a large machine takes minutes.</p>
 <div class="code cmd"><pre><code>sudo /media/tools/bin/bash -p /media/tools/keytriage.sh -e /media/evidence -m</code></pre></div>
+<p>With <code>-m -c</code> the image is written compressed, for an evidence medium with less free space than the machine has memory.</p>
 <p>The evidence directory must lie on a medium of its own. A directory on the root file system of the examined system, or on a disk that also carries it, is refused, because a key written there changes the examined disk. <code>-f</code> accepts such a directory for a test.</p>
 <p>The same through plain questions, in the manner of <code>ewfacquire</code>. With <code>-n</code> it asks and lists everything and runs nothing.</p>
 <div class="code cmd"><pre><code>sudo /media/tools/bin/bash -p /media/tools/keep-menu.sh</code></pre></div>
@@ -74,7 +75,7 @@
   nvme0n1p3_crypt   captured and proven</code></pre></div>
 
 <h3 id="lab">3. In the lab</h3>
-<p>For a memory dump that was collected earlier. The dump is searched and every LUKS header in the disk images is located and tested. The lab tools need Python 3 and the scanner, and they only read their inputs.</p>
+<p>For a memory dump that was collected earlier. The dump is searched and every LUKS header in the disk images is located and tested. A disk image may be raw or the disk file of a virtual machine. The lab tools need Python 3 and the scanner, and they only read their inputs.</p>
 <div class="code cmd"><pre><code>./offline-keyscan.sh -k /path/to/work/tools memory.lime disk.dd</code></pre></div>
 <p>The result is a folder <code>scan_&lt;dump&gt;_&lt;UTC time&gt;/</code> with one <code>NAME.vk</code> per proven volume key, for <code>cryptsetup open --volume-key-file</code>. The report in it is printed as text, and several reports are compared in one table:</p>
 <div class="code cmd"><pre><code>python3 -I keep-report.py scan_*/verdict.json</code></pre></div>
@@ -123,6 +124,18 @@ python3 -I vkverify.py CANDIDATES [HEADER...] [--image DISK]... [--out DIR] [--j
 <li><strong>In the lab</strong> <code>vkverify.py</code> computes the proof itself, with no cryptsetup and no loop device. A LUKS header stores a PBKDF2 digest of the volume key: LUKS1 in the binary header, LUKS2 in the <code>digests</code> object of its JSON area. A key whose PBKDF2 output equals the stored digest is the volume key. A header whose keyslots were erased with <code>cryptsetup erase</code> keeps its digest, so the key from memory is still proven against it, and is then the only way into the volume.</li>
 </ul>
 <p>With <code>--image</code> no header backup is needed. The image is searched for the LUKS magic at sector boundaries, and a place is accepted only when its digest parameters are plausible.</p>
+<p>The image may be the disk of a virtual machine. Such a file stores the disk in blocks with a table of where each block lies, and some compress the blocks, so a header does not lie in the file as it lies on the disk. These are read as the guest saw the disk:</p>
+<div class="table"><table>
+<thead><tr><th>Format</th><th>What is read</th></tr></thead>
+<tbody>
+<tr><td>qcow2</td><td>Version 2 and 3, also with clusters compressed by zlib.</td></tr>
+<tr><td>VMDK</td><td>The sparse extent, also stream-optimized with compressed grains, and a descriptor file with sparse, flat and zero extents beside it.</td></tr>
+<tr><td>VDI</td><td>Dynamic and fixed.</td></tr>
+<tr><td>VHD</td><td>Dynamic and fixed.</td></tr>
+<tr><td>VHDX</td><td>Dynamic and fixed, without a log to replay.</td></tr>
+</tbody>
+</table></div>
+<p>What is recognised and not read is named and is not searched as raw bytes: a qcow2 image that is encrypted, has zstd clusters, extended L2 entries or an external data file, a sparse extent of ESXi, a VHDX file with a log, QED and Parallels. <code>qemu-img convert -O raw</code> writes such a disk as a raw image. A block that only a backing file or a parent disk holds reads as zeros, and that file is named. Each format is checked on images that <code>qemu-img</code> wrote, not on images from VMware, VirtualBox or Hyper-V.</p>
 </section>
 
 <section id="memory">
@@ -133,12 +146,14 @@ python3 -I vkverify.py CANDIDATES [HEADER...] [--image DISK]... [--out DIR] [--j
 <div class="table"><table>
 <thead><tr><th>Format</th><th>Recognised by</th><th>What is read</th></tr></thead>
 <tbody>
-<tr><td>ELF64 core</td><td>ELF magic, 64-bit, little-endian</td><td>Every <code>PT_LOAD</code> segment with a physical address. This is <code>/proc/kcore</code>.</td></tr>
+<tr><td>ELF64 core</td><td>ELF magic, 64-bit, little-endian</td><td>Every <code>PT_LOAD</code> segment with a physical address. This is <code>/proc/kcore</code>, and the dump that a hypervisor takes of a guest, checked with QEMU.</td></tr>
 <tr><td>LiME</td><td><code>EMiL</code> at the start of each range header</td><td>Each range with its start and end address. This is what AVML writes.</td></tr>
+<tr><td>AVML compressed</td><td><code>AVML</code> and version 2 at the start of each range header</td><td>Each range as a framed Snappy stream, with every chunk compared with its CRC-32C. This is what <code>avml --compress</code> and <code>keytriage.sh -m -c</code> write.</td></tr>
 <tr><td>raw</td><td>anything else, or any file with <code>-r</code></td><td>The whole file, with the file offset as the address.</td></tr>
-<tr><td>refused</td><td>the first bytes of a compressed AVML image, of a kdump, diskdump or flattened makedumpfile file, or of a gzip, xz, zstd, bzip2 or lz4 file</td><td>Nothing. Such a file holds memory in another form, and a search of its bytes finds a part of the schedules or none. <code>avml convert</code> turns a compressed AVML image into a LiME image.</td></tr>
+<tr><td>refused</td><td>the first bytes of a kdump, diskdump or flattened makedumpfile file, or of a gzip, xz, zstd, bzip2 or lz4 file</td><td>Nothing. Such a file holds memory in another form, and a search of its bytes finds a part of the schedules or none.</td></tr>
 </tbody>
 </table></div>
+<p>These are the formats of a Linux memory image that Volatility 3 reads too. An image that is cut, as on a medium that ran full, or damaged is searched up to that place: the schedules before it are listed, the place is named and the status is 1.</p>
 </section>
 
 <section id="tools">
@@ -167,29 +182,38 @@ python3 -I vkverify.py CANDIDATES [HEADER...] [--image DISK]... [--out DIR] [--j
   headers/          the LUKS header backups
   keys/             the volume keys and the candidate list
   log/              what cryptsetup status, the scanner and AVML wrote
-  memory/           with -m: memory.lime, kernel banner, release, os-release, System.map
+  memory/           with -m: memory.lime (memory.avml with -c), kernel banner, release,
+                    os-release, System.map
   manifest.sha256   the SHA-256 of all of them</code></pre></div>
 <p>Every file is created with <code>umask 077</code>. A header backup, the candidate list and a key are flushed to the medium with <code>fsync</code> as soon as they are written, and a key counts as captured only after that, because the machine may lose power the moment the verdict is read. The run ends with a flush of the whole file system of the medium and with status 0, or with status 1 when a write or a flush failed. In the names of the folder and of the files, a character of the host name or of a mapping name that is not a letter, a digit or one of <code>. _ + = @ , -</code> becomes <code>_</code>.</p>
-<p>Beside the memory image go the kernel banner, the release, <code>os-release</code> and <code>System.map</code>, which Volatility 3 needs for its symbol table. The image is skipped when the evidence medium has less free space than the machine has RAM plus 64 MiB.</p>
+<p>Beside the memory image go the kernel banner, the release, <code>os-release</code> and <code>System.map</code>, which Volatility 3 needs for its symbol table. The image is skipped when the evidence medium has less free space than the machine has RAM plus 64 MiB. A compressed image is started whatever space is free, because its size is known only at the end. Where it cannot be finished, the part that was written is removed and the image counts as failed.</p>
 <p><code>verdict.json</code> has the schema <code>keep-report/1</code>, which <code>vkverify.py --json</code> writes too. A report never holds a key. A key is named by its length and by <code>key_sha256_16</code>, the first 16 hexadecimal digits of its SHA-256.</p>
 </section>
 
 <section id="systems">
 <h2>Systems checked</h2>
-<p>A distribution counts as checked only after <code>tests/compat-check.sh</code> ended with <code>RESULT: PASS</code> on it. That test makes a LUKS2 and a LUKS1 container from keys it has just drawn, a mapping named <code>No</code> and one with the null cipher, runs the triage and compares the captured keys with the known ones. The pipeline on GitHub runs it on every push on its two runner images, which are the first three rows of this table. The machine behind a runner image differs from run to run and with it the kernel, so a row names the kernel of the run it stands for. The last column is the version of <code>keytriage.sh</code> that was checked. The other four systems were checked on guests with a version before 1.3.</p>
+<p>A distribution counts as checked only after <code>tests/compat-check.sh</code> ended with <code>RESULT: PASS</code> on it. That test makes a LUKS2 and a LUKS1 container from keys it has just drawn, a mapping named <code>No</code>, one with the null cipher and a LUKS2 volume that carries LVM, runs the triage, compares the captured keys with the known ones, and takes a memory image, in which the scanner must find those keys again.</p>
+<p>The pipeline on GitHub boots the first ten systems of this table as guests from the distributions' own cloud images, each pinned by its published checksum, and runs the check in them. The last three rows are the runner images of the pipeline itself, where the machine and with it the kernel differ from run to run. A row names the kernel of the run it stands for, and the last column the version of <code>keytriage.sh</code> that was checked. Lockdown was <code>none</code> on all of them.</p>
 <div class="table"><table>
-<thead><tr><th>System</th><th>Kernel</th><th>cryptsetup</th><th>Key option</th><th>Lockdown</th><th>Version</th></tr></thead>
+<thead><tr><th>System</th><th>Kernel</th><th>cryptsetup</th><th>Version</th></tr></thead>
 <tbody>
-<tr><td>Ubuntu 24.04.5, runner</td><td>7.0.0-1014-aws</td><td>2.7.0</td><td><code>--volume-key-file</code></td><td>none</td><td>1.3.1</td></tr>
-<tr><td>Ubuntu 24.04.5, runner</td><td>7.0.0-1017-azure</td><td>2.7.0</td><td><code>--volume-key-file</code></td><td>none</td><td>1.3.0</td></tr>
-<tr><td>Ubuntu 22.04.5, runner</td><td>6.8.0-1070-azure</td><td>2.4.3</td><td><code>--master-key-file</code></td><td>none</td><td>1.3.1</td></tr>
-<tr><td>Ubuntu Server 26.04.1</td><td>7.0.0-44-generic</td><td>2.8.4</td><td><code>--volume-key-file</code></td><td>integrity</td><td>before 1.3</td></tr>
-<tr><td>Debian 13</td><td>6.12</td><td>2.7.5</td><td><code>--volume-key-file</code></td><td>none</td><td>before 1.3</td></tr>
-<tr><td>Ubuntu 22.04.5</td><td>5.15</td><td>2.4.3</td><td><code>--master-key-file</code></td><td>none</td><td>before 1.3</td></tr>
-<tr><td>Debian 11</td><td>5.10</td><td>2.3.7</td><td><code>--master-key-file</code></td><td>none</td><td>before 1.3</td></tr>
+<tr><td>Debian 13</td><td>6.12.117+deb13-amd64</td><td>2.7.5</td><td>1.3.1</td></tr>
+<tr><td>Debian 12</td><td>6.1.0-56-amd64</td><td>2.6.1</td><td>1.3.1</td></tr>
+<tr><td>Ubuntu 26.04.1</td><td>7.0.0-43-generic</td><td>2.8.4</td><td>1.3.1</td></tr>
+<tr><td>Ubuntu 24.04.5</td><td>6.8.0-147-generic</td><td>2.7.0</td><td>1.3.1</td></tr>
+<tr><td>Fedora 45</td><td>7.2.11-300.fc45</td><td>2.8.8</td><td>1.3.1</td></tr>
+<tr><td>AlmaLinux 10.3</td><td>6.12.0-264.16.1.el10_3</td><td>2.8.6</td><td>1.3.1</td></tr>
+<tr><td>AlmaLinux 9.9</td><td>5.14.0-741.22.1.el9_9</td><td>2.8.6</td><td>1.3.1</td></tr>
+<tr><td>Rocky Linux 10.3</td><td>6.12.0-264.16.1.el10_3</td><td>2.8.6</td><td>1.3.1</td></tr>
+<tr><td>openSUSE Leap 16.1</td><td>6.12.0-160100.9-default</td><td>2.8.4</td><td>1.3.1</td></tr>
+<tr><td>Arch Linux</td><td>7.3.4-arch1-2</td><td>2.8.8</td><td>1.3.1</td></tr>
+<tr><td>Ubuntu 24.04 runner</td><td>7.0.0-1014-aws</td><td>2.7.0</td><td>1.3.1</td></tr>
+<tr><td>Ubuntu 24.04 runner</td><td>7.0.0-1017-azure</td><td>2.7.0</td><td>1.3.0</td></tr>
+<tr><td>Ubuntu 22.04 runner</td><td>6.8.0-1070-azure</td><td>2.4.3</td><td>1.3.1</td></tr>
 </tbody>
 </table></div>
-<p>Fedora, the RHEL family, openSUSE and Arch are not checked yet.</p>
+<p>These kernels used four implementations of <code>xts(aes)</code>: <code>xts-aes-aesni</code>, <code>xts-aes-vaes-avx2</code>, <code>xts-aes-vaes-avx512</code> and <code>xts-aes-vaes-avx10_512</code>. With each of them the two halves of the key were found at the distance that <code>keytriage.sh</code> expects. Three further systems were checked with a version before 1.3: Ubuntu Server 26.04.1 under lockdown <code>integrity</code>, Ubuntu 22.04.5 with kernel 5.15, and Debian 11.</p>
+<p>Linux Mint has no cloud image and is not in the list. openSUSE Tumbleweed is not checked. No system is checked with Secure Boot on with a version from 1.3 on.</p>
 </section>
 
 <section id="limits">
@@ -200,7 +224,8 @@ python3 -I vkverify.py CANDIDATES [HEADER...] [--image DISK]... [--out DIR] [--j
 <li>Kernel lockdown <code>confidentiality</code> blocks <code>/proc/kcore</code> and every memory source of AVML.</li>
 <li>Keep covers dm-crypt only. Mounted file systems that encrypt by themselves (eCryptfs, ZFS, gocryptfs, CryFS, EncFS) are named in the report as not examined.</li>
 <li>Plain and tcrypt volumes have no header digest, so their keys cannot be proven on scene.</li>
-<li>A memory dump is read as an ELF core, a LiME image or raw bytes. The compressed formats in the table above are refused, and any other container format is searched as raw bytes, which is not tested.</li>
+<li>A memory dump is read as an ELF core, a LiME image, a compressed AVML image or raw bytes. A kdump file and a file compressed as a whole are refused. The snapshot formats of QEMU and VMware, which Volatility 3 reads, are not read, and any other container format is searched as raw bytes, which is not tested.</li>
+<li>Forensic containers of a disk image, such as EWF (E01) and AFF, are not read.</li>
 <li>The test of the evidence directory knows the disks only where the kernel names a block device for a file system. For a network share, tmpfs or ZFS only the test against the root file system applies, and a loop device counts as a disk of its own.</li>
 </ul>
 </section>
@@ -221,10 +246,12 @@ python3 -I vkverify.py CANDIDATES [HEADER...] [--image DISK]... [--out DIR] [--j
 
 <section id="development">
 <h2>Development</h2>
-<p>One script runs every check that needs neither root nor device-mapper: the static checks, the scanner on fixtures with known keys and traps, the verifier and the on-scene proof on LUKS headers that cryptsetup makes from the same keys, <code>keytriage.sh</code> itself on stand-ins for the examined system's <code>dmsetup</code>, <code>cryptsetup status</code> and <code>/proc/kcore</code>, and the menu through a pipe. The pipeline on GitHub runs it on every push.</p>
+<p>One script runs every check that needs neither root nor device-mapper: the static checks, the scanner on fixtures with known keys and traps, the verifier and the on-scene proof on LUKS headers that cryptsetup makes from the same keys, the verifier on the disk formats of virtual machines as <code>qemu-img</code> writes them, <code>keytriage.sh</code> itself on stand-ins for the examined system's <code>dmsetup</code>, <code>cryptsetup status</code> and <code>/proc/kcore</code>, and the menu through a pipe. The pipeline on GitHub runs it on every push.</p>
 <div class="code cmd"><pre><code>tests/selftest.sh</code></pre></div>
-<p>On real device-mapper and a real <code>/proc/kcore</code> the triage is checked on a throwaway guest and never on a machine that matters. The pipeline runs the same check on its two runner images.</p>
+<p>On real device-mapper and a real <code>/proc/kcore</code> the triage is checked on a throwaway guest and never on a machine that matters. The pipeline runs the same check on its two runner images and in guests of ten distribution releases.</p>
 <div class="code cmd"><pre><code>sudo bash tests/compat-check.sh</code></pre></div>
+<p>One command fetches a distribution's cloud image, checks it against its pinned checksum, boots it in QEMU and runs the check in it:</p>
+<div class="code cmd"><pre><code>tests/compat-guest.sh -m /path/to/work fedora-45</code></pre></div>
 <p>Reports of a distribution where the check passes or fails are welcome as an issue on <a href="https://github.com/nafud/Keep/issues">GitHub</a>.</p>
 </section>
 

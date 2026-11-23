@@ -24,12 +24,14 @@ README.
 | `offline-keyscan.sh` | lab | Driver for a dump collected earlier. Runs the scanner on the dump and `vkverify.py` against disk images |
 | `keep-report.py` | lab | Prints the verdict reports as text in the manner of `ewfinfo`, and compares several reports |
 | `build-toolkit.sh` | workstation | Assembles the scene tool medium and writes it as an ISO |
-| `tests/make-schedule-fixture.py` | test | Writes a memory image with the schedules of known keys and four traps |
-| `tests/compat-check.sh` | test, throwaway guest only | Checks `keytriage.sh` on real device-mapper: containers and mappings of known keys, the null cipher, and where the evidence directory may lie |
-| `tests/make-compat-vm.sh` | test, workstation | Starts a throwaway libvirt guest from a distribution's cloud image for `compat-check.sh` |
+| `tests/make-schedule-fixture.py` | test | Writes a memory image with the schedules of known keys and five traps, as raw, ELF, LiME or compressed AVML |
+| `tests/compat-check.sh` | test, throwaway guest only | Checks `keytriage.sh` on real device-mapper: containers and mappings of known keys, the null cipher, LVM on LUKS, the memory image, and where the evidence directory may lie |
+| `tests/compat-guest.sh` | test, workstation and pipeline | Boots a distribution's cloud image as a throwaway guest in QEMU, runs `compat-check.sh` in it and prints its output |
+| `tests/compat-images.txt` | test | The cloud images for `compat-guest.sh`: a name, the address of one dated build and its published SHA-256 or SHA-512 |
+| `tests/make-compat-vm.sh` | test, workstation | Starts a libvirt guest that stays, from a distribution's cloud image, for work by hand |
 | `tests/selftest.sh` | test, workstation and pipeline | Runs every check that needs neither root nor device-mapper, `keytriage.sh` included on stand-ins for the examined system, and ends with `RESULT: PASS` or `RESULT: FAIL` |
 | `docs/` | GitHub Pages | The page of Keep: `index.html`, `assets/keep.css`, `assets/keep.js` and the fonts |
-| `.github/workflows/` | GitHub | `checks.yml` runs the self-test, builds the medium and runs `compat-check.sh` on two runner images on every push. `pages.yml` publishes `docs/` from `main` |
+| `.github/workflows/` | GitHub | `checks.yml` runs the self-test, builds the medium and runs `compat-check.sh` on two runner images on every push. `distros.yml` runs it in guests of ten distribution releases. `pages.yml` publishes `docs/` from `main` |
 
 The seven files at the root must stay siblings. `build-toolkit.sh` takes `keytriage.sh`,
 `keep-menu.sh` and `kcore-keyscan.c` from its own directory. `keep-menu.sh` and
@@ -130,14 +132,18 @@ gcc -static -O2 -Wall -o kcore-keyscan kcore-keyscan.c
 kcore-keyscan [-s STEP] [-r] [FILE]     # FILE defaults to /proc/kcore, -r reads it as raw bytes
 ```
 
+These are the formats of a Linux memory image that Volatility 3 reads as well (its layers
+`physical`, `elf`, `lime` and `avml`).
+
 The input format is recognised from the first bytes.
 
 | Format | Recognised by | What is read |
 |---|---|---|
-| ELF64 core | ELF magic, 64-bit, little-endian | Every `PT_LOAD` segment with a physical address. `/proc/kcore` gives the vmalloc and module areas the physical address -1, so those are skipped and RAM is read once |
+| ELF64 core | ELF magic, 64-bit, little-endian | Every `PT_LOAD` segment with a physical address. `/proc/kcore` gives the vmalloc and module areas the physical address -1, so those are skipped and RAM is read once. A dump that a hypervisor takes from outside is read the same way: checked with `dump-guest-memory` of QEMU 8.2.2 |
 | LiME | `EMiL` at the start of each 32-byte range header | Each range, with its start and end address from offsets 8 and 16 of the header. This is what AVML writes |
-| raw | anything else, or any file with `-r` | The whole file, with the file offset as the address |
-| refused | the first bytes of a compressed AVML image (`AVML`, version 2), of a kdump, diskdump or flattened makedumpfile file, or of a gzip, xz, zstd, bzip2 or lz4 file | Nothing. Such a file holds memory in another form. Searched as raw bytes, a compressed AVML image gave 3 of 5 schedules and a gzip file 2 of 5, with status 0. `avml convert` turns the first into a LiME image |
+| AVML compressed | `AVML` and version 2 at the start of each range header | Each range: the header, a framed Snappy stream and the length of that stream (`src/image.rs` and `src/io/snappy.rs` of AVML 0.21.0). Every chunk of at most 64 KiB is decompressed and compared with its CRC-32C. Ranges of both kinds may follow each other. This is what `avml --compress` and `keytriage.sh -m -c` write |
+| raw | anything else, or any file with `-r` | The whole file, with the file offset as the address. A `.vmem` file of VMware is such a file |
+| refused | the first bytes of an AVML image of another version, of a kdump, diskdump or flattened makedumpfile file, or of a gzip, xz, zstd, bzip2 or lz4 file | Nothing. Such a file holds memory in another form. Searched as raw bytes, a gzip file gave 2 of 5 schedules with status 0. The `kdump-zlib` dump of QEMU 8.2.2 begins as a flattened makedumpfile file and is refused |
 
 - One line per schedule goes to standard output: `AES-256 phys 0x... virt 0x... key <hex>`. The
   counts and the time go to standard error. The output therefore holds key material and is only
@@ -147,9 +153,14 @@ The input format is recognised from the first bytes.
   found.
 - An unreadable stretch counts as zeros and is reported. At most 4096 schedules are listed, and
   further ones are counted.
+- A LiME or compressed image that is cut, as on a medium that ran full, or damaged is searched
+  up to that place. The schedules before it are listed, the file offset and the number of bytes
+  not searched are named, and the status is 1. A chunk that differs from its checksum is counted
+  and its data searched as it is.
 - A self-test against the two expansions of FIPS-197 appendix A runs at every start. Exit status
-  0 is a completed scan, 1 an unreadable or refused input, 2 a usage error, 3 a failed self-test.
-  The summary line names the version of the scanner.
+  0 is a completed scan, 1 an unreadable or refused input or an image that could not be read to
+  its end, 2 a usage error, 3 a failed self-test. The summary line names the version of the
+  scanner.
 - `/proc/kcore` needs root and is refused under kernel lockdown `confidentiality`.
 
 ### Headers from a disk image
@@ -160,6 +171,32 @@ header and names the volume `DISK@0xOFFSET`. A place is accepted only when its d
 are plausible (a hash that `hashlib` knows, a key size of 1 to 512 bytes, at least one iteration,
 a digest and a salt), so the bare magic inside other data does not stop the run. The image is only
 read.
+
+`DISK` may be the disk of a virtual machine. Such a file stores the disk in blocks with a table
+of where each block lies, and some compress the blocks, so a header does not lie in the file as
+it lies on the disk. Searched as raw bytes, an uncompressed qcow2, VMDK, VDI, VHD or VHDX file
+gave both headers of a test disk at offsets of the file, and a compressed qcow2 file and a
+stream-optimized VMDK file gave none, with no word about it. `vkverify.py` reads these as the
+guest saw the disk, and `OFFSET` is the offset on that disk.
+
+| Format | Read | From |
+|---|---|---|
+| qcow2 | Version 2 and 3, any cluster size, clusters compressed with zlib | `docs/interop/qcow2.txt` of QEMU |
+| VMDK | The hosted sparse extent, also stream-optimized with compressed grains, and a descriptor file with sparse, flat and zero extents. The extent files are taken from the directory of the descriptor by their file names alone | Virtual Disk Format 1.1 of VMware |
+| VDI | Dynamic and fixed | `VDICore.h` of VirtualBox |
+| VHD | Dynamic and fixed | Virtual Hard Disk Image Format Specification 1.0 |
+| VHDX | Dynamic and fixed, without a log to replay | [MS-VHDX] |
+
+What is recognised and not read is named, counts as `unreadable header` and is not searched as
+raw bytes: a qcow2 image that is encrypted, has clusters compressed with zstd, extended L2
+entries or an external data file, a sparse extent of ESXi (COWD, seSparse), a VHDX file with a
+log, QED and Parallels. `qemu-img convert -O raw` writes such a disk as a raw image. A block that
+only a backing file or a parent disk holds reads as zeros, and that file is named.
+
+Each format is checked on images that `qemu-img` 8.2.2 wrote from one test disk: the reader
+gives the disk byte for byte and both keys are proven. A memory dump and the two qcow2 disks of
+a running QEMU guest gave both volume keys of that guest. Images that VMware, VirtualBox or
+Hyper-V wrote are not checked.
 
 A header file that ends inside the header, or whose fields cannot be read, is reported as
 `unreadable header` and the run goes on. Two headers with the same file name are kept apart as
@@ -206,7 +243,7 @@ it asks, reads lines of text. The model is the libewf tools: `keep-menu.sh` beha
 | Mode | Questions | Runs |
 |---|---|---|
 | `live` | Evidence directory, proof attempts per volume | `bash -p keytriage.sh -e DIR -b N` |
-| `live-memory` | The same | `keytriage.sh -e DIR -b N -m` |
+| `live-memory` | The same, and the format of the memory image (`lime`, `compressed`) | `keytriage.sh -e DIR -b N -m`, with `-c` for `compressed` |
 | `offline`, where `python3` and `vkverify.py` are present | Memory dump, one or more disk images or header backups, output directory | `offline-keyscan.sh -k KIT DUMP IMAGE...` in the output directory |
 | `offline`, elsewhere (the tool medium) | Memory dump, output directory | `kcore-keyscan DUMP` into `DIR/scan_<dump>_<time>/keys/candidates.txt` |
 
@@ -261,6 +298,7 @@ On scene, with the medium at `/media/tools` and an evidence medium at `/media/ev
 ```bash
 sudo /media/tools/bin/bash -p /media/tools/keytriage.sh -e /media/evidence        # keys
 sudo /media/tools/bin/bash -p /media/tools/keytriage.sh -e /media/evidence -m     # keys, then a memory image
+sudo /media/tools/bin/bash -p /media/tools/keytriage.sh -e /media/evidence -m -c  # the image compressed
 sudo /media/tools/bin/bash -p /media/tools/keep-menu.sh                           # the same through questions, -n is a dry run
 ```
 
@@ -298,6 +336,12 @@ kept only when it lists `_stext` or `linux_banner`, because some distributions k
 without symbols in `/boot`. The image is skipped when the evidence medium has less free space than
 the machine has RAM plus 64 MiB.
 
+With `-m -c` AVML writes its compressed format to `memory/memory.avml`, for a medium with less
+free space than the machine has memory. The scanner reads it, and Volatility 3 reads it where
+the Snappy library is installed. Its size is known only at the end, so it is started whatever
+space is free. Where AVML cannot finish it, the part that was written is removed, so that the
+report still has room, and the image counts as failed.
+
 In the lab:
 
 ```bash
@@ -309,8 +353,10 @@ python3 -I keep-report.py REPORT.json [REPORT.json ...] [--brief]
 `offline-keyscan.sh` writes `scan_<dump>_<UTC time>/` in the current directory with `triage.txt`,
 `scan.txt`, `verdict.json`, `manifest.sha256` and `keys/`. Its exit status and that of
 `vkverify.py` are 0 only when at least one header was located and every located header is proven.
-`DUMP` is a raw dump, a LiME image or an ELF core. The compressed formats that the scanner
-refuses end the run. Any other container format is searched as raw bytes, which is not tested.
+`DUMP` is a raw dump, a LiME image, a compressed AVML image or an ELF core. The formats that the
+scanner refuses end the run. Any other container format is searched as raw bytes, which is not
+tested. `IMAGE` is a raw disk or partition image, a header backup or the disk file of a virtual
+machine.
 
 ## Rules that every change keeps
 
@@ -364,9 +410,12 @@ gcc -static -O2 -Wall -o kcore-keyscan kcore-keyscan.c
 ```
 
 The scanner and the verifier are then run on a fixture. `make-schedule-fixture.py` expands keys
-with its own code written from FIPS-197, so it and the scanner check each other. Its four traps are
+with its own code written from FIPS-197, so it and the scanner check each other. Its five traps are
 a schedule at an odd address, one across the scanner's 1 MiB read boundary, one across the border
-of two ranges, and one with a single wrong bit that must not be reported.
+of two ranges, one with a single wrong bit that must not be reported, and one inside a run of
+zeros. It writes the compressed format of AVML with its own Snappy encoder and CRC-32C, which
+`avml convert` of AVML 0.21.0 decodes to the same LiME image byte for byte. The self-test also
+cuts and damages that image.
 
 ```bash
 head -c 64 /dev/urandom > k.vk
@@ -376,14 +425,16 @@ python3 -I tests/make-schedule-fixture.py --format lime --size 8 fx.lime k.vk
 
 The self-test goes on with LUKS headers that cryptsetup makes from the fixture keys. It proves
 the keys with `vkverify.py`, `offline-keyscan.sh` and the on-scene proof command, also against
-headers whose keyslots were erased, and gives the verifier cut and malformed headers. It drives
-`keep-menu.sh` through a pipe.
+headers whose keyslots were erased, and gives the verifier cut and malformed headers. With
+`qemu-img` it writes the disk image in fourteen forms of qcow2, VMDK, VDI, VHD and VHDX, and the
+verifier must read from each the disk byte for byte and prove both keys. It drives `keep-menu.sh`
+through a pipe.
 
 `keytriage.sh` itself runs in the self-test without root and without device-mapper. A copy of it
 runs from a kit laid out like the medium, with the busybox applets in `bin/`. Stand-ins play the
 examined system: `dmsetup` and `cryptsetup status` print from files, the scanner searches the
-fixture in place of `/proc/kcore`, and the header backup and the proof are done by the real
-cryptsetup. The run starts under `umask 022` with `BASH_ENV`, a function named `sed` and
+fixture in place of `/proc/kcore`, AVML is a script that writes the fixture as the memory image,
+and the header backup and the proof are done by the real cryptsetup. The run starts under `umask 022` with `BASH_ENV`, a function named `sed` and
 `SHELLOPTS=xtrace` in the environment, and with a program of every applet's name first on the
 caller's `PATH`, and fails when any of them takes effect.
 
@@ -392,20 +443,34 @@ On real device-mapper and a real `/proc/kcore`, `keytriage.sh` is checked by
 LUKS2 container (key in the kernel keyring, memory route) and a LUKS1 container (key in the
 table, table route) from key files it has just drawn, a mapping named `No` and one with the null
 cipher, runs the triage, and passes when the verdicts are right and the captured keys have the
-SHA-256 of their key files. It also checks that an evidence directory on the guest's own disk is
-refused and that a FAT evidence medium on a loop device is accepted. `tests/make-compat-vm.sh`
-starts such a guest from a cloud image with the medium attached.
+SHA-256 of their key files. With `-m` or `-c` the memory image must be read by the scanner to
+its end and hold the schedules of both volume keys. It also checks that an evidence directory on
+the guest's own disk is refused, that a FAT evidence medium on a loop device is accepted, and the
+layout of an encrypted installation: a LUKS2 volume that carries an LVM volume group, where the
+mapping below the logical volume must be the one listed and proven.
+
+`tests/compat-guest.sh WORKDIR NAME` runs that check unattended in a guest. It fetches the cloud
+image that `tests/compat-images.txt` pins for `NAME`, refuses it unless it has the pinned
+SHA-256 or SHA-512, boots a copy in QEMU with the medium attached, under KVM where `/dev/kvm` can
+be opened and emulated otherwise, and starts the check over SSH through `sudo`.
+`tests/make-compat-vm.sh` starts a libvirt guest that stays, for work by hand.
 
 ## The pipeline and the page
 
 - `checks.yml` has three jobs on every push and pull request. `selftest` runs
   `tests/selftest.sh -a`. `medium` runs `build-toolkit.sh`, verifies the manifest and starts the
   scripts in the medium's own shell. `compat` builds the medium and runs `tests/compat-check.sh`
-  with `-m` as root on the runner images `ubuntu-24.04` and `ubuntu-22.04`, which offer
+  with a memory image as root on the runner images `ubuntu-24.04` and `ubuntu-22.04`, which offer
   device-mapper, loop devices, FAT and a readable `/proc/kcore`. No part of it may be skipped
   there.
 - A green `compat` job says something about the kernel and the cryptsetup of that runner image
-  (rule 9). The output of each run is kept as an artifact for 30 days.
+  (rule 9). The output of each run is kept as an artifact for 30 days. One runner image takes
+  the memory image in LiME format and the other compressed.
+- `distros.yml` runs `tests/compat-guest.sh -m` for the ten names of `tests/compat-images.txt`
+  when a file changes that the check depends on, and by hand. Each job states the kernel and the
+  cryptsetup of its guest. An image is a dated build, pinned like any downloaded binary (rule
+  7). Where a distribution removes the build, the job fails at the download, and the newer build
+  and its published value are entered in the list.
 - The ISO is not published by the pipeline. It carries the bash and busybox binaries, and passing
   those on needs their source offered with them.
 - Actions are pinned by commit hash with the release in a comment. `dependabot.yml` proposes
@@ -421,23 +486,42 @@ starts such a guest from a cloud image with the medium attached.
 
 ## Systems checked
 
-`compat-check.sh` or a full run passed on these x86-64 systems. The first three rows are the
-runner images of the pipeline, where the check runs on every push and its output is kept as an
-artifact. The machine behind a runner image differs from run to run and with it the kernel, so a
-row names the kernel of the run it stands for. The other four systems were checked on guests
-with a version before 1.3, and their outputs are not kept.
+`compat-check.sh` passed on these x86-64 systems, each with a memory image. A row names the
+kernel and the cryptsetup of the run it stands for. The first ten are guests that
+`distros.yml` boots from the cloud images of `tests/compat-images.txt`, under KVM with BIOS boot,
+so lockdown is `none` on all of them. The next three are the runner images of `checks.yml`. The
+machine behind a runner image differs from run to run and with it the kernel. The outputs are
+kept as artifacts of the pipeline.
 
-| System | Kernel | cryptsetup | Key option | Lockdown | XTS driver | `keytriage.sh` |
-|---|---|---|---|---|---|---|
-| Ubuntu 24.04.5, runner image | 7.0.0-1014-aws | 2.7.0 | `--volume-key-file` | none | `xts-aes-vaes-avx512` | 1.3.1 |
-| Ubuntu 24.04.5, runner image | 7.0.0-1017-azure | 2.7.0 | `--volume-key-file` | none | `xts-aes-vaes-avx512` | 1.3.0 |
-| Ubuntu 22.04.5, runner image | 6.8.0-1070-azure | 2.4.3 | `--master-key-file` | none | `xts-aes-aesni` | 1.3.1 |
-| Ubuntu Server 26.04.1 | 7.0.0-44-generic | 2.8.4 | `--volume-key-file` | integrity | not recorded | before 1.3 |
-| Debian 13 | 6.12 | 2.7.5 | `--volume-key-file` | none | not recorded | before 1.3 |
-| Ubuntu 22.04.5 | 5.15 | 2.4.3 | `--master-key-file` | none | not recorded | before 1.3 |
-| Debian 11 | 5.10 | 2.3.7 | `--master-key-file` | none | not recorded | before 1.3 |
+| System | Kernel | cryptsetup | Key option | XTS driver | `keytriage.sh` |
+|---|---|---|---|---|---|
+| Debian 13 | 6.12.117+deb13-amd64 | 2.7.5 | `--volume-key-file` | `xts-aes-vaes-avx10_512` | 1.3.1 |
+| Debian 12 | 6.1.0-56-amd64 | 2.6.1 | `--volume-key-file` | `xts-aes-aesni` | 1.3.1 |
+| Ubuntu 26.04.1 | 7.0.0-43-generic | 2.8.4 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.3.1 |
+| Ubuntu 24.04.5 | 6.8.0-147-generic | 2.7.0 | `--volume-key-file` | `xts-aes-aesni` | 1.3.1 |
+| Fedora 45 | 7.2.11-300.fc45.x86_64 | 2.8.8 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.3.1 |
+| AlmaLinux 10.3 | 6.12.0-264.16.1.el10_3.x86_64 | 2.8.6 | `--volume-key-file` | `xts-aes-vaes-avx10_512` | 1.3.1 |
+| AlmaLinux 9.9 | 5.14.0-741.22.1.el9_9.x86_64 | 2.8.6 | `--volume-key-file` | `xts-aes-aesni` | 1.3.1 |
+| Rocky Linux 10.3 | 6.12.0-264.16.1.el10_3.x86_64 | 2.8.6 | `--volume-key-file` | `xts-aes-vaes-avx10_512` | 1.3.1 |
+| openSUSE Leap 16.1 | 6.12.0-160100.9-default | 2.8.4 | `--volume-key-file` | `xts-aes-vaes-avx2` | 1.3.1 |
+| Arch Linux, image of 2026-11-15 | 7.3.4-arch1-2 | 2.8.8 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.3.1 |
+| Ubuntu 24.04.5, runner image | 7.0.0-1014-aws | 2.7.0 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.3.1 |
+| Ubuntu 24.04.5, runner image | 7.0.0-1017-azure | 2.7.0 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.3.0 |
+| Ubuntu 22.04.5, runner image | 6.8.0-1070-azure | 2.4.3 | `--master-key-file` | `xts-aes-aesni` | 1.3.1 |
 
-Fedora, the RHEL family, openSUSE and Arch are not checked yet.
+On every one of the ten guests the on-scene pairing of the XTS halves found the key, with each of
+the four XTS drivers of the table. On the Arch guest the test of a second partition was skipped,
+because its image has no `/boot` or `/boot/efi` of its own. Debian keeps a placeholder as
+`System.map`, and the Arch image has none, so no symbol table is kept beside the image there.
+
+Three further systems were checked on guests with a version before 1.3, with outputs that are not
+kept: Ubuntu Server 26.04.1 under kernel lockdown `integrity` (kernel 7.0.0-44-generic,
+cryptsetup 2.8.4), Ubuntu 22.04.5 with kernel 5.15 and cryptsetup 2.4.3, and Debian 11 with
+kernel 5.10 and cryptsetup 2.3.7.
+
+Linux Mint has no cloud image and is not in the list. openSUSE
+Tumbleweed has no dated build to pin and is not checked. No system is checked with Secure Boot
+on, where lockdown is `integrity`, with a version from 1.3 on.
 
 ## Known limits
 
@@ -452,21 +536,26 @@ Fedora, the RHEL family, openSUSE and Arch are not checked yet.
 - The test of the evidence directory knows the disks only where the kernel names a block device
   for a file system. For a network share, tmpfs or ZFS only the test against the root file system
   applies, and a loop device counts as a disk of its own. The step from a partition to its disk
-  is checked on the runners, where `/boot/efi` is refused as lying on the disk of the root file
-  system. On the runner with the kernel 7.0.0-1014-aws the root file system was the
-  device-mapper device `/dev/mapper/cow-root`, so there the step through `slaves/` was taken as
-  well. A stack of LVM over dm-crypt is not checked.
+  is checked on the runners and the guests, where `/boot/efi` is refused as lying on the disk of
+  the root file system. On the runner with the kernel 7.0.0-1014-aws the root file system was
+  the device-mapper device `/dev/mapper/cow-root`, so there the step through `slaves/` was taken
+  as well. LVM on LUKS is checked with a volume group on a loop device. A root file system on
+  LVM on LUKS, as an installer lays it out, is not checked.
 - A mapping whose name holds a line break is not listed. A mapping whose name begins with `-` is
   not tested.
-- The memory image with `-m` is taken in the `compat` job on both runner images, to the disk of
-  the runner with `-f`. A memory image on a machine with kernel lockdown is not checked with this
-  version.
+- The memory image is taken in every run of the pipeline, to the disk of the runner or guest
+  with `-f`. A memory image on a machine with kernel lockdown is not checked with this version.
 - `keep-menu.sh` is tested through a pipe and in a pseudo-terminal with the medium's static
   bash, with `keytriage.sh` replaced by a stand-in. A real capture through it is not yet run.
 - The header search of `--image` is tested on a real LUKS partition image and on a small test disk
   image. Its run time on a whole disk of real size is not measured.
-- The scanner refuses the compressed formats it knows by their first bytes. It does not read
-  them. A compressed AVML image has to be converted with `avml convert` first.
+- Of the compressed memory formats the scanner reads that of AVML. A kdump or makedumpfile
+  file and a file compressed as a whole are refused and not read. Volatility 3 reads further
+  formats that the scanner does not: the snapshot of QEMU and the regions of a VMware snapshot.
+  A `.vmem` file is searched as raw bytes, which is not checked on a file that VMware wrote.
+- The disk formats of virtual machines are checked on images that `qemu-img` wrote, not on
+  images from VMware, VirtualBox or Hyper-V. Forensic containers such as EWF (E01) and AFF are
+  not read.
 
 ## Conventions
 
