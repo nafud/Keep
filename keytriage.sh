@@ -2,11 +2,12 @@
 # keytriage.sh, the scene-side script of Keep: decryption-readiness triage for an unlocked
 # Linux system.
 #
-#   sudo /media/tools/bin/bash /media/tools/keytriage.sh [-e DIR] [-b BUDGET] [-m]
+#   sudo /media/tools/bin/bash /media/tools/keytriage.sh [-e DIR] [-b BUDGET] [-m] [-f]
 #
-#   -e DIR   evidence medium mount point (default /media/evidence)
+#   -e DIR   evidence directory, on the evidence medium (default /media/evidence)
 #   -b N     memory-route proof budget: stop after N proof attempts per volume (default 64)
 #   -m       after the keys, also write a memory image to the evidence medium (see below)
+#   -f       accept an evidence directory on the examined system's own disk (for a test)
 #   -h       this text
 #
 # The machine is met running with its encrypted storage unlocked. Powering it off turns the data
@@ -48,9 +49,21 @@
 # pick or build the Volatility 3 symbol table of exactly this kernel. The image needs as much
 # free space on the evidence medium as the machine has memory. Lockdown confidentiality refuses it.
 #
+# The evidence directory. A key that is written to the examined disk changes that disk, and a
+# key that is written into an encrypted volume of the examined system is locked in with the data
+# at power-off. The script therefore finds the mount that holds the directory in
+# /proc/self/mountinfo and the whole disks beneath it in /sys, and refuses a directory on the root
+# file system or on a disk that also carries the root file system. Where the kernel names no
+# block device for a file system (a network share, tmpfs, ZFS) only the first test applies, and a
+# loop device counts as a disk of its own. A directory on an open dm-crypt volume is accepted
+# with a note, because an encrypted evidence medium is one too.
+#
 # Output on the evidence medium, in triage_<host>_<time>/: triage.txt (this screen), verdict.json
-# (the same verdicts for a program, schema keep-report/1, no key in it), headers/, keys/,
-# memory/ with -m, and manifest.sha256 over all of them.
+# (the same verdicts for a program, schema keep-report/1, no key in it), headers/, keys/, log/
+# (what cryptsetup status, the scanner and AVML wrote), memory/ with -m, and manifest.sha256 over
+# all of them. In the names of the folder and of the files, every character of the host name or
+# of a mapping name that is not a letter, a digit or one of . _ + = @ , - becomes _, so that a
+# name cannot leave the evidence directory and FAT and exFAT take it.
 #
 # Needs root. The shell is the kit's bash-static and the utilities its static busybox, so the
 # script does not depend on the distribution. dmsetup and cryptsetup are the suspect's own. They
@@ -58,7 +71,7 @@
 # cryptsetup is chosen by what the installed release offers (--volume-key-file from 2.5.0,
 # --master-key-file before).
 
-VERSION="1.2.3 (2026-11)"
+VERSION="1.2.4 (2026-11)"
 umask 077                               # keys and the candidate list are written by this script
 KIT=$(cd "$(dirname "$0")" && pwd)
 BIN=$KIT/bin
@@ -68,12 +81,14 @@ export PATH LC_ALL=C TZ=UTC
 EVID=/media/evidence
 BUDGET=64
 MEMORY=0
+FORCE=0
 MOUNTS=/proc/mounts
-while getopts "e:b:mh" opt; do
+while getopts "e:b:mfh" opt; do
     case $opt in
         e) EVID=$OPTARG ;;
         b) BUDGET=$OPTARG ;;
         m) MEMORY=1 ;;
+        f) FORCE=1 ;;
         *) sed -n '2,52p' "$0"; exit 0 ;;
     esac
 done
@@ -92,21 +107,88 @@ jesc() {                                        # a string as the inside of a JS
     local s=${1//\\/\\\\}; s=${s//\"/\\\"}; s=${s//[$'\001'-$'\037']/ }; printf '%s' "$s"
 }
 jstr() { if [ -n "$1" ]; then printf '"%s"' "$(jesc "$1")"; else printf 'null'; fi; }
+# a name of the examined system for the screen: the kernel takes any byte in a host name and in a
+# mapping name, so control characters are replaced before the name reaches a terminal
+clean() { printf '%s' "${1//[$'\001'-$'\037'$'\177']/ }"; }
+# the same name as a part of a file name on the evidence medium (see the head of this script)
+fname() { local f=${1//[!A-Za-z0-9._+=@,-]/_}; printf '%s' "${f:-_}"; }
+
+# mount_of PATH : the mount that holds PATH, into M_ID, M_DEV (major:minor), M_POINT, M_OPTS,
+# M_TYPE and M_SRC. The fields are those of /proc/self/mountinfo (Documentation/filesystems/
+# proc.rst, 3.5). The mount with the longest mount point that is a prefix of PATH holds it, and
+# of two at the same mount point the later line, which lies on top.
+mount_of() {
+    local id dev mp opts rest best=-1
+    M_ID=""
+    while read -r id _ dev _ mp opts rest; do
+        printf -v mp '%b' "$mp"                 # a space in a mount point is written \040
+        case $1/ in "${mp%/}/"*) ;; *) continue ;; esac
+        [ "${#mp}" -ge "$best" ] || continue
+        best=${#mp}; M_ID=$id; M_DEV=$dev; M_POINT=$mp; M_OPTS=$opts
+        rest=" $rest"; rest=${rest#* - }        # past the optional fields and their separator
+        read -r M_TYPE M_SRC _ <<<"$rest"
+        printf -v M_SRC '%b' "$M_SRC"
+    done < /proc/self/mountinfo
+    [ -n "$M_ID" ]
+}
+# The block device of the mount just found, as major:minor, or nothing. For most file systems it
+# is the device number of the mount. btrfs shows an anonymous number there and names its device
+# as the source.
+mount_blockdev() {
+    local n
+    if [ -e "/sys/dev/block/$M_DEV" ]; then printf '%s' "$M_DEV"; return; fi
+    [ -b "$M_SRC" ] || return 0
+    n=$(readlink -f "$M_SRC"); n=${n##*/}
+    [ -r "/sys/class/block/$n/dev" ] && read -r n < "/sys/class/block/$n/dev" && printf '%s' "$n"
+}
+# under MAJOR:MINOR : the block devices a device stands on, one "dev NAME" per line for itself
+# and every device beneath, and "disk NAME" for each whole disk at the bottom. In sysfs a
+# partition lies in the directory of its disk, and a device-mapper, md or bcache device lists
+# what it stands on in slaves/.
+under() {
+    local p s d any=0
+    p=$(readlink -f "/sys/dev/block/$1") && [ -d "$p" ] || return 0
+    printf 'dev %s\n' "${p##*/}"
+    if [ -e "$p/partition" ]; then p=${p%/*}; printf 'dev %s\n' "${p##*/}"; fi
+    for s in "$p"/slaves/*; do
+        [ -r "$s/dev" ] && read -r d < "$s/dev" || continue
+        any=1; under "$d"
+    done
+    [ "$any" = 1 ] || printf 'disk %s\n' "${p##*/}"
+}
 
 # ---- preflight ---------------------------------------------------------------------------------
 [ "$(id -u)" = 0 ] || die "must run as root (sudo)"
-[ -d "$EVID" ] || die "evidence mount point $EVID does not exist"
+[ -d "$EVID" ] || die "the evidence directory $EVID does not exist"
+EVID=$(cd "$EVID" && pwd -P) || die "cannot enter the evidence directory"
+# where the evidence directory lies, and where the root file system
+mount_of / || die "no mount of / in /proc/self/mountinfo"
+ROOT_ID=$M_ID; ROOT_UNDER=$(under "$(mount_blockdev)")
+mount_of "$EVID" || die "no mount that holds $EVID in /proc/self/mountinfo"
+EVID_UNDER=$(under "$(mount_blockdev)")
+MEDIUM="$M_SRC ($M_TYPE) mounted at $M_POINT"
+OWN=""
+if [ "$M_ID" = "$ROOT_ID" ]; then
+    OWN="it lies on the root file system of the examined system"
+else
+    while read -r kind name; do
+        [ "$kind" = disk ] && grep -q -x "disk $name" <<<"$ROOT_UNDER" &&
+            { OWN="it lies on the disk $name, which also carries the root file system of the examined system"; break; }
+    done <<<"$EVID_UNDER"
+fi
+[ -z "$OWN" ] || [ "$FORCE" = 1 ] ||
+    die "the evidence directory $EVID is refused: $OWN. Mount an evidence medium and name a directory on it with -e. For a test, -f accepts this one."
+case ,$M_OPTS, in *,ro,*) die "$EVID is on a file system that is mounted read-only: $MEDIUM" ;; esac
 [ -w "$EVID" ] || die "$EVID is not writable"
-grep -q " $EVID .*[ ,]ro[ ,]" "$MOUNTS" && die "$EVID is mounted read-only"
 case $BUDGET in ''|*[!0-9]*) die "the budget must be a number" ;; esac
 command -v dmsetup   >/dev/null || die "dmsetup not found on the suspect"
 command -v cryptsetup>/dev/null || die "cryptsetup not found on the suspect"
 command -v kcore-keyscan >/dev/null || die "kcore-keyscan not on PATH (tool medium)"
 [ "$MEMORY" = 0 ] || command -v avml >/dev/null || die "avml not on PATH (tool medium), needed for -m"
 
-HOST=$(hostname)
-OUT=$EVID/triage_${HOST}_$(stamp)
-mkdir -p "$OUT/headers" "$OUT/keys" "$OUT/tmp" || die "cannot create $OUT"
+HOST=$(clean "$(hostname)")
+OUT=$EVID/triage_$(fname "$HOST")_$(stamp)
+mkdir "$OUT" && mkdir "$OUT/headers" "$OUT/keys" "$OUT/log" || die "cannot create $OUT"
 REPORT=$OUT/triage.txt
 STARTED=$(now)
 LOCKDOWN=$(cat /sys/kernel/security/lockdown 2>/dev/null | sed 's/.*\[\(.*\)\].*/\1/')
@@ -131,6 +213,8 @@ say "system: ${OSNAME:-unknown}"
 say "kernel lockdown: ${LOCKDOWN:-unknown}"
 if [ -n "$SB" ]; then say "secure boot: $SB (1 enabled)"; else say "secure boot: no SecureBoot variable"; fi
 say "evidence: $OUT"
+say "evidence medium: $MEDIUM, $(( $(df -k -P "$OUT" | awk 'NR==2{print $4}') / 1024 )) MiB free"
+[ -z "$OWN" ] || say "  accepted with -f although $OWN"
 say ""
 
 # the suspect's R1 binaries, recorded for the later archive check
@@ -147,7 +231,22 @@ say ""
 # ---- enumerate the open crypt volumes ----------------------------------------------------------
 mapfile -t MAPS < <(dmsetup ls --target crypt 2>/dev/null | awk 'NF>=1 && $1!="No" {print $1}' | sort)
 [ "${#MAPS[@]}" -gt 0 ] || say "no open dm-crypt volumes"
-[ "${#MAPS[@]}" -gt 0 ] && say "${#MAPS[@]} open dm-crypt volume(s): ${MAPS[*]}"
+[ "${#MAPS[@]}" -gt 0 ] && say "${#MAPS[@]} open dm-crypt volume(s): $(clean "${MAPS[*]}")"
+# The file name of each mapping. FAT and exFAT fold the case of a name, so two names that are the
+# same but for that are kept apart by a further _.
+declare -A FN TAKEN
+for m in "${MAPS[@]}"; do
+    f=$(fname "$m"); while [ -n "${TAKEN[${f,,}]:-}" ]; do f=${f}_; done
+    TAKEN[${f,,}]=1; FN[$m]=$f
+done
+# an evidence directory on one of these volumes: right for an encrypted evidence medium, and
+# fatal for the keys when the volume is the examined system's own
+while read -r kind name; do
+    [ "$kind" = dev ] && [ -r "/sys/class/block/$name/dm/name" ] && read -r dmname < "/sys/class/block/$name/dm/name" || continue
+    for m in "${MAPS[@]}"; do
+        [ "$m" = "$dmname" ] && say "note: the evidence directory lies on the open dm-crypt volume $(clean "$m"). If that volume belongs to the examined system, the keys written here are locked in with it at power-off."
+    done
+done <<<"$EVID_UNDER"
 # mounted file systems that can carry their own encryption. They are not dm-crypt and are outside
 # this script, so they are named, so that their absence from the verdicts is not read as "clear".
 OTHERFS=$(awk '$3=="ecryptfs" || $3=="zfs" || $3 ~ /^fuse\.(gocryptfs|cryfs|encfs)$/ {print $3}' "$MOUNTS" | sort -u | tr '\n' ' ')
@@ -167,7 +266,7 @@ prove() {  # prove KEYFILE HEADER
 verdict() {  # verdict VERDICT ROUTE KEYHASH NOTE
     say "  VERDICT: $1${4:+ ($4)}"
     VERDICT[$m]=$1
-    JVOL+=("{\"name\": $(jstr "$m"), \"type\": $(jstr "$typ"), \"cipher\": $(jstr "$cip"), \"key_bits\": ${ksz:-null}, \"key_location\": $(jstr "$loc"), \"device\": $(jstr "$dev"), \"header_backup\": $(jstr "${hdr:+headers/$m.hdr}"), \"route\": $(jstr "$2"), \"verdict\": $(jstr "$1"), \"key_sha256_16\": $(jstr "$3"), \"note\": $(jstr "$4")}")
+    JVOL+=("{\"name\": $(jstr "$m"), \"type\": $(jstr "$typ"), \"cipher\": $(jstr "$cip"), \"key_bits\": ${ksz:-null}, \"key_location\": $(jstr "$loc"), \"device\": $(jstr "$dev"), \"header_backup\": $(jstr "${hdr:+headers/$f.hdr}"), \"route\": $(jstr "$2"), \"verdict\": $(jstr "$1"), \"key_sha256_16\": $(jstr "$3"), \"note\": $(jstr "$4")}")
     say ""
 }
 
@@ -181,12 +280,12 @@ scan_once() {
     fi
     SCANNED=1
     say "  R3 memory: searching /proc/kcore for AES key schedules"
-    if kcore-keyscan /proc/kcore > "$CAND" 2> "$OUT/tmp/kcore.err"; then
+    if kcore-keyscan /proc/kcore > "$CAND" 2> "$OUT/log/kcore-keyscan.txt"; then
         SCANOK=1
         say "  $(wc -l < "$CAND") schedules found, list in keys/kcore-candidates.txt"
         flush "$CAND" "$OUT/keys" || say "  the list could not be flushed to the evidence medium"
     else
-        SCANERR=$(head -n 1 "$OUT/tmp/kcore.err")
+        SCANERR=$(head -n 1 "$OUT/log/kcore-keyscan.txt")
         say "  the search failed: ${SCANERR:-no message}"
     fi
 }
@@ -197,8 +296,9 @@ field() {  # field LABEL
 }
 
 for m in "${MAPS[@]}"; do
-    say "==== $m"
-    status=$OUT/tmp/$m.status
+    f=${FN[$m]}
+    say "==== $(clean "$m")"
+    status=$OUT/log/$f.status.txt
     cryptsetup status "$m" > "$status" 2>&1 || true
     typ=$(field type); cip=$(field cipher); loc=$(field "key location"); dev=$(field device)
     ksz=$(awk '/keysize:/{print $2}' "$status")
@@ -222,9 +322,9 @@ for m in "${MAPS[@]}"; do
     hdr=""
     case $typ in
         LUKS1|LUKS2)
-            hdr=$OUT/headers/$m.hdr
+            hdr=$OUT/headers/$f.hdr
             if cryptsetup luksHeaderBackup "$dev" --header-backup-file "$hdr" 2>/dev/null; then
-                say "  header backed up: headers/$m.hdr ($(stat -c%s "$hdr") bytes)"
+                say "  header backed up: headers/$f.hdr ($(stat -c%s "$hdr") bytes)"
                 flush "$hdr" "$OUT/headers" || say "  the header backup could not be flushed to the evidence medium"
             else
                 say "  header backup FAILED for $dev"; hdr=""
@@ -233,7 +333,7 @@ for m in "${MAPS[@]}"; do
 
     # ---- R1: the table carries the key ----
     if [ -n "$keyfield" ] && [ "${keyfield:0:1}" != ":" ]; then
-        kf=$OUT/keys/$m.vk
+        kf=$OUT/keys/$f.vk
         if ! { printf '%s' "$keyfield" | hex2bin > "$kf"; } || ! flush "$kf" "$OUT/keys"; then
             say "  R1 table: the key is in the table and could not be written to the evidence medium"
             verdict "needs a memory read" "" "" "the write of the key to the evidence medium failed"
@@ -283,7 +383,7 @@ for m in "${MAPS[@]}"; do
         esac
         continue
     fi
-    kf=$OUT/keys/$m.vk
+    kf=$OUT/keys/$f.vk
     proven=0; tried=0
     if [ "$cclass" = xts ]; then
         half=$(( ksz / 2 ))                # bits of each XTS half: 256 or 128
@@ -363,7 +463,7 @@ if [ "$MEMORY" = 1 ]; then
     else
         say "  writing up to $(( ram / 1048576 )) MiB with ${avmlv:-avml}"
         t0=$SECONDS
-        if avml acquire "$img" > "$OUT/tmp/avml.out" 2> "$OUT/tmp/avml.err" && flush "$img" "$OUT/memory"; then
+        if avml acquire "$img" > "$OUT/log/avml.txt" 2>&1 && flush "$img" "$OUT/memory"; then
             msecs=$(( SECONDS - t0 )); mbytes=$(stat -c%s "$img")
             MEMHASH=$(sha256sum "$img" | cut -c1-64)
             mstatus="captured"
@@ -373,7 +473,7 @@ if [ "$MEMORY" = 1 ]; then
             rc=$?
             rm -f "$img"
             mstatus="failed"
-            mnote=$(grep -v '^[[:space:]]*$' "$OUT/tmp/avml.err" | head -n 6 | tr -s ' \t\n' ' ')
+            mnote=$(grep -v '^[[:space:]]*$' "$OUT/log/avml.txt" | head -n 6 | tr -s ' \t\n' ' ')
             mnote="avml exit $rc: ${mnote% }"
             say "  failed: $mnote"
             [ "$LOCKDOWN" = confidentiality ] && say "  lockdown confidentiality refuses every memory source"
@@ -408,7 +508,7 @@ fi
 
 # ---- summary -----------------------------------------------------------------------------------
 say "==== verdicts"
-for m in "${MAPS[@]}"; do say "  $(printf '%-16s' "$m")  ${VERDICT[$m]:-unknown}"; done
+for m in "${MAPS[@]}"; do say "  $(printf '%-16s' "$(clean "$m")")  ${VERDICT[$m]:-unknown}"; done
 [ "$MEMORY" = 1 ] && say "  $(printf '%-16s' "memory image")  $mstatus"
 say ""
 FINISHED=$(now)
@@ -421,7 +521,8 @@ say "finished $FINISHED"
     printf '  "cryptsetup": %s,\n  "other_filesystems": %s,\n' "$(jstr "$CSVER")" "$(jstr "$OTHERFS")"
     printf '  "started_utc": "%s",\n  "finished_utc": "%s",\n' "$STARTED" "$FINISHED"
     printf '  "lockdown": %s,\n  "secure_boot": %s,\n' "$(jstr "$LOCKDOWN")" "$(jstr "$SB")"
-    printf '  "source": "/proc/kcore",\n  "memory": %s,\n  "binaries": [' "${MEMJ:-null}"
+    printf '  "source": "/proc/kcore",\n  "evidence_medium": %s,\n' "$(jstr "$MEDIUM")"
+    printf '  "memory": %s,\n  "binaries": [' "${MEMJ:-null}"
     sep=""; for j in "${JBIN[@]}"; do printf '%s\n    %s' "$sep" "$j"; sep=","; done
     printf '\n  ],\n  "volumes": ['
     sep=""; for j in "${JVOL[@]}"; do printf '%s\n    %s' "$sep" "$j"; sep=","; done
@@ -432,7 +533,7 @@ say "finished $FINISHED"
 (
     cd "$OUT" || exit 1
     {
-        find triage.txt verdict.json keys headers memory -type f ! -name memory.lime -print0 2>/dev/null | xargs -0 sha256sum 2>/dev/null
+        find triage.txt verdict.json keys headers log memory -type f ! -name memory.lime -print0 2>/dev/null | xargs -0 sha256sum 2>/dev/null
         [ -n "$MEMHASH" ] && printf '%s  memory/memory.lime\n' "$MEMHASH"
     } | sort -k 2 > manifest.sha256
 ) || WRITEFAIL=1

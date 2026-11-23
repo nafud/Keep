@@ -49,7 +49,10 @@ mk() {  # mk NAME TYPE [options]
 mk kc_l2 luks2 --pbkdf pbkdf2 --pbkdf-force-iterations 1000
 mk kc_l1 luks1 --pbkdf pbkdf2 --pbkdf-force-iterations 1000
 
-"$KIT/bin/bash" "$KIT/keytriage.sh" -e "$W/evid" $MEM > "$W/screen.txt" 2>&1
+# $W is on the disk of this guest, which keytriage.sh refuses as an evidence directory unless -f
+"$KIT/bin/bash" "$KIT/keytriage.sh" -e "$W/evid" > "$W/refused.txt" 2>&1
+REFUSED=$?
+"$KIT/bin/bash" "$KIT/keytriage.sh" -f -e "$W/evid" $MEM > "$W/screen.txt" 2>&1
 RC=$?
 O=$(ls -d "$W"/evid/triage_* 2>/dev/null | tail -n 1)
 J=$O/verdict.json
@@ -89,5 +92,10 @@ if [ -n "$MEM" ]; then
     fi
 fi
 (cd "$O" && sha256sum -c --quiet manifest.sha256 >/dev/null 2>&1) && echo "PASS   manifest of the triage folder" || { echo "FAIL   manifest"; PASS=0; }
+if [ "$REFUSED" = 1 ] && grep -q 'is refused: it lies on' "$W/refused.txt" && [ "$(ls "$W/evid" | wc -l)" = 1 ]; then
+    echo "PASS   an evidence directory on the guest's own disk is refused without -f"
+else
+    echo "FAIL   an evidence directory on the guest's own disk is not refused: $(head -n 1 "$W/refused.txt")"; PASS=0
+fi
 echo
 if [ "$PASS" = 1 ]; then echo "RESULT: PASS"; else echo "RESULT: FAIL"; echo; echo "---- screen output of the tool"; cat "$W/screen.txt"; fi

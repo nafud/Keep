@@ -200,8 +200,10 @@ if command -v cryptsetup >/dev/null; then
     #   id              says 0, which is the only thing asked of it
     #   sync            notes what it is asked to flush, fails while $STUB/sync-fails exists and
     #                   is the applet otherwise
+    #   hostname        says what $STUB/hostname holds, and is the applet without that file
     # t_table is the LUKS1 header with its key in the table line (route R1), t_keyring the LUKS2
-    # header with a keyring reference (route R3).
+    # header with a keyring reference (route R3). t:plain and T:plain are plain mappings, whose
+    # names FAT and exFAT refuse as file names and which differ only by case.
     if command -v busybox >/dev/null; then
         KIT=$T/kit; SYS=$T/kit/bin; STUB=$T/stub; REALCS=$(command -v cryptsetup); BB=$(command -v busybox)
         TSH=$(command -v bash-static || command -v bash)
@@ -225,6 +227,10 @@ printf '%s\\n' "\$*" >> "$T/sync.log"
 [ ! -e "$STUB/sync-fails" ] || { echo "sync: stand-in failure" >&2; exit 1; }
 exec "$BB" sync "\$@"
 EOT
+        standin "$KIT/bin/hostname" <<EOT
+#!/bin/bash
+if [ -f "$STUB/hostname" ]; then cat "$STUB/hostname"; else exec "$BB" hostname; fi
+EOT
         standin "$SYS/dmsetup" <<EOT
 #!/bin/bash
 for n in "\$@"; do :; done                # the mapping is the last argument
@@ -242,7 +248,11 @@ EOT
         status() {  # status NAME TYPE CIPHER BITS LOCATION DEVICE
             printf '/dev/mapper/%s is active.\n  type:    %s\n  cipher:  %s\n  keysize: %s bits\n  key location: %s\n  device:  %s\n' "$@" > "$STUB/$1.status"
         }
-        printf 't_table\t(253:0)\nt_keyring\t(253:1)\n' > "$STUB/ls.txt"
+        printf 't_table\t(253:0)\nt_keyring\t(253:1)\nt:plain\t(253:2)\nT:plain\t(253:3)\n' > "$STUB/ls.txt"
+        for n in t:plain T:plain; do
+            printf '0 16384 crypt aes-xts-plain64 %s 0 7:2 0\n' "$(hexof "$T/keys/other.vk")" > "$STUB/$n.table"
+            status "$n" PLAIN aes-xts-plain64 512 dm-crypt /dev/loop2
+        done
         printf '0 16384 crypt aes-xts-plain64 %s 0 7:0 4096\n' "$(hexof "$T/keys/k128.vk")" > "$STUB/t_table.table"
         printf '0 32768 crypt aes-xts-plain64 :64:logon:cryptsetup:selftest-d0 0 7:1 32768\n' > "$STUB/t_keyring.table"
         status t_table LUKS1 aes-xts-plain64 256 dm-crypt "$T/l1.img"
@@ -255,7 +265,7 @@ EOT
             local name=$1 rc; shift
             mkdir "$T/tevid/$name" || return 1
             : > "$T/sync.log"
-            ( umask 022; "$TSH" "$KIT/keytriage.sh" -e "$T/tevid/$name" "$@" > "$T/$name.txt" 2>&1 ); rc=$?
+            ( umask 022; "$TSH" "$KIT/keytriage.sh" -f -e "$T/tevid/$name" "$@" > "$T/$name.txt" 2>&1 ); rc=$?
             ln -s "$(echo "$T/tevid/$name"/triage_*)" "$T/$name.d"
             return "$rc"
         }
@@ -299,6 +309,27 @@ for v in json.load(open(sys.argv[1] + "/verdict.json"))["volumes"]:
             grep -q 'FAILED, the folder is not complete' "$T/noflush.txt"
         }
         check "keytriage.sh counts no key as captured when the flush fails, and ends with status 1" triage_flushfail
+        triage_own_disk() {
+            "$TSH" "$KIT/keytriage.sh" -e / > "$T/own.txt" 2>&1
+            [ $? -eq 1 ] && grep -q 'is refused: it lies on the root file system' "$T/own.txt" || { cat "$T/own.txt"; return 1; }
+            grep -q 'accepted with -f although it lies on' "$T/both.d/triage.txt" || [ "$(stat -c %d "$T")" != "$(stat -c %d /)" ]
+        }
+        check "keytriage.sh refuses an evidence directory on the root file system without -f" triage_own_disk
+        triage_names() {
+            local d=$T/both.d
+            cmp "$d/keys/T_plain.vk" "$T/keys/other.vk" && cmp "$d/keys/t_plain_.vk" "$T/keys/other.vk" || return 1
+            [ "$(verdict_of "$d" t:plain)" = "captured, in use" ] && [ "$(verdict_of "$d" T:plain)" = "captured, in use" ] || return 1
+            [ ! -e "$d/tmp" ] && grep -q ' log/t_table.status.txt$' "$d/manifest.sha256" && grep -q ' log/kcore-keyscan.txt$' "$d/manifest.sha256" ||
+                { echo "log/ is not there or not in the manifest"; return 1; }
+            # a host name that tries to leave the evidence directory and to clear the screen
+            printf 'pc/../../out\033[2Jside\n' > "$STUB/hostname"; triage names; rm -f "$STUB/hostname"
+            [ -d "$(echo "$T"/tevid/names/triage_pc_.._.._out__2Jside_*)" ] || { echo "the folder is not where it belongs"; ls -R "$T/tevid/names" | head; return 1; }
+            ! grep -q "$(printf '\033')" "$T/names.txt" "$T/names.d/triage.txt" || { echo "an escape character reaches the screen"; return 1; }
+            python3 -I -c 'import json, sys
+host = json.load(open(sys.argv[1]))["host"]
+sys.exit(0 if host == "pc/../../out [2Jside" else "host in the report: %r" % host)' "$T/names.d/verdict.json"
+        }
+        check "keytriage.sh keeps host and mapping names inside the evidence folder and off the terminal" triage_names
     else
         skip "busybox is not installed: keytriage.sh is not run"
     fi
