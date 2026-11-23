@@ -15,23 +15,20 @@
 </head>
 <body>
 <a class="skip" href="#overview">Skip to the content</a>
+<!-- The labels on the upper line of the frame: the name of the page and the way to its source. -->
+<header class="chrome top">
+  <a class="chrome-title" href="#overview" title="To the top of the page">[keep]</a>
+  <a href="https://github.com/nafud/Keep" title="The source of Keep, github.com/nafud/Keep">src</a>
+</header>
 <div class="page">
 
-<aside class="panel side" aria-label="About Keep">
-  <div class="logo" role="img" aria-label="Keep. The word stands in front of a key.">
-    <pre class="logo-key" aria-hidden="true"></pre>
+<aside class="side" aria-label="Keep">
+  <div class="logo" role="img" aria-label="Keep">
     <pre class="logo-word" aria-hidden="true">Keep</pre>
   </div>
-  <p class="tagline">Decryption-readiness triage for live Linux</p>
-  <dl class="facts">
-    <div><dt>version</dt><dd>1.5.0</dd></div>
-    <div><dt>author</dt><dd><a href="https://github.com/nafud">nafud</a></dd></div>
-    <div><dt>source</dt><dd><a href="https://github.com/nafud/Keep">github.com/nafud/Keep</a></dd></div>
-  </dl>
-  <p class="notice">For lawful examination of systems the examiner is authorised to examine.</p>
 </aside>
 
-<main class="panel content">
+<main class="content">
 
 <section id="overview">
 <h1>Decryption-readiness triage for an unlocked Linux system</h1>
@@ -79,7 +76,7 @@ Memory dump:                after the keys, AVML, LiME format, the size of the m
 Command:                    /media/tools/bin/bash -p /media/tools/keytriage.sh -d /media/examiner/disk -b 64 -m
 
 Continue with these values (yes, no) [yes]:</code></pre></div>
-<p>The destination is the examiner's decision. Keep asks for it, offers the current directory, and does not test where it lies. A memory dump is taken after the keys, because an event can close their window within seconds and an image of a large machine takes minutes. Compressed, it is for a destination with less free space than the machine has memory. How much that saves depends on what the memory holds: in the four runs of the pipeline that took it, the image had 85 % to 87 % of the size of the memory.</p>
+<p>The destination is the examiner's decision. Keep asks for it, offers the current directory, and does not test where it lies. A memory dump is taken after the keys, because an event can close their window within seconds and an image of a large machine takes minutes. Compressed, it is for a destination with less free space than the machine has memory. How much that saves depends on what the memory holds: in the five runs of the pipeline that took it, the image had 85 % to 87 % of the size of the memory.</p>
 <p><code>keep</code> is a small static program of the medium. It starts the dialogue in the medium's own shell with <code>-p</code>, which keeps the environment of the examined system's root shell out of the scripts, and they refuse any other start. The script that does the work takes the same parameters as options, for a run without questions: the keys into the current directory, or into the directory of <code>-d</code>, with <code>-m</code> a memory dump and with <code>-m -c</code> a compressed one.</p>
 <div class="code cmd"><pre><code>sudo /media/tools/bin/bash -p /media/tools/keytriage.sh -d DIR -m</code></pre></div>
 <p>One verdict is printed per volume, with what the volume carries: where it and the devices that stand on it, such as logical volumes, are mounted or used as swap. An example of the screen, shortened, with illustrative values:</p>
@@ -233,7 +230,7 @@ python3 -I vkverify.py CANDIDATES [HEADER...] [--image DISK]... [--out DIR] [--j
 <tr><td>Rocky Linux 10.3</td><td>6.12.0-264.16.1.el10_3</td><td>2.8.6</td><td>1.5.0</td></tr>
 <tr><td>openSUSE Leap 16.1</td><td>6.12.0-160100.9-default</td><td>2.8.4</td><td>1.5.0</td></tr>
 <tr><td>Arch Linux</td><td>7.3.4-arch1-2</td><td>2.8.8</td><td>1.5.0</td></tr>
-<tr><td>Ubuntu 24.04 runner</td><td>7.0.0-1014-aws</td><td>2.7.0</td><td>1.4.2</td></tr>
+<tr><td>Ubuntu 24.04 runner</td><td>7.0.0-1014-aws</td><td>2.7.0</td><td>1.5.0</td></tr>
 <tr><td>Ubuntu 24.04 runner</td><td>7.0.0-1017-azure</td><td>2.7.0</td><td>1.5.0</td></tr>
 <tr><td>Ubuntu 22.04 runner</td><td>6.8.0-1070-azure</td><td>2.4.3</td><td>1.5.0</td></tr>
 </tbody>
@@ -280,9 +277,10 @@ python3 -I vkverify.py CANDIDATES [HEADER...] [--image DISK]... [--out DIR] [--j
 <p>Reports of a distribution where the check passes or fails are welcome as an issue on <a href="https://github.com/nafud/Keep/issues">GitHub</a>.</p>
 </section>
 
+<p class="colophon">Keep is made by <a href="https://github.com/nafud">nafud</a>, for lawful examination of systems the examiner is authorised to examine.</p>
 </main>
 
-<nav class="panel toc" aria-label="Table of contents">
+<nav class="toc" aria-label="Table of contents">
   <h2>Table of contents</h2>
   <ol>
     <li><a href="#overview">Overview</a></li>
@@ -306,6 +304,11 @@ python3 -I vkverify.py CANDIDATES [HEADER...] [--image DISK]... [--out DIR] [--j
   </ol>
 </nav>
 
+</div>
+<!-- The labels on the lower line of the frame: the version of keytriage.sh, and, written by
+     keep.js, the position in the page. -->
+<div class="chrome bottom">
+  <span title="The version of keytriage.sh">keep <span>1.5.0</span></span>
 </div>
 </body>
 </html>

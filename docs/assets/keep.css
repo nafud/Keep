@@ -1,6 +1,9 @@
-/* The page of Keep: three panels. Left the logo and the facts, in the middle the text, right the
-   table of contents. One typeface, JetBrains Mono, because every tool of Keep speaks in lines of
-   text. Colours follow the system's light or dark setting. */
+/* The page of Keep, laid out after the page of Kiln. The whole window is one pane with a thin
+   frame, like a terminal: the name of the page and the link to the source sit on its upper
+   line, the version and the position in the page on its lower line. Inside, three columns stand
+   on the one background with nothing drawn around them: left the word Keep, in the middle the
+   text, right the table of contents. One typeface, JetBrains Mono, because every tool of Keep
+   speaks in lines of text. Colours follow the system's light or dark setting. */
 
 @font-face {
   font-family: "JetBrains Mono";
@@ -14,7 +17,7 @@
   font-weight: 700;
   font-display: swap;
 }
-/* The glyphs K, e and p of UnifrakturMaguntia, for the logo only (see keep.js). */
+/* The glyphs K, e and p of UnifrakturMaguntia, for the word in the left column (see keep.js). */
 @font-face {
   font-family: "Keep Blackletter";
   src: url("fonts/keep-blackletter.woff2") format("woff2");
@@ -35,9 +38,11 @@
   --warn: #a65a05;
   --bad: #b42323;
   --logo-word: #1f2729;
-  --logo-key: #0f766e;
   --gap: 20px;
-  --radius: 14px;
+  /* The frame stands this far from the edges of the window. A row of labels is twice that and
+     the line high, so that the text of a label is centred on the line. */
+  --inset: 12px;
+  --row: calc(var(--inset) * 2 + 1px);
   --mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace;
 }
 @media (prefers-color-scheme: dark) {
@@ -55,12 +60,13 @@
     --warn: #f0b243;
     --bad: #f47f7f;
     --logo-word: #dfe3e4;
-    --logo-key: #3fd0bd;
   }
 }
 
 *, *::before, *::after { box-sizing: border-box; }
-html { scroll-behavior: smooth; scroll-padding-top: 28px; -webkit-text-size-adjust: 100%; }
+/* The pane has no scrollbar: the position stands on the lower line of the frame (keep.js). */
+html { scroll-behavior: smooth; scroll-padding-top: calc(var(--row) + 16px); -webkit-text-size-adjust: 100%; scrollbar-width: none; }
+html::-webkit-scrollbar { display: none; }
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
 body {
   margin: 0;
@@ -73,72 +79,93 @@ body {
 a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 3px; }
 a:hover { text-decoration-thickness: 2px; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
-.skip { position: absolute; left: -999px; top: 8px; background: var(--surface); padding: 6px 10px; z-index: 2; }
-.skip:focus { left: 8px; }
+.skip { position: absolute; left: -999px; top: 30px; background: var(--surface); padding: 6px 10px; z-index: 7; }
+.skip:focus { left: 30px; }
 
-/* ---- the three panels ---- */
+/* ---- the frame ---- */
+/* A border that stays in place (body::before), and two strips in the colour of the background
+   that cover what lies outside its upper and lower line (html::before and ::after), so that text
+   which scrolls away ends at the frame as it does at the edge of a terminal pane. Above them
+   the labels, each on the background colour, so that the line seems to run behind it. */
+html::before, html::after {
+  content: "";
+  position: fixed; left: 0; right: 0;
+  height: var(--inset);
+  background: var(--bg);
+  z-index: 4;
+}
+html::before { top: 0; }
+html::after { bottom: 0; }
+body::before {
+  content: "";
+  position: fixed; inset: var(--inset);
+  border: 1px solid var(--border); border-radius: 6px;
+  pointer-events: none;
+  z-index: 5;
+}
+.chrome {
+  position: fixed; left: 0; right: 0; z-index: 6;
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  height: var(--row);
+  padding: 0 22px;
+  color: var(--muted);
+  font-size: 11px; font-weight: 700; line-height: 1; letter-spacing: 0.05em;
+  pointer-events: none;               /* the row takes no click, only its labels do */
+  user-select: none;
+}
+.chrome.top { top: 0; }
+.chrome.bottom { bottom: 0; }
+.chrome > * { background: var(--bg); padding: 0 0.45em; white-space: nowrap; pointer-events: auto; }
+.chrome a { color: inherit; text-decoration: none; transition: color 150ms ease; }
+.chrome a:hover { color: var(--accent); }
+.chrome .chrome-title { color: var(--text); letter-spacing: 0.04em; }
+
+/* ---- the three columns ---- */
 .page {
   display: grid;
-  grid-template-columns: 320px minmax(0, 1fr) 256px;
-  gap: var(--gap);
+  /* the text keeps a width that reads well, and the two columns beside it share the rest */
+  grid-template-columns: minmax(240px, 1fr) minmax(0, 840px) minmax(220px, 1fr);
+  gap: 48px;
   align-items: start;
-  max-width: 1500px;
-  margin: 0 auto;
-  padding: var(--gap);
+  padding: calc(var(--row) + 14px) calc(var(--inset) + var(--gap)) calc(var(--row) + 14px);
 }
-.panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
-.side, .toc { position: sticky; top: var(--gap); }
-.side {
-  height: calc(100vh - 2 * var(--gap));
-  height: calc(100dvh - 2 * var(--gap));
-  overflow: auto;
-  padding: 26px 22px 22px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  text-align: center;
-}
+.side, .toc { position: sticky; top: calc(var(--row) + 14px); }
+.side { padding: 22px 8px 0; }
 .toc {
-  max-height: calc(100vh - 2 * var(--gap));
-  max-height: calc(100dvh - 2 * var(--gap));
+  max-height: calc(100vh - 2 * var(--row) - 28px);
+  max-height: calc(100dvh - 2 * var(--row) - 28px);
   overflow: auto;
-  padding: 22px 20px;
+  scrollbar-width: none;
+  padding: 22px 8px 0;
 }
-.content { min-width: 0; padding: 44px 52px 56px; }
+.toc::-webkit-scrollbar { display: none; }
+.content { min-width: 0; padding: 22px 12px 24px; }
 
-/* ---- the logo ---- */
-/* The two layers lie in the same grid cell: the key behind, the word in front. Before keep.js
-   has drawn them the word stands as plain text in the logo typeface. */
+/* ---- the word ---- */
+/* keep.js turns the word into a grid of characters. Before it has done so, and without it, the
+   word stands as plain text in its typeface. */
 .logo {
   display: grid;
   place-items: center;
   width: 100%;
-  aspect-ratio: 1 / 1;
+  aspect-ratio: 2 / 1;
   overflow: hidden;
   user-select: none;
   cursor: default;
 }
 .logo pre {
-  grid-area: 1 / 1;
   margin: 0;
-  font: 400 4px/1.2 var(--mono);
+  font: 400 5px/1.2 var(--mono);
   letter-spacing: 0;
   white-space: pre;
+  color: var(--logo-word);
 }
-.logo-word { color: var(--logo-word); }
-.logo-key { color: var(--logo-key); opacity: 0.6; }
-.logo:not(.generated) .logo-word { font: 400 5.4rem/1 "Keep Blackletter", serif; }
-.logo:not(.generated) .logo-key { display: none; }
-
-.tagline { margin: 14px 0 0; color: var(--text-2); font-size: 13px; line-height: 1.55; max-width: 24ch; }
-.facts { margin: 22px 0 0; width: 100%; border-top: 1px solid var(--border); padding-top: 18px; }
-.facts div { display: grid; grid-template-columns: 8ch 1fr; gap: 10px; text-align: left; padding: 3px 4px; font-size: 13px; }
-.facts dt { color: var(--muted); }
-.facts dd { margin: 0; overflow-wrap: anywhere; }
-.notice { margin: auto 0 0; padding-top: 20px; color: var(--muted); font-size: 12px; line-height: 1.55; max-width: 30ch; }
+.logo:not(.generated) pre { font: 400 5.4rem/1 "Keep Blackletter", serif; }
 
 /* ---- the text ---- */
 .content section + section { margin-top: 46px; }
+.content .colophon { margin: 56px 0 0; color: var(--muted); font-size: 12.5px; text-align: center; max-width: none; }
+.content .colophon a { color: var(--text-2); }
 .content :is(p, ul, .lead) { max-width: 82ch; }
 h1 { font-size: 23px; line-height: 1.35; margin: 0 0 18px; letter-spacing: -0.01em; max-width: 34ch; text-wrap: balance; }
 h2 { font-size: 17px; line-height: 1.4; margin: 0 0 14px; padding-top: 22px; border-top: 1px solid var(--border); }
@@ -197,17 +224,15 @@ td:first-child { white-space: nowrap; }
 
 /* ---- narrower windows ---- */
 @media (max-width: 1180px) {
-  .page { grid-template-columns: 290px minmax(0, 1fr); }
+  .page { grid-template-columns: 260px minmax(0, 1fr); gap: 32px; }
   .toc { display: none; }
-  .content { padding: 36px 34px 44px; }
 }
 @media (max-width: 800px) {
-  :root { --gap: 12px; }
-  .page { grid-template-columns: minmax(0, 1fr); }
-  .side { position: static; height: auto; padding: 20px 16px; }
-  .logo { max-width: 300px; }
-  .notice { margin-top: 0; }
-  .content { padding: 26px 18px 34px; }
+  :root { --gap: 4px; }
+  .page { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .side { position: static; padding: 10px 0 0; }
+  .logo { max-width: 300px; margin: 0 auto; }
+  .content { padding: 14px 4px 20px; }
   h1 { font-size: 20px; }
   td:first-child { white-space: normal; }
 }
