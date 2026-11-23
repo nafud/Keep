@@ -20,6 +20,15 @@ The proof. A LUKS header stores a digest of its volume key: PBKDF2 over the key,
 and the iteration count of the header (LUKS1: 20 bytes in the binary header; LUKS2: the
 "digests" object of the JSON area). A key that gives the stored digest is the volume key.
 
+A header whose keyslots were erased ("cryptsetup erase") no longer opens with any passphrase, but
+it keeps the digest, so a key from memory is still proven against it, and it is then the only
+way into the volume. LUKS2 states the key size in the keyslots, so for such a header the size is
+not known and keys of every size are tried.
+
+A file that ends inside a header, or a header whose fields cannot be read, is reported as
+"unreadable header" and the run goes on. Two headers with the same file name get apart by a
+number: NAME and NAME-2.
+
 The search returns single AES keys. With aes-xts the volume key is two AES keys, the data key
 followed by the tweak key, so every ordered pair of candidates of the right size is tested.
 The kernel keeps the two schedules in one structure, the tweak schedule first and the data
@@ -31,6 +40,10 @@ first. The distance only sets the order of the attempts. The digest alone decide
               have no header and so no digest.
 --out DIR     write each proven volume key to DIR/NAME.vk (mode 600), for
               "cryptsetup open --volume-key-file".
+
+With many candidates and no proof the pairs are many: n keys of one size give n * n pairs, each
+one PBKDF2 run. The number of tests is printed at the start of each header, and while a header
+takes long a line on standard error says how far the run is.
 --json FILE   write the result for a program (schema keep-report/1). A key is named in it
               by the first 16 digits of its SHA-256 and never written, also with --show-keys.
 --show-keys   print the keys. Without it a key is named by the first 16 digits of its SHA-256.
@@ -39,6 +52,7 @@ Python standard library only.
 """
 import argparse
 import base64
+import binascii
 import hashlib
 import json
 import os
@@ -47,7 +61,7 @@ import struct
 import sys
 import time
 
-VERSION = "1.2.1"
+VERSION = "1.3.0"
 XTS_DISTANCE = 496      # data schedule minus tweak schedule, struct aesni_xts_ctx
 LINE = re.compile(r"^AES-(128|256) phys (0x[0-9a-f]+) virt (\S+) key ([0-9a-f]+)\s*$")
 SHOW = False
@@ -75,11 +89,21 @@ LUKS_MAGIC = b"LUKS\xba\xbe"
 
 
 def read_header_at(f, base=0):
-    """Return the digest parameters of the LUKS header at offset base in open file f."""
+    """Return the digest parameters of the LUKS header at offset base in open file f. Whatever
+    is wrong with the header is a ValueError, so that one bad header never stops the run."""
+    try:
+        return parse_header(f, base)
+    except (KeyError, IndexError, TypeError, AttributeError, struct.error, binascii.Error) as e:
+        raise ValueError(f"malformed LUKS header ({type(e).__name__}: {e})") from None
+
+
+def parse_header(f, base):
     f.seek(base)
     head = f.read(4096)
     if head[:6] != LUKS_MAGIC:
         raise ValueError("no LUKS header")
+    if len(head) < 208:                     # the last field read here, the UUID, ends at 208
+        raise ValueError("the file ends inside the LUKS header")
     version = struct.unpack(">H", head[6:8])[0]
     text = lambda b: b.split(b"\0")[0].decode()
     if version == 1:
@@ -96,13 +120,18 @@ def read_header_at(f, base=0):
         if not 4096 < hdr_size <= 16 << 20:
             raise ValueError("LUKS2 header size out of range")
         f.seek(base + 4096)
-        meta = json.loads(f.read(hdr_size - 4096).split(b"\0")[0])
+        area = f.read(hdr_size - 4096)
+        if len(area) < hdr_size - 4096:
+            raise ValueError("the file ends inside the JSON area of the LUKS2 header")
+        meta = json.loads(area.split(b"\0")[0])
         for d in meta["digests"].values():
             if d["type"] == "pbkdf2" and d["segments"]:
-                slot = meta["keyslots"][d["keyslots"][0]]
                 seg = meta["segments"][d["segments"][0]]
+                # The key size stands in the keyslots that the digest names. After "cryptsetup
+                # erase" the digest names none, and the size is then not known (None).
+                sizes = {meta["keyslots"][k]["key_size"] for k in d["keyslots"] if k in meta["keyslots"]}
                 return dict(version=2, uuid=text(head[168:208]), cipher=seg["encryption"],
-                            hash=d["hash"], key_size=slot["key_size"],
+                            hash=d["hash"], key_size=sizes.pop() if len(sizes) == 1 else None,
                             digest=base64.b64decode(d["digest"]),
                             salt=base64.b64decode(d["salt"]), iterations=d["iterations"])
         raise ValueError("LUKS2 header without a pbkdf2 digest of a data segment")
@@ -112,9 +141,11 @@ def read_header_at(f, base=0):
 def checked(h):
     """Refuse a header whose digest parameters cannot be those of a real header. The magic
     alone can occur in other data, and a header found by a scan must not stop the run."""
-    if h["hash"] not in hashlib.algorithms_available:
+    if not isinstance(h["hash"], str) or h["hash"] not in hashlib.algorithms_available:
         raise ValueError(f"unknown digest hash {h['hash']!r}")
-    if not (1 <= h["key_size"] <= 512 and h["iterations"] >= 1 and h["digest"] and h["salt"]):
+    size_ok = h["key_size"] is None or (isinstance(h["key_size"], int) and 1 <= h["key_size"] <= 512)
+    if not (size_ok and isinstance(h["iterations"], int) and h["iterations"] >= 1
+            and isinstance(h["cipher"], str) and h["digest"] and h["salt"]):
         raise ValueError("digest parameters out of range")
     return h
 
@@ -156,21 +187,31 @@ def proves(h, key):
 
 
 def attempts(cand, key_size, cipher):
-    """Keys to test for a header: with xts ordered pairs of halves, otherwise single keys first."""
-    if "xts" not in cipher:
-        for k in cand:
-            if len(k) == key_size:
-                yield k, None, None
-    halves = [k for k in cand if len(k) * 2 == key_size]
-    near, far = [], []
-    for data in halves:
-        for tweak in halves:
-            if data is tweak:
-                continue
-            adjacent = any(d - t == XTS_DISTANCE for d in cand[data] for t in cand[tweak])
-            (near if adjacent else far).append((data + tweak, data, tweak))
-    yield from near
-    yield from far
+    """Return (count, keys): the number of keys to test for a header and a generator of them as
+    (key, data half, tweak half). With xts these are ordered pairs of halves of one length,
+    otherwise single keys first and then the pairs. key_size None stands for every size. The
+    pairs whose schedules lie XTS_DISTANCE apart come first, by address, then every other pair
+    and last a key with itself, which a random volume key never is."""
+    singles = [] if "xts" in cipher else [k for k in cand if key_size in (None, len(k))]
+    halves = [k for k in cand if key_size in (None, 2 * len(k))]
+    count = len(singles) + sum(sum(len(k) == n for k in halves) ** 2 for n in {len(k) for k in halves})
+
+    def keys():
+        for k in singles:
+            yield k, None, None
+        at = {(len(k), p): k for k in halves for p in cand[k]}      # a schedule by size and address
+        near = set()
+        for (n, t), tweak in sorted(at.items()):
+            data = at.get((n, t + XTS_DISTANCE))
+            if data is not None and data != tweak and (data, tweak) not in near:
+                near.add((data, tweak))
+                yield data + tweak, data, tweak
+        for same in (False, True):
+            for data in halves:
+                for tweak in halves:
+                    if len(data) == len(tweak) and (data == tweak) == same and (data, tweak) not in near:
+                        yield data + tweak, data, tweak
+    return count, keys()
 
 
 def truth_keys(d):
@@ -215,51 +256,72 @@ def main():
                   volumes=[])
     entry = {}
     proven = {}
-    # the headers to prove against: files given as a header, and headers located in a disk image
+    # The headers to prove against: files given as a header, and headers located in a disk image.
+    # A name is that of the file. It names the key file of --out, so a second header of the same
+    # name gets a number.
     targets = []
+
+    def target(name, where, header):
+        unique, i = name, 1
+        while any(unique == t[0] for t in targets):
+            i += 1
+            unique = f"{name}-{i}"
+        targets.append((unique, where, header))
+
     for path in a.header:
         name = os.path.basename(path).rsplit(".", 1)[0]
         try:
-            targets.append((name, read_header(path)))
-        except (OSError, ValueError, KeyError) as e:
-            targets.append((name, e))
+            target(name, path, read_header(path))
+        except (OSError, ValueError) as e:
+            target(name, path, e)
     for img in a.image or []:
         base = os.path.basename(img)
         try:
             located = find_headers(img)
         except OSError as e:
-            targets.append((base, e))
+            target(base, img, e)
             continue
         if not located:
             print(f"\n{base}: no LUKS header found in the image")
         for off, h in located:
             print(f"\n{base}: LUKS{h['version']} header at offset 0x{off:x}")
-            targets.append((f"{base}@0x{off:x}", h))
-    for name, h in targets:
+            target(f"{base}@0x{off:x}", f"{img} at offset 0x{off:x}", h)
+    for name, where, h in targets:
         if isinstance(h, Exception):
             print(f"\n{name}: {h}")
-            entry[name] = dict(name=name, type=None, cipher=None, key_bits=None, route=None,
+            entry[name] = dict(name=name, type=None, cipher=None, key_bits=None, device=where, route=None,
                                verdict="unreadable header", key_sha256_16=None, note=str(h))
             report["volumes"].append(entry[name])
             continue
-        print(f"\n{name}: LUKS{h['version']}, {h['cipher']}, key of {h['key_size'] * 8} bits, "
-              f"UUID {h['uuid']}, digest pbkdf2-{h['hash']} with {h['iterations']} iterations")
+        bits = None if h["key_size"] is None else h["key_size"] * 8
+        print(f"\n{name}: LUKS{h['version']}, {h['cipher']}, "
+              + ("key size not stated, no keyslot is left" if bits is None else f"key of {bits} bits")
+              + f", UUID {h['uuid']}, digest pbkdf2-{h['hash']} with {h['iterations']} iterations")
+        print(f"  from {where}")
         entry[name] = e = dict(name=name, type=f"LUKS{h['version']}", cipher=h["cipher"],
-                               key_bits=h["key_size"] * 8, uuid=h["uuid"],
+                               key_bits=bits, device=where, uuid=h["uuid"],
                                digest="pbkdf2-" + h["hash"], route=None, verdict="not proven",
                                key_sha256_16=None, note="")
         report["volumes"].append(e)
         if not h["cipher"].startswith("aes"):
             e["note"] = "the cipher is not AES, so the AES schedule search does not apply"
             print("  " + e["note"])
-        t0, n = time.time(), 0
-        for key, data, tweak in attempts(cand, h["key_size"], h["cipher"]):
+        count, keys = attempts(cand, h["key_size"], h["cipher"])
+        print(f"  {count} candidate keys to test")
+        t0, n, told = time.time(), 0, 10.0
+        for key, data, tweak in keys:
             n += 1
+            if time.time() - t0 >= told:        # a long run says where it is, every 10 seconds
+                told += 10.0
+                rest = (count - n) * (time.time() - t0) / n
+                left = f"{rest:.0f} s" if rest < 120 else f"{rest / 60:.0f} min"
+                print(f"    {name}: {n} of {count} tested, about {left} more if none proves",
+                      file=sys.stderr, flush=True)
             if not proves(h, key):
                 continue
             proven[name] = key
             e.update(route="memory search", verdict="proven", key_sha256_16=short_hash(key),
-                     attempts=n, note="gives the digest of the header")
+                     key_bits=len(key) * 8, attempts=n, note="gives the digest of the header")
             print(f"  PROVEN at attempt {n} after {time.time() - t0:.1f} s: "
                   f"the volume key is {name_of(key)}")
             if data is not None:
@@ -280,7 +342,7 @@ def main():
             e.update(attempts=n, note=e["note"] or f"none of {n} candidate keys gives the digest")
 
     if a.out:
-        os.makedirs(a.out, exist_ok=True)
+        os.makedirs(a.out, mode=0o700, exist_ok=True)
         for name, key in proven.items():
             p = os.path.join(a.out, name + ".vk")
             with open(os.open(p, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "wb") as f:

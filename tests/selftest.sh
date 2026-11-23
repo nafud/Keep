@@ -14,7 +14,8 @@
 #              are refused
 #   verifier   LUKS2 and LUKS1 headers that cryptsetup makes from the same two keys: vkverify.py
 #              on the headers, offline-keyscan.sh on a disk image that holds both, keep-report.py
-#              on the report, and a candidate list without the keys, which must not prove
+#              on the report, and a candidate list without the keys, which must not prove. The
+#              same headers with their keyslots erased, cut short, malformed, and under one name
 #   proof      the proof command of keytriage.sh on the same headers, with the key and with another
 #   triage     keytriage.sh itself on stand-ins for the examined system's dmsetup, cryptsetup
 #              status and /proc/kcore, with the same headers, the real header backup and proof
@@ -196,6 +197,42 @@ if command -v cryptsetup >/dev/null; then
         [ $? -eq 1 ] && [ "$(grep -c '^  not proven' "$T/refuse.txt")" -eq 2 ]
     }
     check "vkverify.py proves nothing from a memory that does not hold the keys" refuse
+
+    # "cryptsetup erase" destroys the keyslots. The digest stays, so the key from memory is still
+    # proven, and for LUKS2 without a key size, which stood in the keyslots.
+    erased() {
+        cp "$T/l2.img" "$T/l2e.img" && cp "$T/l1.img" "$T/l1e.img" || return 1
+        cryptsetup erase -q "$T/l2e.img" && cryptsetup erase -q "$T/l1e.img" || { echo "cryptsetup erase failed"; return 1; }
+        python3 -I vkverify.py "$CAND" "$T/l2e.img" "$T/l1e.img" --out "$T/keys/erased" --json "$T/erased.json" > "$T/erased.txt" 2>&1 ||
+            { cat "$T/erased.txt"; return 1; }
+        grep -q 'key size not stated, no keyslot is left' "$T/erased.txt" || { echo "the erased LUKS2 header still states a key size"; return 1; }
+        cmp "$T/keys/erased/l2e.vk" "$T/keys/k256.vk" && cmp "$T/keys/erased/l1e.vk" "$T/keys/k128.vk" && no_key_in "$KEYS" "$T/erased.txt" "$T/erased.json"
+    }
+    check "vkverify.py proves the keys of headers whose keyslots were erased" erased
+    # A header that is cut short, and one whose JSON has a list where an object belongs: each is
+    # an unreadable header, and the good header beside them is still proven.
+    broken() {
+        head -c 100 "$T/l1.img" > "$T/cut1.img"; head -c 5000 "$T/l2.img" > "$T/cut2.img"
+        python3 -I -c 'import json, struct, sys
+raw = bytearray(open(sys.argv[1], "rb").read(1 << 20))
+size = struct.unpack(">Q", raw[8:16])[0]
+meta = json.loads(bytes(raw[4096:size]).split(b"\0")[0])
+meta["digests"] = [meta["digests"]]
+area = json.dumps(meta).encode()
+raw[4096:size] = area + bytes(size - 4096 - len(area))
+open(sys.argv[2], "wb").write(raw)' "$T/l2.img" "$T/list.img" || return 1
+        python3 -I vkverify.py "$CAND" "$T/l2.img" "$T/cut1.img" "$T/cut2.img" "$T/list.img" --json "$T/broken.json" > "$T/broken.txt" 2>&1
+        [ $? -eq 1 ] || { echo "the status is not 1"; cat "$T/broken.txt"; return 1; }
+        ! grep -q Traceback "$T/broken.txt" || { cat "$T/broken.txt"; return 1; }
+        [ "$(grep -c '"verdict": "unreadable header"' "$T/broken.json")" -eq 3 ] && [ "$(grep -c '"verdict": "proven"' "$T/broken.json")" -eq 1 ]
+    }
+    check "vkverify.py reports cut and malformed headers as unreadable and proves the header beside them" broken
+    same_name() {
+        mkdir -p "$T/case-a" "$T/case-b"; cp "$T/l2.img" "$T/case-a/vol.img"; cp "$T/l1.img" "$T/case-b/vol.img"
+        python3 -I vkverify.py "$CAND" "$T/case-a/vol.img" "$T/case-b/vol.img" --out "$T/keys/same" > "$T/same.txt" 2>&1 || { cat "$T/same.txt"; return 1; }
+        cmp "$T/keys/same/vol.vk" "$T/keys/k256.vk" && cmp "$T/keys/same/vol-2.vk" "$T/keys/k128.vk"
+    }
+    check "vkverify.py keeps two headers of the same file name apart" same_name
 
     # what keytriage.sh runs as the proof on scene
     prove() { cryptsetup open --test-passphrase "$VK" "$1" "$2" >/dev/null 2>&1; }
