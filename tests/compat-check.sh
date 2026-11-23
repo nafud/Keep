@@ -75,9 +75,9 @@ dm No aes-xts-plain64 "$(od -An -v -tx1 No.vk | tr -d ' \n')"
 dm kc_null cipher_null-ecb -
 
 # $W is on the disk of this guest, which keytriage.sh refuses as an evidence directory unless -f
-"$KIT/bin/bash" "$KIT/keytriage.sh" -e "$W/evid" > "$W/refused.txt" 2>&1
+"$KIT/bin/bash" -p "$KIT/keytriage.sh" -e "$W/evid" > "$W/refused.txt" 2>&1
 REFUSED=$?
-"$KIT/bin/bash" "$KIT/keytriage.sh" -f -e "$W/evid" $MEM > "$W/screen.txt" 2>&1
+"$KIT/bin/bash" -p "$KIT/keytriage.sh" -f -e "$W/evid" $MEM > "$W/screen.txt" 2>&1
 RC=$?
 O=$(ls -d "$W"/evid/triage_* 2>/dev/null | tail -n 1)
 J=$O/verdict.json
@@ -140,7 +140,7 @@ for d in /boot/efi /boot; do
     [ "$(stat -c %d "$d" 2>/dev/null)" != "$(stat -c %d /)" ] && [ -d "$d" ] && grep -q " $d " /proc/self/mountinfo && { OTHER=$d; break; }
 done
 if [ -n "$OTHER" ]; then
-    "$KIT/bin/bash" "$KIT/keytriage.sh" -e "$OTHER" > "$W/refused2.txt" 2>&1
+    "$KIT/bin/bash" -p "$KIT/keytriage.sh" -e "$OTHER" > "$W/refused2.txt" 2>&1
     if [ $? = 1 ] && grep -q 'is refused: it lies on the disk' "$W/refused2.txt" && ! ls -d "$OTHER"/triage_* >/dev/null 2>&1; then
         echo "PASS   $OTHER is refused: $(sed -n 's/.*\(it lies on the disk [^,]*\),.*/\1/p' "$W/refused2.txt")"
     else
@@ -152,7 +152,7 @@ fi
 # an evidence medium with FAT, on a disk of its own: accepted without -f, and every name is taken
 mkdir "$W/fat"; truncate -s 96M fat.img
 if command -v mkfs.vfat >/dev/null && mkfs.vfat fat.img >/dev/null 2>&1 && mount -o loop fat.img "$W/fat" 2>/dev/null; then
-    "$KIT/bin/bash" "$KIT/keytriage.sh" -e "$W/fat" > "$W/screen-fat.txt" 2>&1; rcf=$?
+    "$KIT/bin/bash" -p "$KIT/keytriage.sh" -e "$W/fat" > "$W/screen-fat.txt" 2>&1; rcf=$?
     F=$(ls -d "$W"/fat/triage_* 2>/dev/null | tail -n 1)
     ok=1
     [ "$rcf" = 0 ] && grep -q '(vfat) mounted at' "$W/screen-fat.txt" || ok=0

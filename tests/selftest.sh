@@ -243,7 +243,7 @@ open(sys.argv[2], "wb").write(raw)' "$T/l2.img" "$T/list.img" || return 1
     check "the on-scene proof accepts the key of a header and refuses another ($VK)" proof
 
     menu_offline() {
-        printf 'offline\n%s\n%s\n\n%s\nyes\n' "$T/fx.lime" "$T/disk.dd" "$T/lab2" | KEYSCAN=$SCAN bash keep-menu.sh > "$T/menu.txt" 2>&1 || return 1
+        printf 'offline\n%s\n%s\n\n%s\nyes\n' "$T/fx.lime" "$T/disk.dd" "$T/lab2" | KEYSCAN=$SCAN bash -p keep-menu.sh > "$T/menu.txt" 2>&1 || return 1
         grep -q '^keep-menu.sh: SUCCESS$' "$T/menu.txt" && no_key_in "$KEYS" "$T/menu.txt"
     }
     check "keep-menu.sh runs the offline mode through a pipe" menu_offline
@@ -269,11 +269,17 @@ open(sys.argv[2], "wb").write(raw)' "$T/l2.img" "$T/list.img" || return 1
     # own a LUKS2 mapping whose header cannot be backed up.
     if command -v busybox >/dev/null; then
         KIT=$T/kit; SYS=$T/sys; STUB=$T/stub; REALCS=$(command -v cryptsetup); BB=$(command -v busybox)
-        TSH=$(command -v bash-static || command -v bash)
+        TSH=$KIT/bin/bash                 # the shell of the kit: bash-static where it is installed
         mkdir -p "$KIT/bin" "$SYS" "$STUB" "$T/tevid" "$T/foreign"
         for a in busybox $(busybox --list); do
             case $a in bash) ;; *) ln -s "$BB" "$KIT/bin/$a" 2>/dev/null ;; esac
         done
+        ln -s "$(command -v bash-static || command -v bash)" "$TSH"
+        # What a root shell of the examined system could hand down: a file for the shell to run
+        # first, a function in place of an applet, and a trace of every command, which would
+        # print the keys. Under bash -p none of them takes effect.
+        printf 'echo BASH_ENV >> "%s"\n' "$T/foreign.log" > "$T/benv.sh"
+        HOSTILE=(/usr/bin/env "BASH_ENV=$T/benv.sh" "SHELLOPTS=xtrace" "BASH_FUNC_sed%%=() { echo function-sed >> \"$T/foreign.log\"; }")
         # A program of every name the kit has, and dirname, in the directory of dmsetup and first
         # on the PATH of the caller. Whichever of them runs, notes its name.
         for a in $( { echo dirname; busybox --list; } | sort -u ); do
@@ -352,7 +358,7 @@ EOT
             local name=$1 rc; shift
             mkdir "$T/tevid/$name" || return 1
             : > "$T/sync.log"
-            ( umask 022; PATH=$T/foreign:$PATH "$TSH" "$KIT/keytriage.sh" -f -p "/nowhere:$SYS" -e "$T/tevid/$name" "$@" > "$T/$name.txt" 2>&1 ); rc=$?
+            ( umask 022; PATH=$T/foreign:$PATH "${HOSTILE[@]}" "$TSH" -p "$KIT/keytriage.sh" -f -p "/nowhere:$SYS" -e "$T/tevid/$name" "$@" > "$T/$name.txt" 2>&1 ); rc=$?
             ln -s "$(echo "$T/tevid/$name"/triage_*)" "$T/$name.d"
             return "$rc"
         }
@@ -380,13 +386,31 @@ for v in json.load(open(sys.argv[1] + "/verdict.json"))["volumes"]:
         }
         check "keytriage.sh writes nothing that the group or others can read" triage_modes
         triage_medium_only() {
-            [ ! -s "$T/foreign.log" ] || { echo "programs from outside the medium were run:"; sort "$T/foreign.log" | uniq -c; return 1; }
+            [ ! -s "$T/foreign.log" ] || { echo "from outside the medium, these were run:"; sort "$T/foreign.log" | uniq -c; return 1; }
+            ! grep -q '^+' "$T/both.txt" || { echo "the run is traced, SHELLOPTS of the environment took effect"; return 1; }
             ! grep -q 'not found' "$T/both.txt" || { grep 'not found' "$T/both.txt"; return 1; }
             python3 -I -c 'import json, sys
 paths = sorted(b["path"] for b in json.load(open(sys.argv[1]))["binaries"])
 sys.exit(0 if paths == [sys.argv[2] + "/cryptsetup", sys.argv[2] + "/dmsetup"] else "recorded: %r" % paths)' "$T/both.d/verdict.json" "$SYS"
         }
         check "keytriage.sh runs nothing from outside the medium but the dmsetup and cryptsetup of -p" triage_medium_only
+        triage_shell() {
+            "$TSH" "$KIT/keytriage.sh" -f -p "$SYS" -e "$T/tevid" > "$T/nop.txt" 2>&1
+            [ $? -eq 1 ] && grep -q 'start this script with bash -p' "$T/nop.txt" || { echo "a start without -p is not refused"; return 1; }
+            [ "$TSH" -ef /bin/bash ] && return 0      # no second shell on this machine to try
+            /bin/bash -p "$KIT/keytriage.sh" -f -p "$SYS" -e "$T/tevid" > "$T/nop.txt" 2>&1
+            [ $? -eq 1 ] && grep -q 'runs in the shell of the medium' "$T/nop.txt" || { echo "another shell than that of the kit is not refused"; return 1; }
+        }
+        check "keytriage.sh refuses a start without bash -p and a shell that is not the kit's" triage_shell
+        # The menu in the kit, with a keytriage.sh whose "#!" line names a program that only fails.
+        # The menu must start it in its own shell, with -p, and never through that line.
+        menu_shell() {
+            mkdir -p "$T/kit2" && ln -s "$KIT/bin" "$T/kit2/bin" && cp keep-menu.sh "$T/kit2/" || return 1
+            printf '#!/bin/false\ncase $- in *p*) echo "ran in $BASH with -p" ;; esac\n' > "$T/kit2/keytriage.sh"; chmod 755 "$T/kit2/keytriage.sh"
+            printf 'live\n%s\n\nyes\n' "$T/evid" | "$TSH" -p "$T/kit2/keep-menu.sh" > "$T/menu2.txt" 2>&1 || { cat "$T/menu2.txt"; return 1; }
+            grep -q "^ran in $TSH with -p\$" "$T/menu2.txt" || { cat "$T/menu2.txt"; return 1; }
+        }
+        check "keep-menu.sh starts keytriage.sh in the shell of the medium with -p" menu_shell
         triage_flush() {
             local f d; d=$(readlink "$T/both.d")
             for f in keys/t_table.vk keys/t_keyring.vk keys/kcore-candidates.txt headers/t_table.hdr headers/t_keyring.hdr manifest.sha256; do
@@ -405,7 +429,7 @@ sys.exit(0 if paths == [sys.argv[2] + "/cryptsetup", sys.argv[2] + "/dmsetup"] e
         }
         check "keytriage.sh counts no key as captured when the flush fails, and ends with status 1" triage_flushfail
         triage_own_disk() {
-            "$TSH" "$KIT/keytriage.sh" -e / > "$T/own.txt" 2>&1
+            "$TSH" -p "$KIT/keytriage.sh" -e / > "$T/own.txt" 2>&1
             [ $? -eq 1 ] && grep -q 'is refused: it lies on the root file system' "$T/own.txt" || { cat "$T/own.txt"; return 1; }
             grep -q 'accepted with -f although it lies on' "$T/both.d/triage.txt" || [ "$(stat -c %d "$T")" != "$(stat -c %d /)" ]
         }
@@ -462,21 +486,21 @@ fi
 
 # ---- menu --------------------------------------------------------------------------------------
 menu_dry() {
-    printf 'live\n%s\n\nyes\n' "$T/evid" | bash keep-menu.sh -n > "$T/menu.txt" 2>&1 || return 1
+    printf 'live\n%s\n\nyes\n' "$T/evid" | bash -p keep-menu.sh -n > "$T/menu.txt" 2>&1 || return 1
     grep -q "keytriage.sh -e $T/evid -b 64\$" "$T/menu.txt" && grep -q 'dry run, nothing was run' "$T/menu.txt"
 }
 check "keep-menu.sh asks, lists the command and runs nothing with -n" menu_dry
-menu_eof() { printf 'offline\n' | bash keep-menu.sh -n > /dev/null 2>&1; [ $? -eq 1 ]; }
+menu_eof() { printf 'offline\n' | bash -p keep-menu.sh -n > /dev/null 2>&1; [ $? -eq 1 ]; }
 check "keep-menu.sh ends with status 1 when the input ends early" menu_eof
 # -h prints the whole comment at the head of a script, whatever its length, and a wrong option
 # is an error
 usage_text() {
     local f
     for f in keytriage.sh keep-menu.sh offline-keyscan.sh tests/selftest.sh; do
-        bash "$f" -h > "$T/usage.txt" || return 1
+        bash -p "$f" -h > "$T/usage.txt" || return 1
         awk 'NR == 1 { next } !/^#/ { exit } { print }' "$f" | cmp -s - "$T/usage.txt" || { echo "$f -h does not print its head comment"; return 1; }
         [ "$(wc -l < "$T/usage.txt")" -gt 5 ] || return 1
-        bash "$f" -Z > /dev/null 2>&1; [ $? -eq 2 ] || { echo "$f does not end with status 2 for a wrong option"; return 1; }
+        bash -p "$f" -Z > /dev/null 2>&1; [ $? -eq 2 ] || { echo "$f does not end with status 2 for a wrong option"; return 1; }
     done
 }
 check "the scripts print their head comment with -h and refuse a wrong option with status 2" usage_text

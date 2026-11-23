@@ -2,7 +2,7 @@
 # keytriage.sh, the scene-side script of Keep: decryption-readiness triage for an unlocked
 # Linux system.
 #
-#   sudo /media/tools/bin/bash /media/tools/keytriage.sh [-e DIR] [-b BUDGET] [-m] [-f] [-p DIRS]
+#   sudo /media/tools/bin/bash -p /media/tools/keytriage.sh [-e DIR] [-b BUDGET] [-m] [-f] [-p DIRS]
 #
 #   -e DIR   evidence directory, on the evidence medium (default /media/evidence)
 #   -b N     memory-route proof budget: stop after N proof attempts per volume (default 64)
@@ -72,14 +72,24 @@
 # name cannot leave the evidence directory and FAT and exFAT take it.
 #
 # Needs root. The shell is the kit's bash-static and the utilities its static busybox, so the
-# script does not depend on the distribution. PATH is the bin/ of the medium and nothing else, so
+# script does not depend on the distribution. It refuses another shell, and a start without
+# bash -p, which keeps the environment of the root shell out of it (see below the comment).
+# PATH is the bin/ of the medium and nothing else, so
 # a program that the medium lacks is an error and is never taken from the examined system.
 # dmsetup and cryptsetup are the suspect's own and the only programs run from outside the medium.
 # They are looked up in the directories of -p and run by their full paths, and the option that
 # hands a volume key to cryptsetup is chosen by what the installed release offers
 # (--volume-key-file from 2.5.0, --master-key-file before).
 
-VERSION="1.3.0 (2026-11)"
+# The environment of this shell belongs to the examined system. Under bash -p the shell takes no
+# functions from it, does not run the file that BASH_ENV names and ignores SHELLOPTS, which could
+# switch on a trace of every command, keys included. All of that happens before the first line
+# of a script, so the script can only refuse to run without -p.
+case $- in
+    *p*) ;;
+    *) printf '%s\n' "keytriage.sh: start this script with bash -p, on scene: sudo /media/tools/bin/bash -p /media/tools/keytriage.sh" >&2; exit 1 ;;
+esac
+VERSION="1.3.1 (2026-11)"
 umask 077                               # keys and the candidate list are written by this script
 case $0 in */*) KIT=${0%/*} ;; *) KIT=. ;; esac     # no dirname: no program runs before PATH is set
 KIT=$(cd "$KIT" && pwd)
@@ -187,6 +197,7 @@ under() {
 
 # ---- preflight ---------------------------------------------------------------------------------
 [ -x "$BIN/busybox" ] || die "no medium beside this script: $BIN/busybox is missing (build-toolkit.sh makes the medium)"
+[ "$BASH" -ef "$BIN/bash" ] || die "this script runs in the shell of the medium, not in $BASH: $BIN/bash -p $KIT/keytriage.sh"
 [ "$(id -u)" = 0 ] || die "must run as root (sudo)"
 [ -d "$EVID" ] || die "the evidence directory $EVID does not exist"
 EVID=$(cd "$EVID" && pwd -P) || die "cannot enter the evidence directory"

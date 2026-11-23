@@ -1,13 +1,16 @@
 #!/bin/bash
 # keep-menu.sh [-n] : the interactive front-end of Keep, in the manner of ewfacquire.
 #
-#   sudo /media/tools/bin/bash /media/tools/keep-menu.sh
+#   sudo /media/tools/bin/bash -p /media/tools/keep-menu.sh
 #
 # It asks for the parameters of one run as plain questions, one per line. A question shows its
 # choices in parentheses and its default in square brackets, and Enter takes the default. A value
 # that cannot be used is asked for again. The values are then listed, a confirmation is asked
 # for, and the script beside this one that does the work is run, with its output shown as it
 # runs. "no" at the confirmation starts the questions again. One run per start.
+#
+# The script that does the work is started in the shell that runs this one, with -p, and not
+# through its "#!" line, which would name the bash of the examined system.
 #
 #   Mode live          keytriage.sh -e DIR -b N       the keys of the open volumes of this system
 #   Mode live-memory   keytriage.sh -e DIR -b N -m    the same, and then a memory image
@@ -24,16 +27,29 @@
 # through a pipe, and no configuration file of the examined system takes part in it. It never
 # shows a key. Exit status: that of the script that was run, 0 after a dry run, 1 when the
 # dialogue ended without a run, 2 for a wrong option.
+# The environment of this shell belongs to the examined system. Under bash -p the shell takes no
+# functions from it, does not run the file that BASH_ENV names and ignores SHELLOPTS, which could
+# switch on a trace of every command, keys included. All of that happens before the first line
+# of a script, so the script can only refuse to run without -p.
+case $- in
+    *p*) ;;
+    *) printf '%s\n' "keep-menu.sh: start this script with bash -p, on scene: sudo /media/tools/bin/bash -p /media/tools/keep-menu.sh" >&2; exit 1 ;;
+esac
 set -u
 umask 077                               # a candidate list holds key material
-VERSION="2.2 (2026-11)"
+VERSION="2.3 (2026-11)"
 ME=keep-menu.sh
 case $0 in */*) HERE=${0%/*} ;; *) HERE=. ;; esac   # no dirname: nothing external before PATH is set
 HERE=$(cd "$HERE" && pwd)
 # On the medium PATH is its bin/ and nothing else, as in keytriage.sh. Without a medium beside
 # this script it is the lab, where python3 and the scanner are the workstation's own.
 SYSDIRS=/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/sbin:/usr/local/bin
-if [ -x "$HERE/bin/busybox" ]; then PATH=$HERE/bin; else PATH=$SYSDIRS; fi
+if [ -x "$HERE/bin/busybox" ]; then
+    PATH=$HERE/bin
+    [ "$BASH" -ef "$HERE/bin/bash" ] || { printf '%s\n' "keep-menu.sh: on the medium this script runs in its shell, not in $BASH: $HERE/bin/bash -p $HERE/keep-menu.sh" >&2; exit 1; }
+else
+    PATH=$SYSDIRS
+fi
 export PATH LC_ALL=C TZ=UTC
 TRIAGE=$HERE/keytriage.sh
 OFFLINE=$HERE/offline-keyscan.sh
@@ -132,7 +148,7 @@ sysinfo() {
 # WHAT (the word for the run) and AFTER (a closing line).
 live() {  # live 0|1 : 1 adds the memory image
     local evid budget
-    [ -x "$TRIAGE" ] || fail "keytriage.sh is not beside this script"
+    [ -r "$TRIAGE" ] || fail "keytriage.sh is not beside this script"
     [ "$DRY" = 1 ] || [ "$(id -u)" = 0 ] || fail "a live capture needs root, start this script under sudo"
     sysinfo
     ask_dir "Evidence directory" "${KEEP_EVID:-/media/evidence}"; evid=$REPLY
@@ -144,7 +160,7 @@ live() {  # live 0|1 : 1 adds the memory image
         esac
     done
     KIND=triage; WHAT=Triage; AFTER=""
-    CMD=("$TRIAGE" -e "$evid" -b "$budget")
+    CMD=("$BASH" -p "$TRIAGE" -e "$evid" -b "$budget")
     ROWS+=("Evidence directory|$evid ($(free_of "$evid"))" "Proof attempts per volume|$budget")
     if [ "$1" = 1 ]; then
         CMD+=(-m)
@@ -159,7 +175,7 @@ offline() {
     local dump name scanner="" c imgs=() i
     ask_file "Memory dump (raw, LiME or ELF core)"; dump=$REPLY
     ROWS+=("Memory dump|$dump")
-    if command -v python3 >/dev/null && [ -r "$HERE/vkverify.py" ] && [ -x "$OFFLINE" ]; then
+    if command -v python3 >/dev/null && [ -r "$HERE/vkverify.py" ] && [ -r "$OFFLINE" ]; then
         while :; do
             ask "Disk image or LUKS header backup (an empty line ends the list)"
             if [ -z "$REPLY" ]; then
@@ -172,7 +188,7 @@ offline() {
         done
         ask_dir "Output directory" "$PWD"; OUTDIR=$REPLY
         KIND=offline; WHAT=Scan; AFTER=""
-        CMD=("$OFFLINE" -k "$HERE" "$dump" "${imgs[@]}")
+        CMD=("$BASH" -p "$OFFLINE" -k "$HERE" "$dump" "${imgs[@]}")
         for i in "${imgs[@]}"; do ROWS+=("Image|$i"); done
         ROWS+=("Output directory|$OUTDIR ($(free_of "$OUTDIR"))" "Proof|against every LUKS header located in the images"
                "Command|${CMD[*]}")
