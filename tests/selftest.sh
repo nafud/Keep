@@ -15,21 +15,24 @@
 #              on the headers, offline-keyscan.sh on a disk image that holds both, keep-report.py
 #              on the report, and a candidate list without the keys, which must not prove
 #   proof      the proof command of keytriage.sh on the same headers, with the key and with another
+#   triage     keytriage.sh itself on stand-ins for the examined system's dmsetup, cryptsetup
+#              status and /proc/kcore, with the same headers, the real header backup and proof
 #   menu       keep-menu.sh through a pipe: a dry run, an input that ends early, and an offline run
 #   page       docs/index.html shows the version of keytriage.sh, every link inside the page has
 #              its target, every file it names exists and nothing is loaded from another host
 #
-# keytriage.sh itself needs root and device-mapper and is checked by compat-check.sh on a guest.
+# On real device-mapper and a real /proc/kcore keytriage.sh is checked by compat-check.sh.
 #
-# Programs: bash, gcc with a static libc and python3, and for the full run shellcheck and
-# cryptsetup. Ends with "RESULT: PASS" and status 0, or with "RESULT: FAIL" and status 1.
+# Programs: bash, gcc with a static libc and python3, and for the full run shellcheck,
+# cryptsetup and busybox. With bash-static installed keytriage.sh runs in it, as on the medium.
+# Ends with "RESULT: PASS" and status 0, or with "RESULT: FAIL" and status 1.
 set -u
 umask 077
 export LC_ALL=C
 ALL=0
 case ${1:-} in
     -a) ALL=1 ;;
-    -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,29p' "$0"; exit 0 ;;
     '') ;;
     *) printf 'usage: selftest.sh [-a]\n' >&2; exit 2 ;;
 esac
@@ -185,6 +188,87 @@ if command -v cryptsetup >/dev/null; then
         grep -q '^keep-menu.sh: SUCCESS$' "$T/menu.txt" && no_key_in "$KEYS" "$T/menu.txt"
     }
     check "keep-menu.sh runs the offline mode through a pipe" menu_offline
+
+    # ---- triage --------------------------------------------------------------------------------
+    # keytriage.sh itself, without root and without device-mapper. A copy of it runs from a kit
+    # that is laid out like the medium, with the busybox applets in bin/. The examined system is
+    # played by stand-ins, and everything else is the real thing:
+    #   dmsetup         prints its listing and the table lines from files
+    #   cryptsetup      prints "status" from a file and hands every other call, so the header
+    #                   backup and the proof, to the real cryptsetup
+    #   kcore-keyscan   searches the fixture in place of /proc/kcore, with the real scanner
+    #   id              says 0, which is the only thing asked of it
+    # t_table is the LUKS1 header with its key in the table line (route R1), t_keyring the LUKS2
+    # header with a keyring reference (route R3).
+    if command -v busybox >/dev/null; then
+        KIT=$T/kit; SYS=$T/kit/bin; STUB=$T/stub; REALCS=$(command -v cryptsetup)
+        TSH=$(command -v bash-static || command -v bash)
+        mkdir -p "$KIT/bin" "$STUB" "$T/tevid"
+        for a in $(busybox --list); do
+            case $a in busybox|bash) ;; *) ln -s "$(command -v busybox)" "$KIT/bin/$a" ;; esac
+        done
+        cp keytriage.sh "$KIT/"
+        standin() { rm -f "$1"; cat > "$1"; chmod 755 "$1"; }   # standin FILE : the script on standard input
+        standin "$KIT/bin/id" <<EOT
+#!/bin/bash
+echo 0
+EOT
+        standin "$KIT/bin/kcore-keyscan" <<EOT
+#!/bin/bash
+exec "$SCAN" "$T/fx.lime"
+EOT
+        standin "$SYS/dmsetup" <<EOT
+#!/bin/bash
+for n in "\$@"; do :; done                # the mapping is the last argument
+case \$1 in
+    ls)    cat "$STUB/ls.txt" ;;
+    table) [ -f "$STUB/\$n.table" ] && cat "$STUB/\$n.table" ;;
+esac
+EOT
+        standin "$SYS/cryptsetup" <<EOT
+#!/bin/bash
+for n in "\$@"; do :; done
+if [ "\$1" = status ]; then cat "$STUB/\$n.status"; else exec "$REALCS" "\$@"; fi
+EOT
+        hexof() { od -An -v -tx1 "$1" | tr -d ' \n'; }
+        status() {  # status NAME TYPE CIPHER BITS LOCATION DEVICE
+            printf '/dev/mapper/%s is active.\n  type:    %s\n  cipher:  %s\n  keysize: %s bits\n  key location: %s\n  device:  %s\n' "$@" > "$STUB/$1.status"
+        }
+        printf 't_table\t(253:0)\nt_keyring\t(253:1)\n' > "$STUB/ls.txt"
+        printf '0 16384 crypt aes-xts-plain64 %s 0 7:0 4096\n' "$(hexof "$T/keys/k128.vk")" > "$STUB/t_table.table"
+        printf '0 32768 crypt aes-xts-plain64 :64:logon:cryptsetup:selftest-d0 0 7:1 32768\n' > "$STUB/t_keyring.table"
+        status t_table LUKS1 aes-xts-plain64 256 dm-crypt "$T/l1.img"
+        status t_keyring LUKS2 aes-xts-plain64 512 keyring "$T/l2.img"
+
+        # triage NAME [OPTION...] : one run. The screen goes to $T/NAME.txt and the folder of the
+        # run is $T/NAME.d, a link, because the name of the folder carries the time.
+        triage() {
+            local name=$1 rc; shift
+            mkdir "$T/tevid/$name" || return 1
+            "$TSH" "$KIT/keytriage.sh" -e "$T/tevid/$name" "$@" > "$T/$name.txt" 2>&1; rc=$?
+            ln -s "$(echo "$T/tevid/$name"/triage_*)" "$T/$name.d"
+            return "$rc"
+        }
+        verdict_of() {  # verdict_of FOLDER VOLUME
+            python3 -I -c 'import json, sys
+for v in json.load(open(sys.argv[1] + "/verdict.json"))["volumes"]:
+    if v["name"] == sys.argv[2]:
+        print(v["verdict"])' "$1" "$2"
+        }
+        triage_both() {
+            local d=$T/both.d
+            triage both || { echo "keytriage.sh ended with status $?"; cat "$T/both.txt"; return 1; }
+            [ "$(verdict_of "$d" t_table)" = "captured and proven" ] && [ "$(verdict_of "$d" t_keyring)" = "captured and proven" ] ||
+                { echo "not both verdicts are captured and proven"; cat "$T/both.txt"; return 1; }
+            cmp "$d/keys/t_table.vk" "$T/keys/k128.vk" && cmp "$d/keys/t_keyring.vk" "$T/keys/k256.vk" || return 1
+            ( cd "$d" && sha256sum -c --quiet manifest.sha256 ) || return 1
+            no_key_in "$KEYS" "$T/both.txt" "$d/triage.txt" "$d/verdict.json" "$d/manifest.sha256" || return 1
+            [ "$(python3 -I keep-report.py "$d/verdict.json" --brief | grep -c '^  key held .*: captured and proven$')" -eq 2 ]
+        }
+        check "keytriage.sh captures and proves a key from the table and one from memory" triage_both
+    else
+        skip "busybox is not installed: keytriage.sh is not run"
+    fi
 else
     skip "cryptsetup is not installed: the verifier and the proof are not checked"
 fi

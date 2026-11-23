@@ -1,7 +1,8 @@
 # The checks of Keep on every push and pull request.
 #
 #   selftest   tests/selftest.sh -a: the static checks, the scanner on fixtures, the verifier and
-#              the on-scene proof on LUKS headers made by cryptsetup, the menu through a pipe
+#              the on-scene proof on LUKS headers made by cryptsetup, keytriage.sh on stand-ins
+#              for the examined system, the menu through a pipe
 #   medium     build-toolkit.sh: the scene tool medium builds, its manifest verifies and its own
 #              static shell runs its scripts
 #
@@ -31,10 +32,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install shellcheck and cryptsetup
+      - name: Install shellcheck, cryptsetup and the shell and applets of the medium
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends shellcheck cryptsetup-bin
+          sudo apt-get install -y -q --no-install-recommends shellcheck cryptsetup-bin bash-static busybox-static
       - name: Versions
         run: |
           bash --version | head -n 1
