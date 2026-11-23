@@ -12,12 +12,18 @@
  *                that has a physical address is read. /proc/kcore gives the vmalloc and module
  *                areas the physical address -1, so those are left out and RAM is read once.
  *   LiME         the image AVML writes: a 32-byte header with the physical range, then the range.
+ *   AVML         the image "avml --compress" writes (version 2): the same header with another
+ *                mark, then the range as a framed Snappy stream and the length of that stream.
+ *                Each chunk of at most 64 KiB is decompressed and compared with its CRC-32C.
  *   raw          anything else, scanned from the first byte to the last.
  * A schedule is found only where it lies in the file as it lay in memory. A file that begins
- * like a compressed AVML image, a kdump or makedumpfile file, or a gzip, xz, zstd, bzip2 or lz4
- * file holds memory in another form, and searching it as raw bytes finds some schedules or none
- * and looks like a search that found no key. Such a file is refused with status 1. -r searches
- * it all the same, for a raw image that happens to begin with one of those marks.
+ * like a kdump or makedumpfile file, or a gzip, xz, zstd, bzip2 or lz4 file holds memory in
+ * another form, and searching it as raw bytes finds some schedules or none and looks like a
+ * search that found no key. Such a file is refused with status 1. -r searches it all the same,
+ * for a raw image that happens to begin with one of those marks.
+ *
+ * A compressed image that ends early or is damaged is searched up to that place. The place and
+ * the number of bytes of the file that were not searched are reported, and the status is 1.
  *
  * A key schedule is the list of round keys that AES derives from a key (FIPS-197, section 5.2).
  * The kernel keeps the schedule, not only the key, and the first 16 or 32 bytes of the schedule
@@ -49,7 +55,7 @@
 #define CHUNK   (1u << 20)      /* bytes read at once */
 #define KEEP    240             /* longest schedule: bytes kept in front of the next chunk */
 #define MAXHIT  4096
-#define VERSION "1.1"
+#define VERSION "1.2"
 #define NONE    (~0ULL)
 
 static uint8_t sbox[256];
@@ -211,13 +217,172 @@ static int full_read(int fd, void *p, size_t n, uint64_t off)
     return pread(fd, p, n, (off_t)off) == (ssize_t)n;
 }
 
+/* N bytes that are already in memory, to be searched. PHYS is the address of the first of them. */
+static void feed(const uint8_t *p, size_t n, uint64_t phys)
+{
+    size_t k;
+
+    if (have && (phys != bphys + have || bvirt != NONE))
+        sweep(1);
+    if (!have) { bphys = phys; bvirt = NONE; }
+    while (n) {
+        k = n < CHUNK ? n : CHUNK;
+        memcpy(buf + have, p, k);
+        have += k; nbytes += k; p += k; n -= k;
+        sweep(0);
+    }
+}
+
+/*
+ * Snappy, for the compressed image of AVML. A block (format_description.txt of Snappy) is the
+ * length of the data as a varint, then literals and copies of earlier bytes. Returns the length
+ * of the data, or -1 for a block that does not follow the format or does not fit CAP.
+ */
+static long snappy_block(const uint8_t *in, size_t n, uint8_t *out, size_t cap)
+{
+    size_t i = 0, o = 0, len, off, want = 0;
+    int shift = 0;
+
+    for (;;) {
+        if (i == n || shift > 28) return -1;
+        want |= (size_t)(in[i] & 0x7f) << shift;
+        if (!(in[i++] & 0x80)) break;
+        shift += 7;
+    }
+    if (want > cap) return -1;
+    while (i < n) {
+        unsigned tag = in[i++];
+
+        if ((tag & 3) == 0) {                       /* a literal */
+            len = tag >> 2;
+            if (len >= 60) {
+                unsigned extra = (unsigned)len - 59, j;
+
+                if (i + extra > n) return -1;
+                for (len = 0, j = 0; j < extra; j++) len |= (size_t)in[i + j] << (8 * j);
+                i += extra;
+            }
+            len++;
+            if (len > n - i || len > want - o) return -1;
+            memcpy(out + o, in + i, len);
+            i += len; o += len;
+            continue;
+        }
+        if ((tag & 3) == 1) {                       /* a copy with an offset of 11 bits */
+            if (i + 1 > n) return -1;
+            len = ((tag >> 2) & 7) + 4;
+            off = ((size_t)(tag >> 5) << 8) | in[i];
+            i += 1;
+        } else if ((tag & 3) == 2) {                /* a copy with an offset of 16 bits */
+            if (i + 2 > n) return -1;
+            len = (tag >> 2) + 1;
+            off = in[i] | (size_t)in[i + 1] << 8;
+            i += 2;
+        } else {                                    /* a copy with an offset of 32 bits */
+            if (i + 4 > n) return -1;
+            len = (tag >> 2) + 1;
+            off = in[i] | (size_t)in[i + 1] << 8 | (size_t)in[i + 2] << 16 | (size_t)in[i + 3] << 24;
+            i += 4;
+        }
+        if (!off || off > o || len > want - o) return -1;
+        for (; len; len--, o++)                     /* byte by byte: a copy may run into itself */
+            out[o] = out[o - off];
+    }
+    return o == want ? (long)o : -1;
+}
+
+/* CRC-32C (Castagnoli), eight bytes at a time, as the framed format of Snappy uses it. */
+static uint32_t crctab[8][256];
+
+static void init_crc(void)
+{
+    uint32_t c;
+    int i, j;
+
+    for (i = 0; i < 256; i++) {
+        for (c = (uint32_t)i, j = 0; j < 8; j++) c = (c >> 1) ^ ((c & 1) ? 0x82f63b78u : 0);
+        crctab[0][i] = c;
+    }
+    for (i = 0; i < 256; i++)
+        for (j = 1; j < 8; j++)
+            crctab[j][i] = (crctab[j - 1][i] >> 8) ^ crctab[0][crctab[j - 1][i] & 0xff];
+}
+
+static uint32_t masked_crc32c(const uint8_t *p, size_t n)
+{
+    uint32_t c = 0xffffffffu, lo, hi;
+
+    for (; n >= 8; n -= 8, p += 8) {
+        memcpy(&lo, p, 4); memcpy(&hi, p + 4, 4);       /* little-endian, as x86-64 is */
+        lo ^= c;
+        c = crctab[7][lo & 0xff] ^ crctab[6][(lo >> 8) & 0xff] ^ crctab[5][(lo >> 16) & 0xff] ^ crctab[4][lo >> 24]
+          ^ crctab[3][hi & 0xff] ^ crctab[2][(hi >> 8) & 0xff] ^ crctab[1][(hi >> 16) & 0xff] ^ crctab[0][hi >> 24];
+    }
+    for (; n; n--, p++) c = crctab[0][(c ^ *p) & 0xff] ^ (c >> 8);
+    c ^= 0xffffffffu;
+    return ((c >> 15) | (c << 17)) + 0xa282ead8u;   /* framing_format.txt, section 3 */
+}
+
+#define SNAPMAX 65536           /* a chunk of the framed format holds at most 64 KiB of data */
+static unsigned long long nbadcrc;
+
+/*
+ * One range of a compressed AVML image (src/image.rs and src/io/snappy.rs of AVML): at OFF a
+ * framed Snappy stream (framing_format.txt) that holds LEN bytes of memory from PHYS on, and
+ * after it the length of that stream in 8 bytes. Returns the length of the stream with those
+ * 8 bytes, or 0 where the stream ends early or does not follow the format, with the reason in WHY
+ * and the file offset up to which the stream was taken in STOP.
+ */
+static uint64_t avml_range(int fd, uint64_t off, uint64_t len, uint64_t phys, const char **why, uint64_t *stop)
+{
+    static uint8_t in[4 + SNAPMAX + SNAPMAX / 6 + 64], out[SNAPMAX];
+    uint64_t at = off, done = 0, stored;
+    uint8_t h[4];
+    uint32_t size, crc;
+    long n;
+
+    for (; done < len; *stop = at) {
+        if (!full_read(fd, h, 4, at)) { *why = "the file ends inside a range"; return 0; }
+        size = h[1] | (uint32_t)h[2] << 8 | (uint32_t)h[3] << 16;
+        if (h[0] >= 0x80) {                             /* the stream identifier, padding, skippable chunks */
+            if (h[0] == 0xff && (size != 6 || !full_read(fd, in, 6, at + 4) || memcmp(in, "sNaPpY", 6))) {
+                *why = "a stream identifier that is not that of Snappy"; return 0;
+            }
+            at += 4 + size;
+            continue;
+        }
+        if (h[0] > 1) { *why = "a chunk of a kind that the framed format reserves"; return 0; }
+        if (size < 4 || size > sizeof in) { *why = "a chunk with an impossible length"; return 0; }
+        if (!full_read(fd, in, size, at + 4)) { *why = "the file ends inside a chunk"; return 0; }
+        memcpy(&crc, in, 4);
+        if (h[0] == 0) {
+            n = snappy_block(in + 4, size - 4, out, sizeof out);
+            if (n < 0) { *why = "a chunk that cannot be decompressed"; return 0; }
+        } else {
+            n = (long)size - 4;
+            if (n > SNAPMAX) { *why = "a chunk with an impossible length"; return 0; }
+            memcpy(out, in + 4, (size_t)n);
+        }
+        if ((uint64_t)n > len - done) { *why = "more data than the range of the header"; return 0; }
+        if (masked_crc32c(out, (size_t)n) != crc)
+            nbadcrc++;
+        feed(out, (size_t)n, phys + done);
+        done += (uint64_t)n;
+        at += 4 + size;
+    }
+    if (!full_read(fd, &stored, 8, at) || stored != at - off) {
+        *why = "the length after a range is missing or differs from the length read"; return 0;
+    }
+    return at - off + 8;
+}
+
 /*
  * The first bytes of the formats that hold memory in another form than it had, each from the
  * specification or the source of its format, and what to do with such a file.
  */
 static const struct { const char *mark; size_t len; const char *name, *advice; } packed[] = {
-    /* AVML src/image.rs: AVML_MAGIC 0x4c4d5641 little-endian, with version 2 for snappy blocks */
-    {"AVML\2\0\0\0", 8, "a compressed AVML image", "\"avml convert FILE OUT\" writes it as a LiME image"},
+    /* AVML src/image.rs: AVML_MAGIC 0x4c4d5641 little-endian. Version 2 is read, see main(). */
+    {"AVML", 4, "an AVML image of another version than 2", "only version 2, the compressed image, is read"},
     /* makedumpfile diskdump_mod.h: KDUMP_SIGNATURE and DISK_DUMP_SIGNATURE; makedumpfile.h: MAKEDUMPFILE_SIGNATURE */
     {"KDUMP   ", 8, "a kdump file of makedumpfile", "a dump that \"makedumpfile -E\" writes is in the ELF format, which is read"},
     {"DISKDUMP", 8, "a diskdump file", "a dump that \"makedumpfile -E\" writes is in the ELF format, which is read"},
@@ -235,6 +400,8 @@ int main(int argc, char **argv)
     unsigned char head[64];
     struct timespec t0, t1;
     struct stat st;
+    const char *why = NULL;
+    uint64_t stopped = 0;
     int fd, i, j, raw = 0, nseg = 0, n128 = 0, n256 = 0, u128 = 0, u256 = 0;
 
     while (argc > 1 && argv[1][0] == '-') {
@@ -249,6 +416,7 @@ int main(int argc, char **argv)
     }
     if (argc > 1) path = argv[1];
     init_sbox();
+    init_crc();
     selftest();
     fd = open(path, O_RDONLY);
     if (fd < 0 || fstat(fd, &st)) {
@@ -261,7 +429,7 @@ int main(int argc, char **argv)
         return 1;
     }
     for (i = 0; !raw && i < (int)(sizeof packed / sizeof packed[0]); i++)
-        if (!memcmp(head, packed[i].mark, packed[i].len)) {
+        if (!memcmp(head, packed[i].mark, packed[i].len) && memcmp(head, "AVML\2\0\0\0", 8)) {
             fprintf(stderr, "kcore-keyscan: %s begins like %s. Such a file holds memory in another form, and a "
                     "search of its bytes misses key schedules, so it is not searched: %s. -r searches it as "
                     "raw bytes all the same.\n",
@@ -292,17 +460,33 @@ int main(int argc, char **argv)
                  ph.p_vaddr && ph.p_vaddr != ph.p_paddr ? ph.p_vaddr : NONE);
             nseg++;
         }
-    } else if (!memcmp(head, "EMiL", 4)) {      /* 0x4C694D45, little-endian */
-        uint64_t off = 0, s, e;
+    } else if (!memcmp(head, "EMiL", 4) || !memcmp(head, "AVML\2\0\0\0", 8)) {
+        /* AVML src/image.rs: the marks 0x4C694D45 and 0x4C4D5641 little-endian, with the versions
+           1 for a range as it is and 2 for a compressed one. Its reader takes each range by its
+           own header, so both kinds may follow each other. */
+        uint64_t off = 0, s, e, used;
+        int packed_ranges = 0;
 
-        format = "LiME";
-        while (full_read(fd, head, 32, off) && !memcmp(head, "EMiL", 4)) {
+        while (full_read(fd, head, 32, off)) {
+            int v2 = !memcmp(head, "AVML\2\0\0\0", 8);
+
+            if (!v2 && memcmp(head, "EMiL", 4)) { stopped = off; why = "no header of a range"; break; }
             memcpy(&s, head + 8, 8); memcpy(&e, head + 16, 8);
-            if (e < s) break;
-            scan(fd, off + 32, e - s + 1, s, NONE);
-            off += 32 + (e - s + 1);
+            if (e < s) { stopped = off; why = "a header whose range ends before it begins"; break; }
+            if (v2) {
+                stopped = off + 32;
+                used = avml_range(fd, off + 32, e - s + 1, s, &why, &stopped);
+                if (!used) break;
+                off += 32 + used;
+                packed_ranges++;
+            } else {
+                scan(fd, off + 32, e - s + 1, s, NONE);
+                off += 32 + (e - s + 1);
+            }
             nseg++;
         }
+        if (!why && off < (uint64_t)st.st_size) { stopped = off; why = "the file ends inside the header of a range"; }
+        format = packed_ranges ? "AVML compressed" : "LiME";
     } else {
         format = "raw";
         scan(fd, 0, (uint64_t)st.st_size, 0, NONE);
@@ -325,6 +509,14 @@ int main(int argc, char **argv)
             "AES-256 schedules: %d (%d different keys)\n", n128, u128, n256, u256);
     if (nfail)
         fprintf(stderr, "kcore-keyscan: %llu bytes could not be read and count as zeros\n", nfail);
+    if (nbadcrc)
+        fprintf(stderr, "kcore-keyscan: chunks that differ from their checksum: %llu. Their data is searched as it is\n", nbadcrc);
+    if (why) {
+        fprintf(stderr, "kcore-keyscan: the image is damaged or ends early at file offset %llu: %s. "
+                "%llu bytes of the file from there on are not searched.\n",
+                (unsigned long long)stopped, why, (unsigned long long)st.st_size - (unsigned long long)stopped);
+        return 1;
+    }
     if (dropped)
         fprintf(stderr, "kcore-keyscan: %d further schedules were not listed (more than %d)\n",
                 dropped, MAXHIT);

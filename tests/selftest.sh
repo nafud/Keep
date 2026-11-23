@@ -9,9 +9,9 @@
 #
 #   static     bash -n and shellcheck -S warning on every script, a compile of every Python file
 #              and a static build of kcore-keyscan with -Wall -Werror
-#   scanner    a fixture with the schedules of two known XTS keys and four traps, in each of the
-#              three formats, and once with a step of 16. A gzip file and a compressed AVML image
-#              are refused
+#   scanner    a fixture with the schedules of two known XTS keys and five traps, in each of the
+#              four formats, the compressed image of AVML among them, and once with a step of
+#              16. A gzip file is refused, and a cut or damaged image is searched up to the damage
 #   verifier   LUKS2 and LUKS1 headers that cryptsetup makes from the same two keys: vkverify.py
 #              on the headers, offline-keyscan.sh on a disk image that holds both, keep-report.py
 #              on the report, and a candidate list without the keys, which must not prove. The
@@ -110,42 +110,71 @@ scanner_fixture() {  # scanner_fixture FORMAT
     # shellcheck disable=SC2086  # KEYS is two paths without spaces
     python3 -I "$FIX" --format "$1" --size 8 "$img" $KEYS > "$note" || return 1
     "$SCAN" "$img" > "$cand" 2> "$T/scan.$1.txt" || { echo "the scanner ended with status $?"; return 1; }
-    # the four schedules of the two keys and the traps 1, 2 and 4, and nothing else
+    # the four schedules of the two keys and the traps 1, 2, 4 and 5, and nothing else
     n=$(wc -l < "$cand")
-    [ "$n" -eq 7 ] || { echo "$n schedules are listed, 7 are expected"; return 1; }
+    [ "$n" -eq 8 ] || { echo "$n schedules are listed, 8 are expected"; return 1; }
     python3 -I -c 'import sys
 found = {line.split()[-1] for line in open(sys.argv[1])}
 for p in sys.argv[2:]:
     k = open(p, "rb").read()
     if k[:len(k) // 2].hex() not in found or k[len(k) // 2:].hex() not in found:
         sys.exit("a half of " + p.rsplit("/", 1)[-1] + " is not among the schedules")' "$cand" $KEYS || return 1
-    for n in 1 2 4; do
+    for n in 1 2 4 5; do
         a=$(trap_addr "$n" "$note")
         listed "$a" "$cand" || { echo "trap $n at 0x$a is not found"; return 1; }
     done
     a=$(trap_addr 3 "$note")
     ! listed "$a" "$cand" || { echo "trap 3 at 0x$a has a wrong bit and is reported"; return 1; }
 }
-for fmt in raw elf lime; do
-    check "scanner on a $fmt fixture: both keys, three traps found, the broken schedule not" scanner_fixture "$fmt"
+for fmt in raw elf lime avml; do
+    check "scanner on a $fmt fixture: both keys, four traps found, the broken schedule not" scanner_fixture "$fmt"
 done
 # with a step of 16 only the four schedules of the keys lie on the step
 step16() { [ "$("$SCAN" -s 16 "$T/fx.raw" 2>/dev/null | wc -l)" -eq 4 ]; }
 check "scanner with -s 16 lists only the aligned schedules" step16
 # A file that holds memory in a compressed form is not searched as raw bytes, where it would give
-# a part of the schedules or none with status 0. The AVML file is its header alone, as
-# "avml convert --format lime_compressed" writes it: the magic, version 2, the range, padding.
+# a part of the schedules or none with status 0. An AVML image of a version that is not read is
+# refused too.
 packed() {
     gzip -c "$T/fx.raw" > "$T/fx.raw.gz"
-    { printf 'AVML\002\000\000\000'; head -c 24 /dev/zero; head -c 4096 /dev/urandom; } > "$T/fx.avml"
+    { printf 'AVML\003\000\000\000'; head -c 24 /dev/zero; head -c 4096 /dev/urandom; } > "$T/fx.v3"
     local f
-    for f in fx.raw.gz fx.avml; do
+    for f in fx.raw.gz fx.v3; do
         "$SCAN" "$T/$f" > "$T/packed.out" 2> "$T/packed.err"
         [ $? -eq 1 ] && [ ! -s "$T/packed.out" ] && grep -q 'begins like' "$T/packed.err" || { echo "$f is not refused"; return 1; }
     done
     "$SCAN" -r "$T/fx.raw.gz" > /dev/null 2> "$T/packed.err" && grep -q ', raw, ' "$T/packed.err"
 }
-check "scanner refuses a gzip file and a compressed AVML image, and searches them with -r" packed
+check "scanner refuses a gzip file and an AVML image of another version, and searches them with -r" packed
+# A compressed AVML image that was cut, as on a medium that ran full, is searched up to the cut:
+# the schedules before it are listed, the place is named and the status is 1. A chunk with a
+# changed byte is named by its checksum, and a changed length after a range ends the search.
+damaged() {
+    local full n
+    full=$(wc -c < "$T/fx.avml")
+    head -c $((full * 3 / 5)) "$T/fx.avml" > "$T/cut.avml"
+    "$SCAN" "$T/cut.avml" > "$T/keys/cut.txt" 2> "$T/cut.err"
+    [ $? -eq 1 ] || { echo "a cut image does not end with status 1"; return 1; }
+    grep -q 'damaged or ends early at file offset' "$T/cut.err" || { echo "the cut is not named"; return 1; }
+    n=$(wc -l < "$T/keys/cut.txt")
+    [ "$n" -ge 7 ] || { echo "$n schedules before the cut, at least 7 are expected"; return 1; }
+    python3 -I -c 'import sys
+d = bytearray(open(sys.argv[1], "rb").read())
+d[32 + 10 + 5000] ^= 1          # inside the first chunk of the first range
+open(sys.argv[2], "wb").write(d)
+d[32 + 10 + 5000] ^= 1
+d[-3] ^= 1                      # the length after the last range
+open(sys.argv[3], "wb").write(d)' "$T/fx.avml" "$T/flip.avml" "$T/len.avml" || return 1
+    "$SCAN" "$T/flip.avml" > /dev/null 2> "$T/flip.err" || { echo "a changed byte ends the search"; return 1; }
+    grep -q 'differ from their checksum: 1\.' "$T/flip.err" || { echo "the changed chunk is not named"; return 1; }
+    "$SCAN" "$T/len.avml" > /dev/null 2> "$T/len.err"
+    [ $? -eq 1 ] && grep -q 'the length after a range' "$T/len.err" || { echo "a changed length is not named"; return 1; }
+    # a LiME image with bytes after its last range
+    { cat "$T/fx.lime"; printf 'bytes that are no header of a range, after the last one'; } > "$T/junk.lime"
+    "$SCAN" "$T/junk.lime" > /dev/null 2> "$T/junk.err"
+    [ $? -eq 1 ] && grep -q 'no header of a range' "$T/junk.err" || { echo "bytes after the last range are not named"; return 1; }
+}
+check "scanner searches a cut or damaged image up to the damage and names the place" damaged
 
 # ---- verifier, proof ---------------------------------------------------------------------------
 if command -v cryptsetup >/dev/null; then
@@ -467,7 +496,7 @@ sys.exit(0 if host == "pc/../../out [2Jside" else "host in the report: %r" % hos
         triage_nohdr() {
             with_list 't_nohdr\t(253:9)\n' nohdr || return 1
             [ "$(verdict_of "$T/nohdr.d" t_nohdr)" = "needs a memory read" ] || return 1
-            [ "$(wc -l < "$T/nohdr.d/keys/kcore-candidates.txt")" -eq 7 ] || { echo "the candidate list is not kept"; return 1; }
+            [ "$(wc -l < "$T/nohdr.d/keys/kcore-candidates.txt")" -eq 8 ] || { echo "the candidate list is not kept"; return 1; }
             grep -q ' keys/kcore-candidates.txt$' "$T/nohdr.d/manifest.sha256"
         }
         check "keytriage.sh keeps the candidate list of a volume whose header could not be backed up" triage_nohdr

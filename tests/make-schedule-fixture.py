@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """make-schedule-fixture.py: a test image with the key schedules of known XTS keys.
 
-    python3 -I make-schedule-fixture.py [--format raw|elf|lime] [--size MIB] OUT KEYFILE...
+    python3 -I make-schedule-fixture.py [--format raw|elf|lime|avml] [--size MIB] OUT KEYFILE...
 
 Each KEYFILE holds one XTS volume key, 64 bytes (two AES-256 keys) or 32 bytes (two AES-128
 keys), as "cryptsetup luksDump --dump-volume-key --volume-key-file" writes it. Each key is laid
@@ -9,10 +9,16 @@ into random filler the way the kernel holds it (struct aesni_xts_ctx, kernel 7.0
 arch/x86/crypto/aesni-intel_glue.c): the schedule of the second half of the key (the tweak key)
 first, and the schedule of the first half (the data key) 496 bytes after it.
 
-The image also holds four traps for the scanner: one schedule at an odd address, one across
-the scanner's 1 MiB read boundary, one across the border of the two ranges of the elf and lime
-formats, and one schedule with a single wrong bit, which must not be reported. Their keys are
-random and are not written anywhere.
+The image also holds five traps for the scanner: one schedule at an odd address, one across
+the scanner's 1 MiB read boundary, one across the border of the two ranges of the elf, lime and
+avml formats, one schedule with a single wrong bit, which must not be reported, and one inside
+a run of zeros. Their keys are random and are not written anywhere. Beside the zeros lies text
+that repeats, so that the image is in part compressible as memory is.
+
+The format avml is the compressed image of AVML (version 2, src/image.rs of AVML 0.21.0): per
+range a header, the range as a framed Snappy stream, and the length of that stream. The Snappy
+encoder and the CRC-32C here are written from the format descriptions of Snappy
+(format_description.txt, framing_format.txt) and share no code with the scanner.
 
 The key expansion here is written from FIPS-197 and shares no code with the scanner, so the
 two check each other. Nothing but lengths, addresses and SHA-256 values is printed.
@@ -72,9 +78,93 @@ def aes_ctx(key):
     return expand(key).ljust(240, b"\0") + bytes(240) + struct.pack("<I", len(key)) + bytes(12)
 
 
+def crc32c_table():
+    table = []
+    for n in range(256):
+        for _ in range(8):
+            n = (n >> 1) ^ (0x82F63B78 if n & 1 else 0)     # the Castagnoli polynomial, reflected
+        table.append(n)
+    return table
+
+
+CRC = crc32c_table()
+
+
+def masked_crc32c(data):
+    """The checksum of a chunk of the framed format (framing_format.txt, section 3)."""
+    c = 0xFFFFFFFF
+    for b in data:
+        c = CRC[(c ^ b) & 0xFF] ^ (c >> 8)
+    c ^= 0xFFFFFFFF
+    return (((c >> 15) | (c << 17)) + 0xA282EAD8) & 0xFFFFFFFF
+
+
+def snappy_block(data):
+    """DATA as one Snappy block (format_description.txt): a varint length, then literals and
+    copies. A copy is taken where the four bytes at a place were seen before. All three kinds
+    of copy are written, the one with a four-byte offset for every seventh copy, which no
+    encoder needs inside 64 KiB and every decoder has to read."""
+    out = bytearray()
+    n = len(data)
+    v = n
+    while v >= 0x80:
+        out.append((v & 0x7F) | 0x80)
+        v >>= 7
+    out.append(v)
+
+    def literal(a, b):
+        while a < b:
+            k = min(b - a, 65536) - 1
+            if k < 60:
+                out.append(k << 2)
+            elif k < 256:
+                out.extend((60 << 2, k))
+            else:
+                out.extend((61 << 2, k & 0xFF, k >> 8))
+            out.extend(data[a:a + k + 1])
+            a += k + 1
+
+    seen, i, lit, copies = {}, 0, 0, 0
+    while i + 4 <= n:
+        four = bytes(data[i:i + 4])
+        j = seen.get(four)
+        seen[four] = i
+        if j is None:
+            i += 1
+            continue
+        length = 4
+        while length < 64 and i + length < n and data[j + length] == data[i + length]:
+            length += 1
+        literal(lit, i)
+        offset = i - j
+        copies += 1
+        if copies % 7 == 0:
+            out += bytes((((length - 1) << 2) | 3,)) + struct.pack("<I", offset)
+        elif length <= 11 and offset < 2048:
+            out += bytes((((offset >> 8) << 5) | ((length - 4) << 2) | 1, offset & 0xFF))
+        else:
+            out += bytes((((length - 1) << 2) | 2,)) + struct.pack("<H", offset)
+        i += length
+        lit = i
+    literal(lit, n)
+    return bytes(out)
+
+
+def snappy_frames(data):
+    """DATA as a framed Snappy stream: the stream identifier, then chunks of at most 64 KiB,
+    compressed where that saves an eighth, as the encoder of AVML decides it."""
+    out = bytearray(b"\xff\x06\x00\x00sNaPpY")
+    for a in range(0, len(data), 65536):
+        piece = bytes(data[a:a + 65536])
+        packed = snappy_block(piece)
+        kind, body = (0, packed) if len(packed) < len(piece) - len(piece) // 8 else (1, piece)
+        out += bytes((kind,)) + struct.pack("<I", len(body) + 4)[:3] + struct.pack("<I", masked_crc32c(piece)) + body
+    return bytes(out)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--format", choices=("raw", "elf", "lime"), default="raw")
+    ap.add_argument("--format", choices=("raw", "elf", "lime", "avml"), default="raw")
     ap.add_argument("--size", type=int, default=4, help="size in MiB (default 4)")
     ap.add_argument("out")
     ap.add_argument("keyfile", nargs="+")
@@ -116,6 +206,16 @@ def main():
     img[size // 2 - 120:size // 2 + 120] = border
     print(f"trap 4: an AES-256 schedule across the border of the two ranges, at 0x{where(size // 2 - 120):x}")
 
+    # memory is full of zeros and of text that repeats: a run of zeros with a schedule in it,
+    # text with a period below 2048 bytes and text with a period above it
+    img[0xD0000:0xD8000] = bytes(0x8000)
+    inside = expand(os.urandom(16))
+    img[0xD4004:0xD4004 + 176] = inside
+    print(f"trap 5: an AES-128 schedule inside a run of zeros, at 0x{where(0xD4004):x}")
+    short, long = os.urandom(100), os.urandom(3000)
+    img[0xD8000:0xE0000] = (short * 328)[:0x8000]
+    img[0xE0000:0xE8000] = (long * 11)[:0x8000]
+
     with open(a.out, "wb") as f:
         if a.format == "elf":
             # ELF64 core laid out like /proc/kcore: a note, an area without a physical address
@@ -139,6 +239,12 @@ def main():
             cut = size // 2
             f.write(struct.pack("<IIQQ8x", 0x4C694D45, 1, BASE, BASE + cut - 1) + img[:cut])
             f.write(struct.pack("<IIQQ8x", 0x4C694D45, 1, BASE + cut, BASE + size - 1) + img[cut:])
+        elif a.format == "avml":
+            cut = size // 2
+            for start, part in ((BASE, img[:cut]), (BASE + cut, img[cut:])):
+                frames = snappy_frames(part)
+                f.write(struct.pack("<IIQQ8x", 0x4C4D5641, 2, start, start + len(part) - 1) + frames
+                        + struct.pack("<Q", len(frames)))
         else:
             f.write(img)
     print(f"{a.out}: {a.format}, {os.path.getsize(a.out)} bytes")

@@ -20,10 +20,15 @@
 #             partition of that disk (/boot/efi or /boot, where the guest has one), and a FAT file
 #             system on a loop device is accepted and takes every file (where the guest has
 #             mkfs.vfat and can mount FAT)
+#   kc_pv     a LUKS2 volume that carries an LVM volume group, as an installer lays out an
+#             encrypted system: the mapping below the logical volume is the one that is listed
+#             and proven, and an evidence directory on the logical volume is taken as lying on
+#             that dm-crypt volume (where the guest has lvm2 and mkfs.ext4)
 # A part that the guest cannot run is reported as SKIP and does not fail the check.
 #
 # Needs root, cryptsetup, dmsetup and losetup on the guest (package cryptsetup on Debian, Ubuntu,
-# Fedora, the RHEL family, openSUSE and Arch).
+# Fedora, the RHEL family, openSUSE and Arch). dosfstools and lvm2 are needed for the parts with
+# FAT and LVM.
 set -u
 MEM=""
 [ "${1:-}" = -m ] && { MEM=-m; shift; }
@@ -33,11 +38,15 @@ fail() { echo "compat-check: $*" >&2; exit 1; }
 [ "$(id -u)" = 0 ] || fail "run as root"
 [ -x "$KIT/bin/bash" ] && [ -f "$KIT/keytriage.sh" ] || fail "no tool medium at $KIT (mount it with -o ro,exec)"
 for c in cryptsetup dmsetup losetup sha256sum; do command -v "$c" >/dev/null || fail "$c is not installed on this guest"; done
-for n in kc_l2 kc_l1 kc_null No; do [ ! -e "/dev/mapper/$n" ] || fail "the mapping $n is already open, close it first"; done
+for n in kc_l2 kc_l1 kc_null No kc_pv kc_vg-data; do [ ! -e "/dev/mapper/$n" ] || fail "the mapping $n is already open, close it first"; done
 
 LOOPS=()
 cleanup() {
     umount "$W/fat" 2>/dev/null
+    umount "$W/lvm" 2>/dev/null
+    vgchange -an kc_vg >/dev/null 2>&1
+    vgremove -ff kc_vg >/dev/null 2>&1
+    cryptsetup close kc_pv 2>/dev/null
     cryptsetup close kc_l2 2>/dev/null
     cryptsetup close kc_l1 2>/dev/null
     dmsetup remove kc_null 2>/dev/null
@@ -52,10 +61,10 @@ chmod 700 "$W"; cd "$W" || exit 1
 # the key file option was renamed in cryptsetup 2.5.0, as in keytriage.sh
 if cryptsetup --help 2>&1 | grep -q -e '--volume-key-file'; then VK=--volume-key-file; else VK=--master-key-file; fi
 printf 'compat-check-passphrase' > pw
-mk() {  # mk NAME TYPE [options]
+mk() {  # mk NAME TYPE [options], the size of the container in SIZE
     local n=$1 t=$2; shift 2
     head -c 64 /dev/urandom > "$n.vk"
-    truncate -s 64M "$n.img"
+    truncate -s "${SIZE:-64M}" "$n.img"
     cryptsetup luksFormat -q --type "$t" --cipher aes-xts-plain64 --key-size 512 "$VK" "$n.vk" "$@" --key-file pw "$n.img" \
         || fail "luksFormat $n failed"
     cryptsetup open --key-file pw "$n.img" "$n" || fail "open $n failed"
@@ -165,6 +174,31 @@ if command -v mkfs.vfat >/dev/null && mkfs.vfat fat.img >/dev/null 2>&1 && mount
     fi
 else
     echo "SKIP   no mkfs.vfat or no FAT in this kernel, the evidence medium with FAT is not run"
+fi
+# LVM on LUKS: the stack of an encrypted installation
+mkdir "$W/lvm"
+if command -v vgcreate >/dev/null && command -v mkfs.ext4 >/dev/null; then
+    SIZE=256M mk kc_pv luks2 --pbkdf pbkdf2 --pbkdf-force-iterations 1000
+    if vgcreate -q kc_vg /dev/mapper/kc_pv >/dev/null 2>"$W/lvm.txt" && lvcreate -q -y -n data -l 100%FREE kc_vg >/dev/null 2>>"$W/lvm.txt" \
+        && mkfs.ext4 -q /dev/mapper/kc_vg-data 2>>"$W/lvm.txt" && mount /dev/mapper/kc_vg-data "$W/lvm" 2>>"$W/lvm.txt"; then
+        "$KIT/bin/bash" -p "$KIT/keytriage.sh" -e "$W/lvm" > "$W/screen-lvm.txt" 2>&1; rcl=$?
+        L=$(ls -d "$W"/lvm/triage_* 2>/dev/null | tail -n 1)
+        ok=1
+        [ "$rcl" = 0 ] || ok=0
+        grep -q 'the evidence directory lies on the open dm-crypt volume kc_pv' "$W/screen-lvm.txt" || ok=0
+        grep '"name": "kc_pv"' "$L/verdict.json" 2>/dev/null | grep -q '"verdict": "captured and proven"' || ok=0
+        cmp -s "$L/keys/kc_pv.vk" kc_pv.vk || ok=0
+        grep -q '"name": "kc_vg-data"' "$L/verdict.json" 2>/dev/null && ok=0
+        if [ "$ok" = 1 ]; then
+            echo "PASS   LVM on LUKS: kc_pv is captured and proven, the logical volume is not listed, the evidence directory on it is taken as lying on kc_pv"
+        else
+            echo "FAIL   LVM on LUKS, status $rcl"; sed 's/^/       /' "$W/screen-lvm.txt"; PASS=0
+        fi
+    else
+        echo "FAIL   LVM on LUKS: the volume group, the logical volume or its file system could not be made: $(head -n 1 "$W/lvm.txt")"; PASS=0
+    fi
+else
+    echo "SKIP   no lvm2 or no mkfs.ext4, LVM on LUKS is not run"
 fi
 echo
 if [ "$PASS" = 1 ]; then echo "RESULT: PASS"; else echo "RESULT: FAIL"; echo; echo "---- screen output of the tool"; cat "$W/screen.txt"; fi

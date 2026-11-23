@@ -1,0 +1,15 @@
+# The cloud images that tests/compat-guest.sh boots for the compatibility check: a name, the
+# address of the x86-64 image on the distribution's own site, and its SHA-256 or SHA-512 as the
+# distribution publishes it beside the image. An image is used only when it has that value.
+# Each address names one dated build. Where a distribution has removed that build, the newer one
+# and its published value are entered here.
+debian-13         https://cloud.debian.org/images/cloud/trixie/20261116-2664/debian-13-generic-amd64-20261116-2664.qcow2 e53a93ef33f828ceed0e7278c2cc2753bdc7d5098fbfae15bd64b6d878db350ea3744247763a1c8ecb6b4019a0f623c38caf6038ad6f9c357fb4e01493ddf1a3
+debian-12         https://cloud.debian.org/images/cloud/bookworm/20261117-2665/debian-12-generic-amd64-20261117-2665.qcow2 d597a8b422a0fa7f7cf1a0477d23be7f7514f32e57ccb8d0c69156e1be4a7e1712fb64aee6298520d70aa573b801d0cfe3392ab5de39829728760c0cf99ef4ec
+ubuntu-2604       https://cloud-images.ubuntu.com/releases/26.04/release-20261108/ubuntu-26.04-server-cloudimg-amd64.img 7b90593f5532b49b7e3fe3d2743f0d1f0d822e5b07cebcd8e00c0df8069ecab9
+ubuntu-2404       https://cloud-images.ubuntu.com/releases/noble/release-20261017/ubuntu-24.04-server-cloudimg-amd64.img 04e8f2461a16a44e78a370284471f29616cdd9baf1893df25807b71f985b6c94
+fedora-45         https://dl.fedoraproject.org/pub/fedora/linux/releases/45/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-45-1.4.x86_64.qcow2 50bdc5e70f6a24f540932d15411c1c6ae9fcfa40fb990d876d83c5cc823b2ad0
+almalinux-10      https://repo.almalinux.org/almalinux/10/cloud/x86_64/images/AlmaLinux-10-GenericCloud-10.3-20261116.0.x86_64.qcow2 845d3a4e41fde973bdbf9763b62a88538c1a1fadc2332a89f6ea01e2c17c78ee
+almalinux-9       https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-9.9-20261116.x86_64.qcow2 50e428e36083531995df84302268b95f0bf30db1d5e6b931f73dc40642dd77bb
+rocky-10          https://dl.rockylinux.org/pub/rocky/10/images/x86_64/Rocky-10-GenericCloud-Base-10.3-20261112.0.x86_64.qcow2 68eae06d402c8b19e7dca06e85bdc43a3476089afa3ee20d93d0d43cf9871e9e
+opensuse-leap-16  https://download.opensuse.org/distribution/leap/16.1/appliances/Leap-16.1-Minimal-VM.x86_64-Cloud-Build3.21.qcow2 d30c848752e54d3e05d1c07de8438c4f0cbd23fc690e402942ae61e08d00c911
+arch              https://geo.mirror.pkgbuild.com/images/v20261115.625457/Arch-Linux-x86_64-cloudimg-20261115.625457.qcow2 dbd02830f6eb0fe07ef6e5edaddbae8b577ce4296d9e79118904704cce0a1f60
