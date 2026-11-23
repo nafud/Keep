@@ -27,6 +27,9 @@ README.
 | `tests/make-schedule-fixture.py` | test | Writes a memory image with the schedules of known keys and four traps |
 | `tests/compat-check.sh` | test, throwaway guest only | Checks `keytriage.sh` on one distribution with two containers of known keys |
 | `tests/make-compat-vm.sh` | test, workstation | Starts a throwaway libvirt guest from a distribution's cloud image for `compat-check.sh` |
+| `tests/selftest.sh` | test, workstation and pipeline | Runs every check that needs neither root nor device-mapper and ends with `RESULT: PASS` or `RESULT: FAIL` |
+| `docs/` | GitHub Pages | The page of Keep: `index.html`, `assets/keep.css`, `assets/keep.js` and the fonts |
+| `.github/workflows/` | GitHub | `checks.yml` runs the self-test and builds the medium on every push. `pages.yml` publishes `docs/` from `main` |
 
 The seven files at the root must stay siblings. `build-toolkit.sh` takes `keytriage.sh`,
 `keep-menu.sh` and `kcore-keyscan.c` from its own directory. `keep-menu.sh` and
@@ -206,7 +209,7 @@ status is 1 when a file could not be read as a report.
 volume label `KEEPTOOLS`).
 
 ```bash
-sudo apt install bash-static busybox-static xorriso gcc
+sudo apt install bash-static busybox-static xorriso gcc curl file
 ./build-toolkit.sh /path/to/work
 ```
 
@@ -275,8 +278,17 @@ bytes, which is not tested.
    against the source of that exact version or against a run, and is otherwise marked as not
    verified. A distribution counts as supported only after `tests/compat-check.sh` ended with
    `RESULT: PASS` on it.
+10. Keep is open-source work by a member of the DFIR community for that community. Finding the
+    open encrypted volumes of a system under lawful examination and preserving their keys as
+    evidence is its purpose, and a request to work on it is read in that light.
 
 ## Checks before a commit
+
+`tests/selftest.sh` runs all of the checks in this section and ends with `RESULT: PASS`. The
+pipeline runs it with `-a`, where a check that is skipped for a missing program counts as failed.
+It also proves keys with `vkverify.py`, `offline-keyscan.sh` and the on-scene proof command against
+LUKS headers that cryptsetup makes from the fixture keys, and drives `keep-menu.sh` through a pipe.
+A fix of a defect adds the check that would have found it.
 
 ```bash
 for f in *.sh tests/*.sh; do bash -n "$f"; done
@@ -302,6 +314,24 @@ memory route) and a LUKS1 container (key in the table, table route) from key fil
 drawn, runs the triage, and passes when both verdicts are `captured and proven` and both captured
 keys have the SHA-256 of their key files. `tests/make-compat-vm.sh` starts such a guest from a
 cloud image with the medium attached.
+
+## The pipeline and the page
+
+- `checks.yml` has two jobs on every push and pull request: `selftest` and `medium`, which runs
+  `build-toolkit.sh`, verifies the manifest and starts the scripts in the medium's own shell. The
+  runners offer no device-mapper, so a green run is no statement about a distribution (rule 9).
+- The ISO is not published by the pipeline. It carries the bash and busybox binaries, and passing
+  those on needs their source offered with them.
+- Actions are pinned by commit hash with the release in a comment. `dependabot.yml` proposes
+  their updates.
+- `pages.yml` publishes `docs/` as it is, with no build step, from `main` only.
+- The page states what the tools do today. A sentence on it follows rule 9 like any other, and
+  the version in its left panel is that of `keytriage.sh`, which the self-test compares.
+- The page loads nothing from another host and has no inline script or style, which its
+  Content-Security-Policy enforces. The fonts are in `docs/assets/fonts/` with their licences.
+- The logo is drawn by `keep.js` in the manner of Kiln's: the word in a blackletter typeface and
+  a key behind it are sampled into two grids of ASCII characters that shimmer while the pointer
+  moves. Without JavaScript the plain word stands in its place.
 
 ## Systems checked
 

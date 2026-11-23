@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- The page loads nothing from another host and runs no inline script or style. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'">
+<meta name="color-scheme" content="light dark">
+<title>Keep: decryption-readiness triage for live Linux</title>
+<meta name="description" content="Keep finds the open dm-crypt volumes of a running Linux system and decides, before power-off, whether each volume key can be preserved as evidence and proven correct.">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="preload" href="assets/fonts/JetBrainsMono-Regular.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="assets/keep.css">
+<script src="assets/keep.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#overview">Skip to the content</a>
+<div class="page">
+
+<aside class="panel side" aria-label="About Keep">
+  <div class="logo" role="img" aria-label="Keep. The word stands in front of a key.">
+    <pre class="logo-key" aria-hidden="true"></pre>
+    <pre class="logo-word" aria-hidden="true">Keep</pre>
+  </div>
+  <p class="tagline">Decryption-readiness triage for live Linux</p>
+  <dl class="facts">
+    <div><dt>version</dt><dd>1.2.2</dd></div>
+    <div><dt>author</dt><dd><a href="https://github.com/nafud">nafud</a></dd></div>
+    <div><dt>source</dt><dd><a href="https://github.com/nafud/Keep">github.com/nafud/Keep</a></dd></div>
+  </dl>
+  <p class="notice">For lawful examination of systems the examiner is authorised to examine.</p>
+</aside>
+
+<main class="panel content">
+
+<section id="overview">
+<h1>Decryption-readiness triage for an unlocked Linux system</h1>
+<p class="lead">An investigator meets a running Linux machine whose encrypted storage is unlocked. Powering it off turns the data back into ciphertext. Keep runs before power-off and decides, for every open dm-crypt volume, one of three things: the volume key can be preserved as evidence and proven correct now, a memory image must be taken first, or only a copy of the mounted files is possible.</p>
+<p>A second mode does the same in the lab, from a memory dump and a disk image that were collected earlier.</p>
+<p>Keep is not a general artefact collector. It is made to run beside one, such as UAC, and depends on none.</p>
+</section>
+
+<section id="quick-start">
+<h2>Quick start</h2>
+
+<h3 id="medium">1. Build the tool medium</h3>
+<p>On a Debian or Ubuntu workstation. The medium is what runs on scene, so that the triage does not depend on the programs of the examined system.</p>
+<div class="code cmd"><pre><code>git clone https://github.com/nafud/Keep.git</code></pre></div>
+<div class="code cmd"><pre><code>sudo apt install bash-static busybox-static xorriso gcc curl file</code></pre></div>
+<div class="code cmd"><pre><code>./build-toolkit.sh /path/to/work</code></pre></div>
+<p>This writes <code>work/tools/</code> and <code>work/tools.iso</code> with the volume label <code>KEEPTOOLS</code>. The medium carries a static bash, a static busybox, the scanner <code>kcore-keyscan</code>, <code>keytriage.sh</code>, <code>keep-menu.sh</code> and Microsoft AVML v0.21.0, which is accepted only when its SHA-256 equals the value pinned in the script. <code>dmsetup</code> and <code>cryptsetup</code> are not on the medium. The examined system's own are used, and their paths and SHA-256 go into the report.</p>
+
+<h3 id="scene">2. On scene</h3>
+<p>With the tool medium at <code>/media/tools</code> and an evidence medium at <code>/media/evidence</code>. The keys of every open volume:</p>
+<div class="code cmd"><pre><code>sudo /media/tools/bin/bash /media/tools/keytriage.sh -e /media/evidence</code></pre></div>
+<p>The keys, and then a memory image. The keys come first, because an event can close their window within seconds and an image of a large machine takes minutes.</p>
+<div class="code cmd"><pre><code>sudo /media/tools/bin/bash /media/tools/keytriage.sh -e /media/evidence -m</code></pre></div>
+<p>The same through plain questions, in the manner of <code>ewfacquire</code>. With <code>-n</code> it asks and lists everything and runs nothing.</p>
+<div class="code cmd"><pre><code>sudo /media/tools/bin/bash /media/tools/keep-menu.sh</code></pre></div>
+<p>One verdict is printed per volume. An example of the screen, shortened, with illustrative values:</p>
+<div class="code sample"><pre><code>==== nvme0n1p3_crypt
+  type LUKS2, cipher aes-xts-plain64, keysize 512 bits, key location keyring
+  backing device /dev/nvme0n1p3
+  header backed up: headers/nvme0n1p3_crypt.hdr (16777216 bytes)
+  R1 table: keyring reference :64:logon:cryptsetup:... (no key in the table)
+  R3 memory: searching /proc/kcore for AES key schedules
+  41 schedules found, list in keys/kcore-candidates.txt
+  18 schedules of AES-256
+  recovered a volume key of 64 bytes, sha256 7929e0159d4dc43d
+  VERDICT: captured and proven (opens the header)
+
+==== verdicts
+  nvme0n1p3_crypt   captured and proven</code></pre></div>
+
+<h3 id="lab">3. In the lab</h3>
+<p>For a memory dump that was collected earlier. The dump is searched and every LUKS header in the disk images is located and tested. The lab tools need Python 3 and the scanner, and they only read their inputs.</p>
+<div class="code cmd"><pre><code>./offline-keyscan.sh -k /path/to/work/tools memory.lime disk.dd</code></pre></div>
+<p>The result is a folder <code>scan_&lt;dump&gt;_&lt;UTC time&gt;/</code> with one <code>NAME.vk</code> per proven volume key, for <code>cryptsetup open --volume-key-file</code>. The report in it is printed as text, and several reports are compared in one table:</p>
+<div class="code cmd"><pre><code>python3 -I keep-report.py scan_*/verdict.json</code></pre></div>
+<p>The two steps of <code>offline-keyscan.sh</code> can be run by hand:</p>
+<div class="code sample"><pre><code>kcore-keyscan [-s STEP] [FILE]
+python3 -I vkverify.py CANDIDATES [HEADER...] [--image DISK]... [--out DIR] [--json FILE]</code></pre></div>
+</section>
+
+<section id="verdicts">
+<h2>Verdicts</h2>
+<p><code>keytriage.sh</code> prints exactly one of these per volume. They are also the values of <code>verdict</code> in the report.</p>
+<div class="table"><table>
+<thead><tr><th>Verdict</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><span class="verdict ok">captured and proven</span></td><td>The key is on the evidence medium and opens the LUKS header.</td></tr>
+<tr><td><span class="verdict ok">captured, in use</span></td><td>The key is read from the live table of a volume without a header digest (plain, tcrypt). Opening the image in the lab confirms it.</td></tr>
+<tr><td><span class="verdict warn">captured, not proven</span></td><td>A key is read, but there was no header backup or the header refused it.</td></tr>
+<tr><td><span class="verdict warn">needs a memory read</span></td><td>The key was not reached in this run. A memory image keeps the route open.</td></tr>
+<tr><td><span class="verdict bad">live copy only</span></td><td>No key route is open: a non-AES cipher behind a keyring reference, kernel lockdown <code>confidentiality</code>, or a refused read of <code>/proc/kcore</code>.</td></tr>
+</tbody>
+</table></div>
+<p class="legend"><span class="verdict ok">key held</span> <span class="verdict warn">action needed</span> <span class="verdict bad">no key</span> are the three classes that <code>keep-report.py</code> prints beside each verdict.</p>
+</section>
+
+<section id="routes">
+<h2>How the key is reached</h2>
+<p>For each mapping of <code>dmsetup ls --target crypt</code> the script reads <code>cryptsetup status</code> and the kernel's own table line, and takes the first route that is open.</p>
+<div class="table"><table>
+<thead><tr><th>Route</th><th>When</th><th>What happens</th></tr></thead>
+<tbody>
+<tr><td><strong>R1</strong> table</td><td>The table line carries the key in hexadecimal: LUKS1, plain, tcrypt, and LUKS2 opened with <code>--disable-keyring</code>.</td><td>The key is written to <code>keys/NAME.vk</code> and, for LUKS, proven against the header backup.</td></tr>
+<tr><td><strong>R3</strong> memory</td><td>The table line carries a keyring reference. This is the default for LUKS2, including systemd-homed.</td><td><code>kcore-keyscan</code> searches <code>/proc/kcore</code> once for all volumes. Candidates are proven against the header backup.</td></tr>
+<tr><td><strong>R5</strong> live</td><td>No key route is open.</td><td>Only a file-level copy of the mounted plaintext remains.</td></tr>
+</tbody>
+</table></div>
+<p>A memory image is the fourth route, R4. It is searched in the lab with the same scanner.</p>
+<p>The cipher is taken from the table line. <code>aes-xts-*</code> and <code>capi:xts(aes)-*</code> are XTS, where the volume key is two AES keys. Any other <code>aes-*</code> is a single AES key. Everything else has no AES schedule of the volume key, so the memory route does not apply.</p>
+</section>
+
+<section id="proof">
+<h2>The proof</h2>
+<p>A candidate key counts only when it is proven. Nothing is reported as a volume key on the strength of where it was found.</p>
+<ul>
+<li><strong>On scene</strong> the proof is <code>cryptsetup open --test-passphrase</code> with the key file and the header backup, run by the examined system's own cryptsetup. The key option is <code>--volume-key-file</code> where the installed release lists it, and <code>--master-key-file</code> otherwise.</li>
+<li><strong>In the lab</strong> <code>vkverify.py</code> computes the proof itself, with no cryptsetup and no loop device. A LUKS header stores a PBKDF2 digest of the volume key: LUKS1 in the binary header, LUKS2 in the <code>digests</code> object of its JSON area. A key whose PBKDF2 output equals the stored digest is the volume key.</li>
+</ul>
+<p>With <code>--image</code> no header backup is needed. The image is searched for the LUKS magic at sector boundaries, and a place is accepted only when its digest parameters are plausible.</p>
+</section>
+
+<section id="memory">
+<h2>Key schedules in memory</h2>
+<p>AES expands a key into round keys (FIPS-197, section 5.2). The kernel holds the expanded schedule, and its first 16 or 32 bytes are the key. <code>kcore-keyscan</code> tests every position against the expansion rule over the whole schedule, 176 bytes for AES-128 and 240 bytes for AES-256. The test is exact, so a hit is a real schedule, though not necessarily one of a disk volume. That is what the proof decides.</p>
+<p>With <code>aes-xts</code> the volume key is the data key followed by the tweak key. On x86-64 with the AES-NI family of drivers the kernel keeps both schedules in one structure, the tweak schedule first and the data schedule 496 bytes after it. <code>keytriage.sh</code> tries only pairs at that distance. <code>vkverify.py</code> tries those first and then every other ordered pair.</p>
+<p>The scanner recognises its input from the first bytes.</p>
+<div class="table"><table>
+<thead><tr><th>Format</th><th>Recognised by</th><th>What is read</th></tr></thead>
+<tbody>
+<tr><td>ELF64 core</td><td>ELF magic, 64-bit, little-endian</td><td>Every <code>PT_LOAD</code> segment with a physical address. This is <code>/proc/kcore</code>.</td></tr>
+<tr><td>LiME</td><td><code>EMiL</code> at the start of each range header</td><td>Each range with its start and end address. This is what AVML writes.</td></tr>
+<tr><td>raw</td><td>anything else</td><td>The whole file, with the file offset as the address.</td></tr>
+</tbody>
+</table></div>
+</section>
+
+<section id="tools">
+<h2>The tools</h2>
+<div class="table"><table>
+<thead><tr><th>File</th><th>Runs</th><th>Purpose</th></tr></thead>
+<tbody>
+<tr><td><code>keytriage.sh</code></td><td>scene, as root</td><td>The triage itself: enumerates the open volumes, backs up LUKS headers, walks the routes, prints the verdicts, writes the evidence folder.</td></tr>
+<tr><td><code>kcore-keyscan.c</code></td><td>scene and lab</td><td>Static scanner for AES-128 and AES-256 key schedules in <code>/proc/kcore</code> or a memory image.</td></tr>
+<tr><td><code>keep-menu.sh</code></td><td>scene and lab</td><td>Asks for the parameters of one run as plain questions and starts it.</td></tr>
+<tr><td><code>vkverify.py</code></td><td>lab</td><td>Proves which scanner candidates are the volume key of a LUKS1 or LUKS2 header.</td></tr>
+<tr><td><code>offline-keyscan.sh</code></td><td>lab</td><td>Runs the scanner on a dump and the verifier against disk images.</td></tr>
+<tr><td><code>keep-report.py</code></td><td>lab</td><td>Prints the reports as text in the manner of <code>ewfinfo</code>, and compares several.</td></tr>
+<tr><td><code>build-toolkit.sh</code></td><td>workstation</td><td>Assembles the scene tool medium and writes it as an ISO.</td></tr>
+</tbody>
+</table></div>
+<p>No tool opens a window or draws a full-screen interface. Each writes lines of text and, where it asks, reads lines of text, so everything works on a console, over SSH, on a serial line and through a pipe.</p>
+</section>
+
+<section id="output">
+<h2>What a run leaves behind</h2>
+<p>On the evidence medium, <code>keytriage.sh</code> writes one folder:</p>
+<div class="code sample"><pre><code>triage_&lt;host&gt;_&lt;UTC time&gt;/
+  triage.txt        the screen
+  verdict.json      the same verdicts for a program
+  headers/          the LUKS header backups
+  keys/             the volume keys and the candidate list
+  memory/           with -m: memory.lime, kernel banner, release, os-release, System.map
+  manifest.sha256   the SHA-256 of all of them</code></pre></div>
+<p>Beside the memory image go the kernel banner, the release, <code>os-release</code> and <code>System.map</code>, which Volatility 3 needs for its symbol table. The image is skipped when the evidence medium has less free space than the machine has RAM plus 64 MiB.</p>
+<p><code>verdict.json</code> has the schema <code>keep-report/1</code>, which <code>vkverify.py --json</code> writes too. A report never holds a key. A key is named by its length and by <code>key_sha256_16</code>, the first 16 hexadecimal digits of its SHA-256.</p>
+</section>
+
+<section id="systems">
+<h2>Systems checked</h2>
+<p>A distribution counts as checked only after <code>tests/compat-check.sh</code> ended with <code>RESULT: PASS</code> on it. That test makes a LUKS2 and a LUKS1 container from keys it has just drawn, runs the triage on a throwaway guest and compares the captured keys with the known ones. The check or a full run passed on these x86-64 systems.</p>
+<div class="table"><table>
+<thead><tr><th>System</th><th>Kernel</th><th>cryptsetup</th><th>Key option</th><th>Lockdown</th></tr></thead>
+<tbody>
+<tr><td>Ubuntu Server 26.04.1</td><td>7.0.0-44-generic</td><td>2.8.4</td><td><code>--volume-key-file</code></td><td>integrity</td></tr>
+<tr><td>Debian 13</td><td>6.12</td><td>2.7.5</td><td><code>--volume-key-file</code></td><td>none</td></tr>
+<tr><td>Ubuntu 22.04.5</td><td>5.15</td><td>2.4.3</td><td><code>--master-key-file</code></td><td>none</td></tr>
+<tr><td>Debian 11</td><td>5.10</td><td>2.3.7</td><td><code>--master-key-file</code></td><td>none</td></tr>
+</tbody>
+</table></div>
+<p>Fedora, the RHEL family, openSUSE and Arch are not checked yet.</p>
+</section>
+
+<section id="limits">
+<h2>Known limits</h2>
+<ul>
+<li>x86-64 only. The on-scene pairing of XTS halves assumes the layout of the AES-NI family of drivers. With another XTS implementation <code>keytriage.sh</code> ends with <span class="verdict warn">needs a memory read</span>, and <code>vkverify.py</code> can still prove the key from the candidate list, because it tries every pair.</li>
+<li>The memory search finds AES keys only. A volume with another cipher has no memory route.</li>
+<li>Kernel lockdown <code>confidentiality</code> blocks <code>/proc/kcore</code> and every memory source of AVML.</li>
+<li>Keep covers dm-crypt only. Mounted file systems that encrypt by themselves (eCryptfs, ZFS, gocryptfs, CryFS, EncFS) are named in the report as not examined.</li>
+<li>Plain and tcrypt volumes have no header digest, so their keys cannot be proven on scene.</li>
+<li>A dump in a container format other than raw, LiME or ELF core is searched as raw bytes, which is not tested.</li>
+</ul>
+</section>
+
+<section id="safeguards">
+<h2>Safeguards</h2>
+<ul>
+<li>No key is printed. On screen and in every report a key is named by its length and the first 16 digits of its SHA-256. <code>vkverify.py --show-keys</code> is the single, explicit exception, and it does not reach the JSON report.</li>
+<li>Volume keys and the candidate list, which is key material too, are written only below a <code>keys/</code> directory.</li>
+<li>The lab tools only read the dump and the images they are given.</li>
+<li>The scene scripts run in the medium's static bash with its busybox applets first on <code>PATH</code>. The examined system's <code>dmsetup</code> and <code>cryptsetup</code> are used, and their resolved paths and SHA-256 are recorded so they can be checked against the distribution's packages afterwards.</li>
+<li>A file of the examined system is read as text and never executed or sourced.</li>
+<li>The downloaded AVML binary is pinned by SHA-256 and refused on a mismatch.</li>
+<li>The Python tools use the standard library only and are run with <code>-I</code>.</li>
+</ul>
+</section>
+
+<section id="development">
+<h2>Development</h2>
+<p>One script runs every check that needs neither root nor device-mapper: the static checks, the scanner on fixtures with known keys and traps, the verifier and the on-scene proof on LUKS headers that cryptsetup makes from the same keys, and the menu through a pipe. The pipeline on GitHub runs it on every push.</p>
+<div class="code cmd"><pre><code>tests/selftest.sh</code></pre></div>
+<p><code>keytriage.sh</code> needs device-mapper and root, so it is tested on a throwaway guest and never on a machine that matters:</p>
+<div class="code cmd"><pre><code>sudo bash tests/compat-check.sh</code></pre></div>
+<p>Reports of a distribution where the check passes or fails are welcome as an issue on <a href="https://github.com/nafud/Keep/issues">GitHub</a>.</p>
+</section>
+
+</main>
+
+<nav class="panel toc" aria-label="Table of contents">
+  <h2>Table of contents</h2>
+  <ol>
+    <li><a href="#overview">Overview</a></li>
+    <li><a href="#quick-start">Quick start</a>
+      <ol>
+        <li><a href="#medium">Build the tool medium</a></li>
+        <li><a href="#scene">On scene</a></li>
+        <li><a href="#lab">In the lab</a></li>
+      </ol>
+    </li>
+    <li><a href="#verdicts">Verdicts</a></li>
+    <li><a href="#routes">How the key is reached</a></li>
+    <li><a href="#proof">The proof</a></li>
+    <li><a href="#memory">Key schedules in memory</a></li>
+    <li><a href="#tools">The tools</a></li>
+    <li><a href="#output">What a run leaves behind</a></li>
+    <li><a href="#systems">Systems checked</a></li>
+    <li><a href="#limits">Known limits</a></li>
+    <li><a href="#safeguards">Safeguards</a></li>
+    <li><a href="#development">Development</a></li>
+  </ol>
+</nav>
+
+</div>
+</body>
+</html>

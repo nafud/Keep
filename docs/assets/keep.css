@@ -1,0 +1,212 @@
+/* The page of Keep: three panels. Left the logo and the facts, in the middle the text, right the
+   table of contents. One typeface, JetBrains Mono, because every tool of Keep speaks in lines of
+   text. Colours follow the system's light or dark setting. */
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("fonts/JetBrainsMono-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("fonts/JetBrainsMono-Bold.woff2") format("woff2");
+  font-weight: 700;
+  font-display: swap;
+}
+/* The glyphs K, e and p of UnifrakturMaguntia, for the logo only (see keep.js). */
+@font-face {
+  font-family: "Keep Blackletter";
+  src: url("fonts/keep-blackletter.woff2") format("woff2");
+  font-display: block;
+}
+
+:root {
+  --bg: #f5f6f4;
+  --surface: #ffffff;
+  --border: #dfe3e0;
+  --text: #151a1b;
+  --text-2: #566064;
+  --muted: #8b9498;
+  --accent: #0f766e;
+  --accent-soft: rgba(15, 118, 110, 0.09);
+  --code-bg: #f1f3f1;
+  --ok: #15803d;
+  --warn: #a65a05;
+  --bad: #b42323;
+  --logo-word: #1f2729;
+  --logo-key: #0f766e;
+  --gap: 20px;
+  --radius: 14px;
+  --mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #131517;
+    --surface: #1a1d20;
+    --border: #2a2f33;
+    --text: #e4e7e8;
+    --text-2: #a3abaf;
+    --muted: #727b80;
+    --accent: #3fd0bd;
+    --accent-soft: rgba(63, 208, 189, 0.1);
+    --code-bg: #121416;
+    --ok: #56d37f;
+    --warn: #f0b243;
+    --bad: #f47f7f;
+    --logo-word: #dfe3e4;
+    --logo-key: #3fd0bd;
+  }
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html { scroll-behavior: smooth; scroll-padding-top: 28px; -webkit-text-size-adjust: 100%; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 400 14.5px/1.7 var(--mono);
+  font-synthesis: none;
+  font-variant-ligatures: none;
+}
+a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+a:hover { text-decoration-thickness: 2px; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+.skip { position: absolute; left: -999px; top: 8px; background: var(--surface); padding: 6px 10px; z-index: 2; }
+.skip:focus { left: 8px; }
+
+/* ---- the three panels ---- */
+.page {
+  display: grid;
+  grid-template-columns: 320px minmax(0, 1fr) 256px;
+  gap: var(--gap);
+  align-items: start;
+  max-width: 1500px;
+  margin: 0 auto;
+  padding: var(--gap);
+}
+.panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+.side, .toc { position: sticky; top: var(--gap); }
+.side {
+  height: calc(100vh - 2 * var(--gap));
+  height: calc(100dvh - 2 * var(--gap));
+  overflow: auto;
+  padding: 26px 22px 22px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+.toc {
+  max-height: calc(100vh - 2 * var(--gap));
+  max-height: calc(100dvh - 2 * var(--gap));
+  overflow: auto;
+  padding: 22px 20px;
+}
+.content { min-width: 0; padding: 44px 52px 56px; }
+
+/* ---- the logo ---- */
+/* The two layers lie in the same grid cell: the key behind, the word in front. Before keep.js
+   has drawn them the word stands as plain text in the logo typeface. */
+.logo {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  overflow: hidden;
+  user-select: none;
+  cursor: default;
+}
+.logo pre {
+  grid-area: 1 / 1;
+  margin: 0;
+  font: 400 4px/1.2 var(--mono);
+  letter-spacing: 0;
+  white-space: pre;
+}
+.logo-word { color: var(--logo-word); }
+.logo-key { color: var(--logo-key); opacity: 0.6; }
+.logo:not(.generated) .logo-word { font: 400 5.4rem/1 "Keep Blackletter", serif; }
+.logo:not(.generated) .logo-key { display: none; }
+
+.tagline { margin: 14px 0 0; color: var(--text-2); font-size: 13px; line-height: 1.55; max-width: 24ch; }
+.facts { margin: 22px 0 0; width: 100%; border-top: 1px solid var(--border); padding-top: 18px; }
+.facts div { display: grid; grid-template-columns: 8ch 1fr; gap: 10px; text-align: left; padding: 3px 4px; font-size: 13px; }
+.facts dt { color: var(--muted); }
+.facts dd { margin: 0; overflow-wrap: anywhere; }
+.notice { margin: auto 0 0; padding-top: 20px; color: var(--muted); font-size: 12px; line-height: 1.55; max-width: 30ch; }
+
+/* ---- the text ---- */
+.content section + section { margin-top: 46px; }
+.content :is(p, ul, .lead) { max-width: 82ch; }
+h1 { font-size: 23px; line-height: 1.35; margin: 0 0 18px; letter-spacing: -0.01em; max-width: 34ch; text-wrap: balance; }
+h2 { font-size: 17px; line-height: 1.4; margin: 0 0 14px; padding-top: 22px; border-top: 1px solid var(--border); }
+h2::before { content: "# "; color: var(--accent); }
+h3 { font-size: 14.5px; margin: 28px 0 10px; }
+p { margin: 0 0 14px; }
+.lead { color: var(--text); font-size: 15px; }
+ul { margin: 0 0 14px; padding-left: 2.2ch; }
+li { margin-bottom: 8px; }
+.content li::marker { color: var(--muted); content: "- "; }
+code { font: inherit; background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px; padding: 0 0.4ch; overflow-wrap: anywhere; }
+
+.code { position: relative; margin: 0 0 14px; background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px; }
+.code pre { margin: 0; padding: 12px 16px; overflow-x: auto; font: 400 13.5px/1.6 var(--mono); }
+.code code { background: none; border: 0; padding: 0; overflow-wrap: normal; }
+.code.cmd pre { padding-right: 52px; }
+.code.cmd code::before { content: "$ "; color: var(--muted); }   /* the prompt is not copied */
+.code.sample pre { color: var(--text-2); font-size: 12.5px; }
+.copy {
+  position: absolute; top: 7px; right: 7px;
+  width: 30px; height: 30px; padding: 6px;
+  display: grid; place-items: center;
+  color: var(--muted); background: var(--surface);
+  border: 1px solid var(--border); border-radius: 6px; cursor: pointer;
+}
+.copy:hover { color: var(--text); border-color: var(--muted); }
+.copy.done { color: var(--ok); border-color: var(--ok); }
+.copy svg { width: 16px; height: 16px; display: block; }
+
+.table { overflow-x: auto; margin: 0 0 14px; border: 1px solid var(--border); border-radius: 8px; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; line-height: 1.6; }
+th, td { text-align: left; vertical-align: top; padding: 9px 14px; border-bottom: 1px solid var(--border); }
+tbody tr:last-child td { border-bottom: 0; }
+th { color: var(--text-2); font-weight: 400; background: var(--code-bg); white-space: nowrap; }
+td:first-child { white-space: nowrap; }
+
+/* a verdict, with the class that keep-report.py gives it */
+.verdict { white-space: nowrap; }
+.verdict::before { content: ""; display: inline-block; width: 0.62em; height: 0.62em; margin-right: 0.7ch; border-radius: 50%; background: currentColor; }
+.verdict.ok { color: var(--ok); }
+.verdict.warn { color: var(--warn); }
+.verdict.bad { color: var(--bad); }
+.legend { color: var(--text-2); font-size: 13px; }
+.legend .verdict { margin-right: 1.5ch; }
+
+/* ---- the table of contents ---- */
+.toc h2 { font-size: 12px; font-weight: 400; color: var(--muted); letter-spacing: 0.08em; text-transform: uppercase; margin: 0 0 12px; padding: 0; border: 0; }
+.toc h2::before { content: none; }
+.toc ol { list-style: none; margin: 0; padding: 0; }
+.toc li { margin: 0; }
+.toc a { display: block; padding: 4px 10px; border-left: 2px solid var(--border); color: var(--text-2); text-decoration: none; font-size: 13px; line-height: 1.5; }
+.toc ol ol a { padding-left: 24px; font-size: 12.5px; }
+.toc a:hover { color: var(--text); }
+.toc a[aria-current="true"] { color: var(--accent); border-left-color: var(--accent); background: var(--accent-soft); }
+
+/* ---- narrower windows ---- */
+@media (max-width: 1180px) {
+  .page { grid-template-columns: 290px minmax(0, 1fr); }
+  .toc { display: none; }
+  .content { padding: 36px 34px 44px; }
+}
+@media (max-width: 800px) {
+  :root { --gap: 12px; }
+  .page { grid-template-columns: minmax(0, 1fr); }
+  .side { position: static; height: auto; padding: 20px 16px; }
+  .logo { max-width: 300px; }
+  .notice { margin-top: 0; }
+  .content { padding: 26px 18px 34px; }
+  h1 { font-size: 20px; }
+  td:first-child { white-space: normal; }
+}
