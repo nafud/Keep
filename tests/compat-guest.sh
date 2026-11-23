@@ -141,8 +141,10 @@ until guest true 2>/dev/null; do
     sleep 5
 done
 echo "guest kc-$N: SSH answers after $((SECONDS - t0)) s"
-# the packages are installed by cloud-init after SSH is up
-guest 'sudo cloud-init status --wait' > "$D/cloud-init.txt" 2>&1
+# the packages are installed by cloud-init after SSH is up. A mirror that does not answer must
+# not hold the run for as long as the job may last, so the wait has twice the limit of the boot.
+guest "sudo timeout $((2 * BOOTWAIT)) cloud-init status --wait" > "$D/cloud-init.txt" 2>&1
+[ $? -ne 124 ] || die "cloud-init of the guest did not finish within $((2 * BOOTWAIT)) s after SSH answered (see $D/console.log)"
 echo "guest kc-$N: cloud-init $(tr -s '.\n' ' ' < "$D/cloud-init.txt" | sed 's/^ *//') after $((SECONDS - t0)) s"
 
 scp "${SSH[@]}" -q -P "$PORT" "$HERE/compat-check.sh" tester@127.0.0.1:compat-check.sh || die "cannot copy compat-check.sh into the guest"
