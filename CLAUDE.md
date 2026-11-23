@@ -57,9 +57,9 @@ with a space.
 Beside its type and its backing device the script names what each volume carries, as the line
 `in use:` and the field `in_use`: where the volume and the devices that stand on it, such as the
 logical volumes of LVM, are mounted or used as swap. It follows `holders/` in `/sys` upwards from
-the mapping and reads `/proc/self/mountinfo` and `/proc/swaps`. This is what a copy of the
-mounted files has to cover, and it tells a volume that holds the root file system from one that
-holds nothing in use.
+the mapping and reads `/proc/self/mountinfo` and `/proc/swaps`. Eight mounts are named and
+further ones counted. This is what a copy of the mounted files has to cover, and it tells a
+volume that holds the root file system from one that holds nothing in use.
 
 A fifth field of `-` is a key of size 0 (`crypt_status` in `dm-crypt.c`), which is the null
 cipher. Such a mapping has no key and gets the verdict `no key needed`. A field that is neither
@@ -355,7 +355,9 @@ the machine has RAM plus 64 MiB.
 With `-m -c` AVML writes its compressed format to `memory/memory.avml`, for a medium with less
 free space than the machine has memory. The scanner reads it, and Volatility 3 reads it where
 the Snappy library is installed. Its size is known only at the end, so it is started whatever
-space is free. Where AVML cannot finish it, the part that was written is removed, so that the
+space is free. How much it saves depends on what the memory holds: on the two runners of the
+pipeline where it was taken, the image had 87 % and 85 % of the size of the memory (13.7 GB for
+15.7 GB and 11.3 GB for 13.3 GB). Where AVML cannot finish it, the part that was written is removed, so that the
 report still has room, and the image counts as failed.
 
 In the lab:
@@ -464,8 +466,8 @@ SHA-256 of their key files. With `-m` or `-c` the memory image must be read by t
 its end and hold the schedules of both volume keys. It also checks that an evidence directory on
 the guest's own disk is refused, that a FAT evidence medium on a loop device is accepted, and the
 layout of an encrypted installation: a LUKS2 volume that carries an LVM volume group, where the
-mapping below the logical volume must be the one listed and proven, and the logical volume with
-its mount point must be named as what that volume carries.
+mapping below the logical volumes must be the one listed and proven, and the logical volumes
+must be named as what that volume carries, one with its mount points and one as swap.
 
 `tests/compat-guest.sh WORKDIR NAME` runs that check unattended in a guest. It fetches the cloud
 image that `tests/compat-images.txt` pins for `NAME`, refuses it unless it has the pinned
@@ -505,7 +507,10 @@ be opened and emulated otherwise, and starts the check over SSH through `sudo`.
 ## Systems checked
 
 `compat-check.sh` passed on these x86-64 systems, each with a memory image. A row names the
-kernel and the cryptsetup of the run it stands for. The first ten are guests that
+kernel and the cryptsetup of the latest run it stands for, and the XTS driver that the kernel
+chose in that run. The driver follows the processor of the machine behind the runner, which a
+guest under KVM sees as its own: the Debian 13 guest used `xts-aes-vaes-avx10_512` in two runs
+and `xts-aes-vaes-avx2` in a third. The first ten are guests that
 `distros.yml` boots from the cloud images of `tests/compat-images.txt`, under KVM with BIOS boot,
 so lockdown is `none` on all of them. The next three are the runner images of `checks.yml`. The
 machine behind a runner image differs from run to run and with it the kernel. The outputs are
@@ -513,19 +518,19 @@ kept as artifacts of the pipeline.
 
 | System | Kernel | cryptsetup | Key option | XTS driver | `keytriage.sh` |
 |---|---|---|---|---|---|
-| Debian 13 | 6.12.117+deb13-amd64 | 2.7.5 | `--volume-key-file` | `xts-aes-vaes-avx10_512` | 1.3.1 |
-| Debian 12 | 6.1.0-56-amd64 | 2.6.1 | `--volume-key-file` | `xts-aes-aesni` | 1.3.1 |
-| Ubuntu 26.04.1 | 7.0.0-43-generic | 2.8.4 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.3.1 |
-| Ubuntu 24.04.5 | 6.8.0-147-generic | 2.7.0 | `--volume-key-file` | `xts-aes-aesni` | 1.3.1 |
-| Fedora 45 | 7.2.11-300.fc45.x86_64 | 2.8.8 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.3.1 |
-| AlmaLinux 10.3 | 6.12.0-264.16.1.el10_3.x86_64 | 2.8.6 | `--volume-key-file` | `xts-aes-vaes-avx10_512` | 1.3.1 |
-| AlmaLinux 9.9 | 5.14.0-741.22.1.el9_9.x86_64 | 2.8.6 | `--volume-key-file` | `xts-aes-aesni` | 1.3.1 |
-| Rocky Linux 10.3 | 6.12.0-264.16.1.el10_3.x86_64 | 2.8.6 | `--volume-key-file` | `xts-aes-vaes-avx10_512` | 1.3.1 |
-| openSUSE Leap 16.1 | 6.12.0-160100.9-default | 2.8.4 | `--volume-key-file` | `xts-aes-vaes-avx2` | 1.3.1 |
-| Arch Linux, image of 2026-11-15 | 7.3.4-arch1-2 | 2.8.8 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.3.1 |
-| Ubuntu 24.04.5, runner image | 7.0.0-1014-aws | 2.7.0 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.3.1 |
-| Ubuntu 24.04.5, runner image | 7.0.0-1017-azure | 2.7.0 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.3.0 |
-| Ubuntu 22.04.5, runner image | 6.8.0-1070-azure | 2.4.3 | `--master-key-file` | `xts-aes-aesni` | 1.3.1 |
+| Debian 13 | 6.12.117+deb13-amd64 | 2.7.5 | `--volume-key-file` | `xts-aes-vaes-avx2` | 1.4.2 |
+| Debian 12 | 6.1.0-56-amd64 | 2.6.1 | `--volume-key-file` | `xts-aes-aesni` | 1.4.2 |
+| Ubuntu 26.04.1 | 7.0.0-43-generic | 2.8.4 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.4.2 |
+| Ubuntu 24.04.5 | 6.8.0-147-generic | 2.7.0 | `--volume-key-file` | `xts-aes-aesni` | 1.4.1 |
+| Fedora 45 | 7.2.11-300.fc45.x86_64 | 2.8.8 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.4.2 |
+| AlmaLinux 10.3 | 6.12.0-264.16.1.el10_3.x86_64 | 2.8.6 | `--volume-key-file` | `xts-aes-vaes-avx10_512` | 1.4.2 |
+| AlmaLinux 9.9 | 5.14.0-741.22.1.el9_9.x86_64 | 2.8.6 | `--volume-key-file` | `xts-aes-aesni` | 1.4.1 |
+| Rocky Linux 10.3 | 6.12.0-264.16.1.el10_3.x86_64 | 2.8.6 | `--volume-key-file` | `xts-aes-vaes-avx10_512` | 1.4.2 |
+| openSUSE Leap 16.1 | 6.12.0-160100.9-default | 2.8.4 | `--volume-key-file` | `xts-aes-vaes-avx10_512` | 1.4.2 |
+| Arch Linux, image of 2026-11-15 | 7.3.4-arch1-2 | 2.8.8 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.4.2 |
+| Ubuntu 24.04.5, runner image | 7.0.0-1014-aws | 2.7.0 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.4.2 |
+| Ubuntu 24.04.5, runner image | 7.0.0-1017-azure | 2.7.0 | `--volume-key-file` | `xts-aes-vaes-avx2` | 1.4.1 |
+| Ubuntu 22.04.5, runner image | 6.8.0-1070-azure | 2.4.3 | `--master-key-file` | `xts-aes-aesni` | 1.4.2 |
 
 On every one of the ten guests the on-scene pairing of the XTS halves found the key, with each of
 the four XTS drivers of the table. On the Arch guest the test of a second partition was skipped,
@@ -575,7 +580,8 @@ on, where lockdown is `integrity`, with a version from 1.3 on.
   images from VMware, VirtualBox or Hyper-V, and E01 on images that libewf wrote, not EnCase.
   EnCase images of version 2 (`Ex01`) and AFF are not read. Reading an E01 image decompresses
   every chunk, and its run time on an image of real size is not measured.
-- The line `in use` is checked for a logical volume on a LUKS volume. For btrfs, whose mounts
+- The line `in use` is checked for two logical volumes on a LUKS volume, one mounted and one
+  used as swap, as an installer lays out an encrypted system. For btrfs, whose mounts
   carry no device number of their own, it goes by the source of the mount, which is not
   checked.
 

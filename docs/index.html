@@ -55,7 +55,7 @@
 <div class="code cmd"><pre><code>sudo /media/tools/bin/bash -p /media/tools/keytriage.sh -e /media/evidence</code></pre></div>
 <p>The keys, and then a memory image. The keys come first, because an event can close their window within seconds and an image of a large machine takes minutes.</p>
 <div class="code cmd"><pre><code>sudo /media/tools/bin/bash -p /media/tools/keytriage.sh -e /media/evidence -m</code></pre></div>
-<p>With <code>-m -c</code> the image is written compressed, for an evidence medium with less free space than the machine has memory.</p>
+<p>With <code>-m -c</code> the image is written compressed, for an evidence medium with less free space than the machine has memory. How much this saves depends on what the memory holds: on the two machines of the pipeline where it was taken, the image had 87 % and 85 % of the size of the memory.</p>
 <p>The evidence directory must lie on a medium of its own. A directory on the root file system of the examined system, or on a disk that also carries it, is refused, because a key written there changes the examined disk. <code>-f</code> accepts such a directory for a test.</p>
 <p>The same through plain questions, in the manner of <code>ewfacquire</code>. With <code>-n</code> it asks and lists everything and runs nothing.</p>
 <div class="code cmd"><pre><code>sudo /media/tools/bin/bash -p /media/tools/keep-menu.sh</code></pre></div>
@@ -194,27 +194,27 @@ python3 -I vkverify.py CANDIDATES [HEADER...] [--image DISK]... [--out DIR] [--j
 
 <section id="systems">
 <h2>Systems checked</h2>
-<p>A distribution counts as checked only after <code>tests/compat-check.sh</code> ended with <code>RESULT: PASS</code> on it. That test makes a LUKS2 and a LUKS1 container from keys it has just drawn, a mapping named <code>No</code>, one with the null cipher and a LUKS2 volume that carries LVM, runs the triage, compares the captured keys with the known ones, and takes a memory image, in which the scanner must find those keys again.</p>
+<p>A distribution counts as checked only after <code>tests/compat-check.sh</code> ended with <code>RESULT: PASS</code> on it. That test makes a LUKS2 and a LUKS1 container from keys it has just drawn, a mapping named <code>No</code>, one with the null cipher and a LUKS2 volume that carries LVM with a mounted volume and a swap volume, runs the triage, compares the captured keys with the known ones, and takes a memory image, in which the scanner must find those keys again.</p>
 <p>The pipeline on GitHub boots the first ten systems of this table as guests from the distributions' own cloud images, each pinned by its published checksum, and runs the check in them. The last three rows are the runner images of the pipeline itself, where the machine and with it the kernel differ from run to run. A row names the kernel of the run it stands for, and the last column the version of <code>keytriage.sh</code> that was checked. Lockdown was <code>none</code> on all of them.</p>
 <div class="table"><table>
 <thead><tr><th>System</th><th>Kernel</th><th>cryptsetup</th><th>Version</th></tr></thead>
 <tbody>
-<tr><td>Debian 13</td><td>6.12.117+deb13-amd64</td><td>2.7.5</td><td>1.3.1</td></tr>
-<tr><td>Debian 12</td><td>6.1.0-56-amd64</td><td>2.6.1</td><td>1.3.1</td></tr>
-<tr><td>Ubuntu 26.04.1</td><td>7.0.0-43-generic</td><td>2.8.4</td><td>1.3.1</td></tr>
-<tr><td>Ubuntu 24.04.5</td><td>6.8.0-147-generic</td><td>2.7.0</td><td>1.3.1</td></tr>
-<tr><td>Fedora 45</td><td>7.2.11-300.fc45</td><td>2.8.8</td><td>1.3.1</td></tr>
-<tr><td>AlmaLinux 10.3</td><td>6.12.0-264.16.1.el10_3</td><td>2.8.6</td><td>1.3.1</td></tr>
-<tr><td>AlmaLinux 9.9</td><td>5.14.0-741.22.1.el9_9</td><td>2.8.6</td><td>1.3.1</td></tr>
-<tr><td>Rocky Linux 10.3</td><td>6.12.0-264.16.1.el10_3</td><td>2.8.6</td><td>1.3.1</td></tr>
-<tr><td>openSUSE Leap 16.1</td><td>6.12.0-160100.9-default</td><td>2.8.4</td><td>1.3.1</td></tr>
-<tr><td>Arch Linux</td><td>7.3.4-arch1-2</td><td>2.8.8</td><td>1.3.1</td></tr>
-<tr><td>Ubuntu 24.04 runner</td><td>7.0.0-1014-aws</td><td>2.7.0</td><td>1.3.1</td></tr>
-<tr><td>Ubuntu 24.04 runner</td><td>7.0.0-1017-azure</td><td>2.7.0</td><td>1.3.0</td></tr>
-<tr><td>Ubuntu 22.04 runner</td><td>6.8.0-1070-azure</td><td>2.4.3</td><td>1.3.1</td></tr>
+<tr><td>Debian 13</td><td>6.12.117+deb13-amd64</td><td>2.7.5</td><td>1.4.2</td></tr>
+<tr><td>Debian 12</td><td>6.1.0-56-amd64</td><td>2.6.1</td><td>1.4.2</td></tr>
+<tr><td>Ubuntu 26.04.1</td><td>7.0.0-43-generic</td><td>2.8.4</td><td>1.4.2</td></tr>
+<tr><td>Ubuntu 24.04.5</td><td>6.8.0-147-generic</td><td>2.7.0</td><td>1.4.1</td></tr>
+<tr><td>Fedora 45</td><td>7.2.11-300.fc45</td><td>2.8.8</td><td>1.4.2</td></tr>
+<tr><td>AlmaLinux 10.3</td><td>6.12.0-264.16.1.el10_3</td><td>2.8.6</td><td>1.4.2</td></tr>
+<tr><td>AlmaLinux 9.9</td><td>5.14.0-741.22.1.el9_9</td><td>2.8.6</td><td>1.4.1</td></tr>
+<tr><td>Rocky Linux 10.3</td><td>6.12.0-264.16.1.el10_3</td><td>2.8.6</td><td>1.4.2</td></tr>
+<tr><td>openSUSE Leap 16.1</td><td>6.12.0-160100.9-default</td><td>2.8.4</td><td>1.4.2</td></tr>
+<tr><td>Arch Linux</td><td>7.3.4-arch1-2</td><td>2.8.8</td><td>1.4.2</td></tr>
+<tr><td>Ubuntu 24.04 runner</td><td>7.0.0-1014-aws</td><td>2.7.0</td><td>1.4.2</td></tr>
+<tr><td>Ubuntu 24.04 runner</td><td>7.0.0-1017-azure</td><td>2.7.0</td><td>1.4.1</td></tr>
+<tr><td>Ubuntu 22.04 runner</td><td>6.8.0-1070-azure</td><td>2.4.3</td><td>1.4.2</td></tr>
 </tbody>
 </table></div>
-<p>These kernels used four implementations of <code>xts(aes)</code>: <code>xts-aes-aesni</code>, <code>xts-aes-vaes-avx2</code>, <code>xts-aes-vaes-avx512</code> and <code>xts-aes-vaes-avx10_512</code>. With each of them the two halves of the key were found at the distance that <code>keytriage.sh</code> expects. Three further systems were checked with a version before 1.3: Ubuntu Server 26.04.1 under lockdown <code>integrity</code>, Ubuntu 22.04.5 with kernel 5.15, and Debian 11.</p>
+<p>These kernels used four implementations of <code>xts(aes)</code>: <code>xts-aes-aesni</code>, <code>xts-aes-vaes-avx2</code>, <code>xts-aes-vaes-avx512</code> and <code>xts-aes-vaes-avx10_512</code>. Which of them a kernel uses follows the processor of the machine, so it differs between runs on the same system. With each of them the two halves of the key were found at the distance that <code>keytriage.sh</code> expects. Three further systems were checked with a version before 1.3: Ubuntu Server 26.04.1 under lockdown <code>integrity</code>, Ubuntu 22.04.5 with kernel 5.15, and Debian 11.</p>
 <p>Linux Mint has no cloud image and is not in the list. openSUSE Tumbleweed is not checked. No system is checked with Secure Boot on with a version from 1.3 on.</p>
 </section>
 
