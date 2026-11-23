@@ -16,6 +16,8 @@ on:
   push:
     paths:
       - keytriage.sh
+      - keep-menu.sh
+      - keep.c
       - kcore-keyscan.c
       - build-toolkit.sh
       - tests/compat-check.sh

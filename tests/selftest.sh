@@ -97,6 +97,8 @@ check "the Python files compile" pysyntax
 SCAN=$T/kcore-keyscan
 check "kcore-keyscan builds statically without a warning" gcc -static -O2 -Wall -Werror -o "$SCAN" kcore-keyscan.c
 [ -x "$SCAN" ] || finish
+LAUNCH=$T/keep-launcher
+check "keep, the launcher of the medium, builds statically without a warning" gcc -static -O2 -Wall -Werror -o "$LAUNCH" keep.c
 
 # ---- scanner -----------------------------------------------------------------------------------
 mkdir "$T/keys" "$T/evid" "$T/lab" "$T/lab2"
@@ -371,7 +373,7 @@ open(sys.argv[2], "wb").write(raw)' "$T/l2.img" "$T/list.img" || return 1
         printf 'dump\n%s\n%s\n\n%s\nyes\n' "$T/fx.lime" "$T/disk.dd" "$T/lab2" | KEYSCAN=$SCAN bash -p keep-menu.sh > "$T/menu.txt" 2>&1 || return 1
         grep -q '^keep-menu.sh: SUCCESS$' "$T/menu.txt" && no_key_in "$KEYS" "$T/menu.txt"
     }
-    check "keep-menu.sh runs the offline mode through a pipe" menu_offline
+    check "keep-menu.sh searches a memory dump and proves the keys, through a pipe" menu_offline
 
     # ---- triage --------------------------------------------------------------------------------
     # keytriage.sh itself, without root and without device-mapper. A copy of it runs from a kit
@@ -586,6 +588,22 @@ sys.exit(0 if ok else "the reports say %r and %r" % (a, b))' "$d" "$c" || return
             grep -q "^ran in $TSH with -p\$" "$T/menu2.txt" || { cat "$T/menu2.txt"; return 1; }
         }
         check "keep-menu.sh starts keytriage.sh in the shell of the medium with -p" menu_shell
+        # The launcher beside the same kit: one word starts the dialogue in the shell of the kit
+        # with -p, from any directory, and what a root shell hands down takes no effect.
+        launcher() {
+            cp "$LAUNCH" "$T/kit2/keep" || return 1
+            printf 'echo BASH_ENV >> "%s"\n' "$T/keep-env.log" > "$T/benv2.sh"
+            ( cd "$T/evid" && printf '\n\n\n\n\n' | env "BASH_ENV=$T/benv2.sh" "SHELLOPTS=xtrace" "$T/kit2/keep" ) > "$T/keep.txt" 2>&1 || { cat "$T/keep.txt"; return 1; }
+            grep -q '^ran in .*/kit2/bin/bash with -p$' "$T/keep.txt" || { echo "the dialogue did not start the work in the shell of the kit"; cat "$T/keep.txt"; return 1; }
+            grep -q '^keep-menu.sh: SUCCESS$' "$T/keep.txt" || { cat "$T/keep.txt"; return 1; }
+            [ ! -e "$T/keep-env.log" ] || { echo "the file of BASH_ENV was run"; return 1; }
+            ! grep -q '^+' "$T/keep.txt" || { echo "SHELLOPTS switched on a trace"; return 1; }
+            printf '\n\n\n\n\n' | "$T/kit2/keep" -n | grep -q 'dry run, nothing was run' || { echo "an option does not reach the dialogue"; return 1; }
+            mkdir "$T/alone" && cp "$LAUNCH" "$T/alone/keep" || return 1
+            "$T/alone/keep" > "$T/alone.txt" 2>&1
+            [ $? -eq 1 ] && grep -q 'the shell of the medium is not beside this program' "$T/alone.txt" || { echo "a launcher without a medium beside it does not say so"; return 1; }
+        }
+        check "keep starts the dialogue in the shell of the medium with -p, by one word" launcher
         triage_flush() {
             local f d; d=$(readlink "$T/both.d")
             for f in keys/t_table.vk keys/t_keyring.vk keys/kcore-candidates.txt headers/t_table.hdr headers/t_keyring.hdr manifest.sha256; do
@@ -632,7 +650,7 @@ sys.exit(0 if ok else "the reports say %r and %r" % (a, b))' "$d" "$c" || return
 host = json.load(open(sys.argv[1]))["host"]
 sys.exit(0 if host == "pc/../../out [2Jside" else "host in the report: %r" % host)' "$T/names.d/verdict.json"
         }
-        check "keytriage.sh keeps host and mapping names inside the evidence folder and off the terminal" triage_names
+        check "keytriage.sh keeps host and mapping names inside the destination and off the terminal" triage_names
         triage_edge() {
             local d=$T/edge.d n
             with_list 'No\t(253:4)\nmy data\t(253:5)\nt_null\t(253:6)\nt_notable\t(253:7)\nt_odd\t(253:8)\n' edge ||

@@ -1,7 +1,9 @@
 #!/bin/bash
 # keep-menu.sh [-n] : the interactive front-end of Keep, in the manner of ewfacquire.
 #
-#   sudo /media/tools/bin/bash -p /media/tools/keep-menu.sh
+#   sudo /media/tools/keep                                    on the medium, through its launcher
+#   sudo /media/tools/bin/bash -p /media/tools/keep-menu.sh   the same start, written out
+#   bash -p keep-menu.sh                                      in the lab
 #
 # Keep finds the keys of encrypted volumes. This script asks for the parameters of one run as
 # plain questions, one per line. A question shows its choices in parentheses and its default in
@@ -40,11 +42,11 @@
 # of a script, so the script can only refuse to run without -p.
 case $- in
     *p*) ;;
-    *) printf '%s\n' "keep-menu.sh: start this script with bash -p, on scene: sudo /media/tools/bin/bash -p /media/tools/keep-menu.sh" >&2; exit 1 ;;
+    *) printf '%s\n' "keep-menu.sh: start Keep on the medium with: sudo /media/tools/keep (it runs this script with bash -p), in the lab with: bash -p keep-menu.sh" >&2; exit 1 ;;
 esac
 set -u
 umask 077                               # a candidate list holds key material
-VERSION="3.0 (2026-11)"
+VERSION="3.1 (2026-11)"
 ME=keep-menu.sh
 case $0 in */*) HERE=${0%/*} ;; *) HERE=. ;; esac   # no dirname: nothing external before PATH is set
 HERE=$(cd "$HERE" && pwd)

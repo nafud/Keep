@@ -48,13 +48,13 @@
 <div class="code cmd"><pre><code>git clone https://github.com/nafud/Keep.git</code></pre></div>
 <div class="code cmd"><pre><code>sudo apt install bash-static busybox-static xorriso gcc curl file</code></pre></div>
 <div class="code cmd"><pre><code>./build-toolkit.sh /path/to/work</code></pre></div>
-<p>This writes <code>work/tools/</code> and <code>work/tools.iso</code> with the volume label <code>KEEPTOOLS</code>. The medium carries a static bash, a static busybox, the scanner <code>kcore-keyscan</code>, <code>keytriage.sh</code>, <code>keep-menu.sh</code> and Microsoft AVML v0.21.0, which is accepted only when its SHA-256 equals the value pinned in the script. <code>dmsetup</code> and <code>cryptsetup</code> are not on the medium. The examined system's own are used, and their paths and SHA-256 go into the report.</p>
+<p>This writes <code>work/tools/</code> and <code>work/tools.iso</code> with the volume label <code>KEEPTOOLS</code>. The medium carries a static bash, a static busybox, the scanner <code>kcore-keyscan</code>, <code>keytriage.sh</code>, <code>keep-menu.sh</code>, the launcher <code>keep</code> and Microsoft AVML v0.21.0, which is accepted only when its SHA-256 equals the value pinned in the script. <code>dmsetup</code> and <code>cryptsetup</code> are not on the medium. The examined system's own are used, and their paths and SHA-256 go into the report.</p>
 
 <h3 id="scene">2. On scene</h3>
 <p>Keep is started from the tool medium, here at <code>/media/tools</code>, in the directory that is to take the output. It asks for every parameter in the manner of <code>ewfacquire</code>: a question shows its choices in parentheses and its default in square brackets, and Enter takes the default. Enter at every question searches the running system for keys and writes into the current directory. With <code>-n</code> it asks and lists everything and runs nothing.</p>
-<div class="code cmd"><pre><code>sudo /media/tools/bin/bash -p /media/tools/keep-menu.sh</code></pre></div>
+<div class="code cmd"><pre><code>sudo /media/tools/keep</code></pre></div>
 <p>The dialogue, with illustrative values:</p>
-<div class="code sample"><pre><code>keep-menu.sh 3.0 (2026-11)
+<div class="code sample"><pre><code>keep-menu.sh 3.1 (2026-11)
 
 Parameters required, please provide the necessary input
 Search for keys in (system, dump) [system]:
@@ -80,7 +80,7 @@ Command:                    /media/tools/bin/bash -p /media/tools/keytriage.sh -
 
 Continue with these values (yes, no) [yes]:</code></pre></div>
 <p>The destination is the examiner's decision. Keep asks for it, offers the current directory, and does not test where it lies. A memory dump is taken after the keys, because an event can close their window within seconds and an image of a large machine takes minutes. Compressed, it is for a destination with less free space than the machine has memory. How much that saves depends on what the memory holds: in the four runs of the pipeline that took it, the image had 85 % to 87 % of the size of the memory.</p>
-<p>The script that does the work takes the same parameters as options, for a run without questions: the keys into the current directory, or into the directory of <code>-d</code>, with <code>-m</code> a memory dump and with <code>-m -c</code> a compressed one. Both scripts are started in the shell of the medium with <code>-p</code>, which keeps the environment of the examined system's root shell out of them, and they refuse any other start.</p>
+<p><code>keep</code> is a small static program of the medium. It starts the dialogue in the medium's own shell with <code>-p</code>, which keeps the environment of the examined system's root shell out of the scripts, and they refuse any other start. The script that does the work takes the same parameters as options, for a run without questions: the keys into the current directory, or into the directory of <code>-d</code>, with <code>-m</code> a memory dump and with <code>-m -c</code> a compressed one.</p>
 <div class="code cmd"><pre><code>sudo /media/tools/bin/bash -p /media/tools/keytriage.sh -d DIR -m</code></pre></div>
 <p>One verdict is printed per volume, with what the volume carries: where it and the devices that stand on it, such as logical volumes, are mounted or used as swap. An example of the screen, shortened, with illustrative values:</p>
 <div class="code sample"><pre><code>==== nvme0n1p3_crypt
@@ -188,7 +188,8 @@ python3 -I vkverify.py CANDIDATES [HEADER...] [--image DISK]... [--out DIR] [--j
 <tbody>
 <tr><td><code>keytriage.sh</code></td><td>scene, as root</td><td>The triage itself: enumerates the open volumes, backs up LUKS headers, walks the routes, prints the verdicts, writes the folder of the run into the destination.</td></tr>
 <tr><td><code>kcore-keyscan.c</code></td><td>scene and lab</td><td>Static scanner for AES-128 and AES-256 key schedules in <code>/proc/kcore</code> or a memory image.</td></tr>
-<tr><td><code>keep-menu.sh</code></td><td>scene and lab</td><td>The way Keep is started: asks for each parameter of one run as a plain question and starts it.</td></tr>
+<tr><td><code>keep</code></td><td>scene</td><td>The launcher of the medium: starts the dialogue in the medium's own shell.</td></tr>
+<tr><td><code>keep-menu.sh</code></td><td>scene and lab</td><td>The dialogue: asks for each parameter of one run as a plain question and starts it.</td></tr>
 <tr><td><code>vkverify.py</code></td><td>lab</td><td>Proves which scanner candidates are the volume key of a LUKS1 or LUKS2 header.</td></tr>
 <tr><td><code>offline-keyscan.sh</code></td><td>lab</td><td>Runs the scanner on a dump and the verifier against disk images.</td></tr>
 <tr><td><code>keep-report.py</code></td><td>lab</td><td>Prints the reports as text in the manner of <code>ewfinfo</code>, and compares several.</td></tr>

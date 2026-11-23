@@ -18,8 +18,10 @@
 #   No        a mapping of that name, made with dmsetup from a known key: "captured, in use"
 #   kc_null   a mapping with the null cipher and no key: "no key needed"
 #   the destination: the main run names none and is started in a directory on the guest's own
-#             disk, which must take the folder of the run. A FAT file system on a loop device,
-#             named with -d, takes every file (where the guest has mkfs.vfat and can mount FAT)
+#             disk, which must take the folder of the run. A second run is started as an
+#             examiner starts Keep, by the launcher "keep" and the questions of the dialogue,
+#             with a FAT file system on a loop device as the destination, which must take
+#             every file (where the guest has mkfs.vfat and can mount FAT)
 #   kc_pv     a LUKS2 volume that carries an LVM volume group, as an installer lays out an
 #             encrypted system, with a logical volume that is mounted and one that is swap:
 #             the mapping below them is the one that is listed and proven, both are named as
@@ -160,19 +162,20 @@ if [ -n "$O" ] && [ -f "$J" ] && grep -q "^output: $O\$" "$W/screen.txt" && grep
 else
     echo "FAIL   no destination named: the folder of the run is not in the directory of the start: $(head -n 1 "$W/screen.txt")"; PASS=0
 fi
-# a destination with FAT, named with -d: every name is taken
+# A destination with FAT, and the way an examiner starts Keep: the launcher of the medium and
+# the questions of the dialogue, answered through a pipe. Every name must be taken by FAT.
 mkdir "$W/fat"; truncate -s 96M fat.img
 if command -v mkfs.vfat >/dev/null && mkfs.vfat fat.img >/dev/null 2>&1 && mount -o loop fat.img "$W/fat" 2>/dev/null; then
-    "$KIT/bin/bash" -p "$KIT/keytriage.sh" -d "$W/fat" > "$W/screen-fat.txt" 2>&1; rcf=$?
+    printf 'system\n%s\n\n\nyes\n' "$W/fat" | "$KIT/keep" > "$W/screen-fat.txt" 2>&1; rcf=$?
     F=$(ls -d "$W"/fat/triage_* 2>/dev/null | tail -n 1)
     ok=1
-    [ "$rcf" = 0 ] && grep -q '(vfat) mounted at' "$W/screen-fat.txt" || ok=0
+    [ "$rcf" = 0 ] && grep -q '(vfat) mounted at' "$W/screen-fat.txt" && grep -q '^keep-menu.sh: SUCCESS$' "$W/screen-fat.txt" || ok=0
     for n in kc_l2 kc_l1 No; do cmp -s "$F/keys/$n.vk" "$n.vk" || ok=0; done
     (cd "$F" 2>/dev/null && sha256sum -c --quiet manifest.sha256 >/dev/null 2>&1) || ok=0
     if [ "$ok" = 1 ]; then
-        echo "PASS   destination with FAT, named with -d: three keys equal the ground truth, manifest"
+        echo "PASS   started as keep, through the questions, with a destination on FAT: three keys equal the ground truth, manifest"
     else
-        echo "FAIL   destination with FAT, status $rcf"; sed 's/^/       /' "$W/screen-fat.txt"; PASS=0
+        echo "FAIL   started as keep, through the questions, with a destination on FAT, status $rcf"; sed 's/^/       /' "$W/screen-fat.txt"; PASS=0
     fi
 else
     echo "SKIP   no mkfs.vfat or no FAT in this kernel, the destination with FAT is not run"
