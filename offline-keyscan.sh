@@ -23,6 +23,7 @@
 # else 1.
 set -u
 umask 077
+VERSION="1.1 (2026-11)"
 # the comment at the head of this file, read by the shell itself
 usage() {
     local line
@@ -61,7 +62,7 @@ OUT=scan_$(printf '%s' "$(basename "$DUMP")" | tr -c 'A-Za-z0-9._-' _)_$(date -u
 mkdir -p "$OUT/keys" || die "cannot create $OUT"
 say() { printf '%s\n' "$*" | tee -a "$OUT/triage.txt"; }
 
-say "offline-keyscan.sh, $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+say "offline-keyscan.sh $VERSION, $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 say "dump:    $DUMP ($(stat -c%s "$DUMP") bytes)"
 for img in "$@"; do say "image:   $img ($(stat -c%s "$img") bytes)"; done
 say "scanner: $SCAN"

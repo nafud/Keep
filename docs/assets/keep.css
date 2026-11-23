@@ -179,6 +179,7 @@ td:first-child { white-space: nowrap; }
 .verdict { white-space: nowrap; }
 .verdict::before { content: ""; display: inline-block; width: 0.62em; height: 0.62em; margin-right: 0.7ch; border-radius: 50%; background: currentColor; }
 .verdict.ok { color: var(--ok); }
+.verdict.none { color: var(--text-2); }
 .verdict.warn { color: var(--warn); }
 .verdict.bad { color: var(--bad); }
 .legend { color: var(--text-2); font-size: 13px; }
