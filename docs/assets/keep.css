@@ -1,9 +1,12 @@
-/* The page of Keep, laid out after the page of Kiln. The whole window is one pane with a thin
-   frame, like a terminal: the name of the page and the link to the source sit on its upper
-   line, the version and the position in the page on its lower line. Inside, three columns stand
-   on the one background with nothing drawn around them: left the word Keep, in the middle the
-   text, right the table of contents. One typeface, JetBrains Mono, because every tool of Keep
-   speaks in lines of text. Colours follow the system's light or dark setting. */
+/* The page of Keep. It follows the conventions of the page of Kiln (docs/stylesheets/extra.css
+   there, on Material for MkDocs): the sizes, the colours, the headings, the code, the tables and
+   the frame are Kiln's, written out here because this page has no theme beneath it.
+
+   The whole window is one pane with a thin frame, like a terminal. The name of the page and the
+   link to the source sit on its upper line, the version and the position in the page on its
+   lower line. Inside, three columns stand on the one background with nothing drawn around them:
+   left the word Keep, in the middle the text, right the table of contents. One typeface,
+   JetBrains Mono. Colours follow the system's light or dark setting. */
 
 @font-face {
   font-family: "JetBrains Mono";
@@ -24,21 +27,21 @@
   font-display: block;
 }
 
+/* The colours of Kiln's themes "system light" and "system dark". */
 :root {
-  --bg: #f5f6f4;
+  --bg: #fafafa;
   --surface: #ffffff;
-  --border: #dfe3e0;
-  --text: #151a1b;
-  --text-2: #566064;
-  --muted: #8b9498;
-  --accent: #0f766e;
-  --accent-soft: rgba(15, 118, 110, 0.09);
-  --code-bg: #f1f3f1;
+  --border: #e5e7eb;
+  --text: #111827;
+  --text-2: #6b7280;
+  --muted: #b0b7c3;
+  --faint: #c4cad4;
+  --accent: #2563eb;
+  --code-bg: #f5f5f5;
+  --th-bg: #f9fafb;
   --ok: #15803d;
   --warn: #a65a05;
   --bad: #b42323;
-  --logo-word: #1f2729;
-  --gap: 20px;
   /* The frame stands this far from the edges of the window. A row of labels is twice that and
      the line high, so that the text of a label is centred on the line. */
   --inset: 12px;
@@ -47,40 +50,53 @@
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #131517;
-    --surface: #1a1d20;
-    --border: #2a2f33;
-    --text: #e4e7e8;
-    --text-2: #a3abaf;
-    --muted: #727b80;
-    --accent: #3fd0bd;
-    --accent-soft: rgba(63, 208, 189, 0.1);
-    --code-bg: #121416;
+    --bg: #1e2028;
+    --surface: #252830;
+    --border: #2e3138;
+    --text: #e2e4e9;
+    --text-2: #9ca3af;
+    --muted: #6b7280;
+    --faint: #4b5563;
+    --accent: #2563eb;
+    --code-bg: #1a1d24;
+    --th-bg: #1a1d24;
     --ok: #56d37f;
     --warn: #f0b243;
     --bad: #f47f7f;
-    --logo-word: #dfe3e4;
   }
 }
 
 *, *::before, *::after { box-sizing: border-box; }
-/* The pane has no scrollbar: the position stands on the lower line of the frame (keep.js). */
-html { scroll-behavior: smooth; scroll-padding-top: calc(var(--row) + 16px); -webkit-text-size-adjust: 100%; scrollbar-width: none; }
+/* The size of everything hangs on the size of the root, which grows with the window as it does
+   under Kiln's theme: 20px, 22px from a width of 100em and 24px from 125em. All other sizes are
+   in rem. The pane has no scrollbar: the position stands on the lower line of the frame. */
+html {
+  font-size: 125%;
+  scroll-behavior: smooth;
+  scroll-padding-top: calc(var(--row) + 1rem);
+  -webkit-text-size-adjust: none;
+  text-size-adjust: none;
+  scrollbar-width: none;
+}
 html::-webkit-scrollbar { display: none; }
+@media screen and (min-width: 100em) { html { font-size: 137.5%; } }
+@media screen and (min-width: 125em) { html { font-size: 150%; } }
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
 body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font: 400 14.5px/1.7 var(--mono);
+  font: 400 0.78rem/1.7 var(--mono);
   font-synthesis: none;
   font-variant-ligatures: none;
+  font-feature-settings: "liga" 0, "calt" 0;
+  -webkit-font-smoothing: antialiased;
 }
-a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 3px; }
-a:hover { text-decoration-thickness: 2px; }
+a { color: var(--accent); text-decoration: none; transition: opacity 150ms ease; }
+a:hover { opacity: 0.75; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
-.skip { position: absolute; left: -999px; top: 30px; background: var(--surface); padding: 6px 10px; z-index: 7; }
-.skip:focus { left: 30px; }
+.skip { position: absolute; left: -999px; top: 1.6rem; background: var(--surface); padding: 0.3rem 0.5rem; z-index: 7; }
+.skip:focus { left: 1.6rem; }
 
 /* ---- the frame ---- */
 /* A border that stays in place (body::before), and two strips in the colour of the background
@@ -105,45 +121,49 @@ body::before {
 }
 .chrome {
   position: fixed; left: 0; right: 0; z-index: 6;
-  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  display: flex; align-items: center; justify-content: space-between; gap: 1rem;
   height: var(--row);
-  padding: 0 22px;
+  padding: 0 1.4rem;
   color: var(--muted);
-  font-size: 11px; font-weight: 700; line-height: 1; letter-spacing: 0.05em;
+  font-size: 0.65rem; font-weight: 700; line-height: 1; letter-spacing: 0.06em;
   pointer-events: none;               /* the row takes no click, only its labels do */
   user-select: none;
 }
 .chrome.top { top: 0; }
-.chrome.bottom { bottom: 0; }
+.chrome.bottom { bottom: 0; letter-spacing: 0.05em; }
 .chrome > * { background: var(--bg); padding: 0 0.45em; white-space: nowrap; pointer-events: auto; }
-.chrome a { color: inherit; text-decoration: none; transition: color 150ms ease; }
-.chrome a:hover { color: var(--accent); }
-.chrome .chrome-title { color: var(--text); letter-spacing: 0.04em; }
+.chrome a { color: inherit; transition: color 150ms ease; }
+.chrome a:hover { color: var(--accent); opacity: 1; }
+.chrome .chrome-title { color: var(--text); font-size: 0.7rem; letter-spacing: 0.04em; }
 
 /* ---- the three columns ---- */
+/* The text has the width of Kiln's, 900px, and the two columns beside it share the rest. */
 .page {
   display: grid;
-  /* the text keeps a width that reads well, and the two columns beside it share the rest */
-  grid-template-columns: minmax(240px, 1fr) minmax(0, 840px) minmax(220px, 1fr);
-  gap: 48px;
+  grid-template-columns: minmax(11rem, 1fr) minmax(0, 900px) minmax(11rem, 1fr);
+  gap: 2rem;
   align-items: start;
-  padding: calc(var(--row) + 14px) calc(var(--inset) + var(--gap)) calc(var(--row) + 14px);
+  padding: calc(var(--row) + 0.6rem) calc(var(--inset) + 1.2rem) calc(var(--row) + 0.6rem);
 }
-.side, .toc { position: sticky; top: calc(var(--row) + 14px); }
-.side { padding: 22px 8px 0; }
+.side, .toc { position: sticky; top: calc(var(--row) + 0.6rem); }
+.side { padding: 1.2rem 0 0; }
 .toc {
-  max-height: calc(100vh - 2 * var(--row) - 28px);
-  max-height: calc(100dvh - 2 * var(--row) - 28px);
+  max-height: calc(100vh - 2 * var(--row) - 1.2rem);
+  max-height: calc(100dvh - 2 * var(--row) - 1.2rem);
   overflow: auto;
   scrollbar-width: none;
-  padding: 22px 8px 0;
+  padding: 1.2rem 0 0;
 }
 .toc::-webkit-scrollbar { display: none; }
-.content { min-width: 0; padding: 22px 12px 24px; }
+.content { min-width: 0; padding: 0.6rem 0.8rem 1.2rem; }
 
 /* ---- the word ---- */
-/* keep.js turns the word into a grid of characters. Before it has done so, and without it, the
-   word stands as plain text in its typeface. */
+/* keep.js turns the word into a grid of characters, in the faint colour of Kiln's logo. Before
+   it has done so, and without it, the word stands as plain text in its typeface. Kiln's logo
+   has the width of its text column and cells of 0.5rem. This column is half as wide, so the
+   size of a cell follows the width of the column and the word keeps about eighty cells across,
+   which at the widest is a cell of 0.4rem. */
+.side { container-type: inline-size; }
 .logo {
   display: grid;
   place-items: center;
@@ -155,51 +175,64 @@ body::before {
 }
 .logo pre {
   margin: 0;
-  font: 400 5px/1.2 var(--mono);
+  font: 400 0.4rem/1.2 var(--mono);
+  font-size: 2.08cqw;
   letter-spacing: 0;
   white-space: pre;
-  color: var(--logo-word);
+  color: var(--faint);
 }
-.logo:not(.generated) pre { font: 400 5.4rem/1 "Keep Blackletter", serif; }
+.logo:not(.generated) pre { font: 400 4.6rem/1 "Keep Blackletter", serif; }
 
 /* ---- the text ---- */
-.content section + section { margin-top: 46px; }
-.content .colophon { margin: 56px 0 0; color: var(--muted); font-size: 12.5px; text-align: center; max-width: none; }
-.content .colophon a { color: var(--text-2); }
-.content :is(p, ul, .lead) { max-width: 82ch; }
-h1 { font-size: 23px; line-height: 1.35; margin: 0 0 18px; letter-spacing: -0.01em; max-width: 34ch; text-wrap: balance; }
-h2 { font-size: 17px; line-height: 1.4; margin: 0 0 14px; padding-top: 22px; border-top: 1px solid var(--border); }
-h2::before { content: "# "; color: var(--accent); }
-h3 { font-size: 14.5px; margin: 28px 0 10px; }
-p { margin: 0 0 14px; }
-.lead { color: var(--text); font-size: 15px; }
-ul { margin: 0 0 14px; padding-left: 2.2ch; }
-li { margin-bottom: 8px; }
-.content li::marker { color: var(--muted); content: "- "; }
-code { font: inherit; background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px; padding: 0 0.4ch; overflow-wrap: anywhere; }
-
-.code { position: relative; margin: 0 0 14px; background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px; }
-.code pre { margin: 0; padding: 12px 16px; overflow-x: auto; font: 400 13.5px/1.6 var(--mono); }
-.code code { background: none; border: 0; padding: 0; overflow-wrap: normal; }
-.code.cmd pre { padding-right: 52px; }
-.code.cmd code::before { content: "$ "; color: var(--muted); }   /* the prompt is not copied */
-.code.sample pre { color: var(--text-2); font-size: 12.5px; }
-.copy {
-  position: absolute; top: 7px; right: 7px;
-  width: 30px; height: 30px; padding: 6px;
-  display: grid; place-items: center;
-  color: var(--muted); background: var(--surface);
-  border: 1px solid var(--border); border-radius: 6px; cursor: pointer;
+/* Headings stand in the first colour of the ladder, running text in the second. */
+.content section + section { margin-top: 1.9rem; padding-top: 0.2rem; border-top: 1px solid var(--border); }
+h1, h2, h3 { color: var(--text); font-weight: 700; letter-spacing: -0.01em; }
+h1 {
+  font-size: 1.8rem; line-height: 1.3;
+  margin: 0 0 0.4rem; padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--border);
 }
-.copy:hover { color: var(--text); border-color: var(--muted); }
-.copy.done { color: var(--ok); border-color: var(--ok); }
-.copy svg { width: 16px; height: 16px; display: block; }
+h2 { font-size: 1.2rem; line-height: 1.4; margin: 1.6em 0 0.64em; }
+h3 { font-size: 0.95rem; line-height: 1.5; margin: 1.6em 0 0.8em; }
+p, li, td { color: var(--text-2); }
+p { margin: 1em 0; }
+.lead { margin-top: 0.9rem; }
+ul { margin: 1em 0; padding: 0; }
+li { margin: 0 0 0.5em 1.25em; }
+strong { font-weight: 700; }
+code { font: inherit; font-size: 0.85em; color: var(--text); background: var(--code-bg); border-radius: 3px; padding: 0 0.2941176471em; overflow-wrap: anywhere; }
 
-.table { overflow-x: auto; margin: 0 0 14px; border: 1px solid var(--border); border-radius: 8px; }
-table { border-collapse: collapse; width: 100%; font-size: 13px; line-height: 1.6; }
-th, td { text-align: left; vertical-align: top; padding: 9px 14px; border-bottom: 1px solid var(--border); }
-tbody tr:last-child td { border-bottom: 0; }
-th { color: var(--text-2); font-weight: 400; background: var(--code-bg); white-space: nowrap; }
+/* a block of code: a command with its copy button, or a sample of output */
+.code { position: relative; margin: 1em 0; background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px; }
+.code pre { margin: 0; padding: 0.7720588235em 1.1764705882em; overflow-x: auto; scrollbar-width: thin; font: 400 0.72rem/1.55 var(--mono); color: var(--text); }
+.code code { font-size: 1em; background: none; padding: 0; overflow-wrap: normal; }
+.code.cmd pre { padding-right: 2.6rem; }
+.code.cmd code::before { content: "$ "; color: var(--muted); }   /* the prompt is not copied */
+.code.sample pre { color: var(--text-2); }
+.copy {
+  position: absolute; top: 0.5em; right: 0.5em;
+  width: 1.5rem; height: 1.5rem; padding: 0.2rem;
+  display: grid; place-items: center;
+  color: var(--faint); background: none; border: 0; border-radius: 0.1rem; cursor: pointer;
+  transition: color 250ms ease;
+}
+.copy:hover { color: var(--accent); }
+.copy.done { color: var(--text-2); }
+.copy svg { width: 100%; height: 100%; display: block; }
+
+.table { overflow-x: auto; scrollbar-width: thin; margin: 1em 0; border: 1px solid var(--border); border-radius: 0.1rem; }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; vertical-align: top; }
+th {
+  padding: 0.55rem 0.8rem;
+  background: var(--th-bg);
+  color: var(--muted);
+  font-size: 0.65rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+  border-bottom: 2px solid var(--border);
+  white-space: nowrap;
+}
+td { padding: 0.6rem 0.8rem; border-top: 1px solid var(--border); }
+tbody tr:first-child td { border-top: 0; }
 td:first-child { white-space: nowrap; }
 
 /* a verdict, with the class that keep-report.py gives it */
@@ -209,30 +242,34 @@ td:first-child { white-space: nowrap; }
 .verdict.none { color: var(--text-2); }
 .verdict.warn { color: var(--warn); }
 .verdict.bad { color: var(--bad); }
-.legend { color: var(--text-2); font-size: 13px; }
 .legend .verdict { margin-right: 1.5ch; }
 
+/* The closing line, as the attribution line of Kiln's home page. */
+.content .colophon { margin: 2.6rem 0 0; color: var(--faint); font-size: 0.7rem; text-align: center; }
+.content .colophon a { color: var(--muted); transition: color 200ms ease; }
+.content .colophon a:hover { color: var(--accent); opacity: 1; }
+
 /* ---- the table of contents ---- */
-.toc h2 { font-size: 12px; font-weight: 400; color: var(--muted); letter-spacing: 0.08em; text-transform: uppercase; margin: 0 0 12px; padding: 0; border: 0; }
-.toc h2::before { content: none; }
+/* In the grammar of Kiln's labels: muted at rest, the accent on hover, and the entry of the
+   text on screen in the accent with a star before it, as the current section of Kiln's header. */
+.toc h2 { font-size: 0.65rem; font-weight: 700; line-height: 1.4; color: var(--muted); letter-spacing: 0.06em; text-transform: uppercase; margin: 0 0 0.7rem; }
 .toc ol { list-style: none; margin: 0; padding: 0; }
 .toc li { margin: 0; }
-.toc a { display: block; padding: 4px 10px; border-left: 2px solid var(--border); color: var(--text-2); text-decoration: none; font-size: 13px; line-height: 1.5; }
-.toc ol ol a { padding-left: 24px; font-size: 12.5px; }
-.toc a:hover { color: var(--text); }
-.toc a[aria-current="true"] { color: var(--accent); border-left-color: var(--accent); background: var(--accent-soft); }
+.toc a { display: block; padding: 0.22rem 0 0.22rem 1.4ch; color: var(--muted); font-size: 0.68rem; font-weight: 700; line-height: 1.5; letter-spacing: 0.02em; transition: color 150ms ease; }
+.toc ol ol a { padding-left: 3.4ch; }
+.toc a:hover { color: var(--accent); opacity: 1; }
+.toc a[aria-current="true"] { color: var(--accent); }
+.toc a[aria-current="true"]::before { content: "*"; display: inline-block; width: 1.4ch; margin-left: -1.4ch; }
 
 /* ---- narrower windows ---- */
-@media (max-width: 1180px) {
-  .page { grid-template-columns: 260px minmax(0, 1fr); gap: 32px; }
+@media (max-width: 76.1875em) {
+  .page { grid-template-columns: minmax(9rem, 13rem) minmax(0, 1fr); gap: 1.4rem; }
   .toc { display: none; }
 }
-@media (max-width: 800px) {
-  :root { --gap: 4px; }
-  .page { grid-template-columns: minmax(0, 1fr); gap: 8px; }
-  .side { position: static; padding: 10px 0 0; }
-  .logo { max-width: 300px; margin: 0 auto; }
-  .content { padding: 14px 4px 20px; }
-  h1 { font-size: 20px; }
+@media (max-width: 44.9375em) {
+  .page { grid-template-columns: minmax(0, 1fr); gap: 0.4rem; padding-left: calc(var(--inset) + 0.2rem); padding-right: calc(var(--inset) + 0.2rem); }
+  .side { position: static; padding: 0.5rem 0 0; }
+  .logo { max-width: 16rem; margin: 0 auto; }
+  h1 { font-size: 1.4rem; }
   td:first-child { white-space: normal; }
 }

@@ -524,14 +524,28 @@ be opened and emulated otherwise, and starts the check over SSH through `sudo`.
   compares.
 - The page loads nothing from another host and has no inline script or style, which its
   Content-Security-Policy enforces. The fonts are in `docs/assets/fonts/` with their licences.
-- The page is laid out after the page of Kiln. The window is one pane with a thin frame. On its
-  upper line sit `[keep]` and `src`, the link to the repository, on its lower line the version
-  and the position in the page (`All`, `Top`, a percentage, `100%`), which `keep.js` writes
-  because the page has no scrollbar. Inside the frame the word Keep, the text and the table of
-  contents stand as three columns on the one background, with nothing drawn around them.
+- The page follows the conventions of the page of Kiln (github.com/nafud/Kiln,
+  `docs/stylesheets/extra.css` on Material for MkDocs), written out in `keep.css` because this
+  page has no theme beneath it. A change of the look starts from what Kiln does.
+  - Sizes hang on the size of the root, which grows with the window: 20px, 22px from a width
+    of 100em and 24px from 125em. Everything else is in rem: running text 0.78rem at a line
+    height of 1.7, the first heading 1.8rem, the second 1.2rem, the third 0.95rem, code blocks
+    0.72rem, the labels 0.65rem. The text column is 900px wide.
+  - Colours are those of Kiln's themes `system light` and `system dark`, chosen by the system's
+    setting: headings in the first colour of the ladder, running text in the second, labels in
+    the muted one, links in the accent without an underline.
+  - The window is one pane with a thin frame. On its upper line sit `[keep]` and `src`, the
+    link to the repository, on its lower line the version and the position in the page (`All`,
+    `Top`, a percentage, `100%`), which `keep.js` writes because the page has no scrollbar.
+  - Inside the frame the word Keep, the text and the table of contents stand as three columns
+    on the one background, with nothing drawn around them. The entry of the table of contents
+    that belongs to the text on screen stands in the accent with a star before it, as the
+    current section of Kiln's header does.
 - The word is drawn by `keep.js` in the manner of Kiln's logo: set in a blackletter typeface
-  and sampled into a grid of ASCII characters that shimmer while the pointer moves. Without
-  JavaScript the plain word stands in its place.
+  and sampled into a grid of ASCII characters in the faint colour, which shimmer while the
+  pointer moves. Its column is half as wide as Kiln's, so the size of a cell follows the width
+  of the column and the word keeps about eighty cells across. Without JavaScript the plain
+  word stands in its place.
 
 ## Systems checked
 
