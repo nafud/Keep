@@ -34,6 +34,12 @@
 # SHA-256. The suspect's own dmsetup and cryptsetup are used for R1, and their paths
 # and SHA-256 are recorded so the hashes can be checked against the archive afterwards.
 #
+# Every file is created with umask 077. A header backup, the candidate list and a key are flushed
+# to the medium (fsync) as soon as they are written, and a key counts as captured only after
+# that, because the machine may lose power the moment the verdict is read. At the end the whole
+# file system of the evidence medium is flushed (syncfs). Exit status: 0 when the run completed
+# and was flushed, 1 when it could not start or a write or a flush to the medium failed.
+#
 # The memory image (-m). The keys come first, because an event can close their window within
 # seconds and an image of a large machine takes minutes. Then AVML writes the physical memory in
 # LiME format to memory/memory.lime, which Volatility 3 and kcore-keyscan read. Next to it go the
@@ -52,7 +58,8 @@
 # cryptsetup is chosen by what the installed release offers (--volume-key-file from 2.5.0,
 # --master-key-file before).
 
-VERSION="1.2.2 (2026-11)"
+VERSION="1.2.3 (2026-11)"
+umask 077                               # keys and the candidate list are written by this script
 KIT=$(cd "$(dirname "$0")" && pwd)
 BIN=$KIT/bin
 PATH=$BIN:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/sbin:/usr/local/bin
@@ -77,6 +84,10 @@ stamp(){ printf '%(%Y%m%d_%H%M%S)T' -1; }
 say()  { printf '%s\n' "$*" | tee -a "$REPORT"; }
 keyhash() { sha256sum | cut -c1-16; }           # names a key without showing it
 hex2bin() { printf '%b' "$(sed 's/../\\x&/g')"; }  # hex on stdin to raw bytes on stdout
+# flush FILE... : fsync each file or directory, so that it is on the medium and not only in the
+# page cache. The applet reports a failed fsync on standard error and by its status.
+WRITEFAIL=0
+flush() { sync "$@" || { WRITEFAIL=1; return 1; }; }
 jesc() {                                        # a string as the inside of a JSON string
     local s=${1//\\/\\\\}; s=${s//\"/\\\"}; s=${s//[$'\001'-$'\037']/ }; printf '%s' "$s"
 }
@@ -173,6 +184,7 @@ scan_once() {
     if kcore-keyscan /proc/kcore > "$CAND" 2> "$OUT/tmp/kcore.err"; then
         SCANOK=1
         say "  $(wc -l < "$CAND") schedules found, list in keys/kcore-candidates.txt"
+        flush "$CAND" "$OUT/keys" || say "  the list could not be flushed to the evidence medium"
     else
         SCANERR=$(head -n 1 "$OUT/tmp/kcore.err")
         say "  the search failed: ${SCANERR:-no message}"
@@ -213,6 +225,7 @@ for m in "${MAPS[@]}"; do
             hdr=$OUT/headers/$m.hdr
             if cryptsetup luksHeaderBackup "$dev" --header-backup-file "$hdr" 2>/dev/null; then
                 say "  header backed up: headers/$m.hdr ($(stat -c%s "$hdr") bytes)"
+                flush "$hdr" "$OUT/headers" || say "  the header backup could not be flushed to the evidence medium"
             else
                 say "  header backup FAILED for $dev"; hdr=""
             fi ;;
@@ -221,7 +234,11 @@ for m in "${MAPS[@]}"; do
     # ---- R1: the table carries the key ----
     if [ -n "$keyfield" ] && [ "${keyfield:0:1}" != ":" ]; then
         kf=$OUT/keys/$m.vk
-        printf '%s' "$keyfield" | hex2bin > "$kf"; chmod 600 "$kf"
+        if ! { printf '%s' "$keyfield" | hex2bin > "$kf"; } || ! flush "$kf" "$OUT/keys"; then
+            say "  R1 table: the key is in the table and could not be written to the evidence medium"
+            verdict "needs a memory read" "" "" "the write of the key to the evidence medium failed"
+            continue
+        fi
         kh=$(keyhash < "$kf")
         say "  R1 table: key of $(( ${#keyfield} / 2 )) bytes, sha256 $kh"
         if [ -n "$hdr" ]; then
@@ -284,7 +301,7 @@ for m in "${MAPS[@]}"; do
             dkey=${KEYAT[$dnum]:-}
             [ -n "$dkey" ] || continue
             tried=$((tried+1))
-            { printf '%s' "$dkey" | hex2bin; printf '%s' "$tkey" | hex2bin; } > "$kf"; chmod 600 "$kf"
+            { printf '%s' "$dkey" | hex2bin; printf '%s' "$tkey" | hex2bin; } > "$kf"
             if prove "$kf" "$hdr"; then
                 kh=$(keyhash < "$kf")
                 say "  recovered a volume key of $(stat -c%s "$kf") bytes, sha256 $kh"
@@ -300,7 +317,7 @@ for m in "${MAPS[@]}"; do
         for line in "${C[@]}"; do
             [ "$tried" -ge "$BUDGET" ] && break
             tried=$((tried+1))
-            printf '%s' "${line#* }" | hex2bin > "$kf"; chmod 600 "$kf"
+            printf '%s' "${line#* }" | hex2bin > "$kf"
             if prove "$kf" "$hdr"; then
                 kh=$(keyhash < "$kf")
                 say "  recovered a volume key of $(stat -c%s "$kf") bytes, sha256 $kh"
@@ -309,7 +326,10 @@ for m in "${MAPS[@]}"; do
             fi
         done
     fi
-    if [ "$proven" = 1 ]; then
+    if [ "$proven" = 1 ] && ! flush "$kf" "$OUT/keys"; then
+        say "  the key could not be flushed to the evidence medium"
+        verdict "needs a memory read" "" "" "the write of the key to the evidence medium failed"
+    elif [ "$proven" = 1 ]; then
         verdict "captured and proven" "R3 memory" "$kh" "opens the header"
     else
         rm -f "$kf"
@@ -343,7 +363,7 @@ if [ "$MEMORY" = 1 ]; then
     else
         say "  writing up to $(( ram / 1048576 )) MiB with ${avmlv:-avml}"
         t0=$SECONDS
-        if avml acquire "$img" > "$OUT/tmp/avml.out" 2> "$OUT/tmp/avml.err"; then
+        if avml acquire "$img" > "$OUT/tmp/avml.out" 2> "$OUT/tmp/avml.err" && flush "$img" "$OUT/memory"; then
             msecs=$(( SECONDS - t0 )); mbytes=$(stat -c%s "$img")
             MEMHASH=$(sha256sum "$img" | cut -c1-64)
             mstatus="captured"
@@ -415,4 +435,15 @@ say "finished $FINISHED"
         find triage.txt verdict.json keys headers memory -type f ! -name memory.lime -print0 2>/dev/null | xargs -0 sha256sum 2>/dev/null
         [ -n "$MEMHASH" ] && printf '%s  memory/memory.lime\n' "$MEMHASH"
     } | sort -k 2 > manifest.sha256
-) || true
+) || WRITEFAIL=1
+
+# Everything of this run to the medium: the files that close it by fsync, which reports a failure,
+# and then the whole file system of the medium by syncfs, which covers every file and directory.
+flush "$REPORT" "$OUT/verdict.json" "$OUT/manifest.sha256" "$OUT"
+sync -f "$OUT" || WRITEFAIL=1
+if [ "$WRITEFAIL" = 0 ]; then
+    printf 'keytriage.sh: every file of this run is flushed to the evidence medium\n'
+else
+    printf 'keytriage.sh: a write or a flush to the evidence medium FAILED, the folder is not complete\n' >&2
+    exit 1
+fi

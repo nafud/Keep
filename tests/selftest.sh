@@ -198,14 +198,16 @@ if command -v cryptsetup >/dev/null; then
     #                   backup and the proof, to the real cryptsetup
     #   kcore-keyscan   searches the fixture in place of /proc/kcore, with the real scanner
     #   id              says 0, which is the only thing asked of it
+    #   sync            notes what it is asked to flush, fails while $STUB/sync-fails exists and
+    #                   is the applet otherwise
     # t_table is the LUKS1 header with its key in the table line (route R1), t_keyring the LUKS2
     # header with a keyring reference (route R3).
     if command -v busybox >/dev/null; then
-        KIT=$T/kit; SYS=$T/kit/bin; STUB=$T/stub; REALCS=$(command -v cryptsetup)
+        KIT=$T/kit; SYS=$T/kit/bin; STUB=$T/stub; REALCS=$(command -v cryptsetup); BB=$(command -v busybox)
         TSH=$(command -v bash-static || command -v bash)
         mkdir -p "$KIT/bin" "$STUB" "$T/tevid"
         for a in $(busybox --list); do
-            case $a in busybox|bash) ;; *) ln -s "$(command -v busybox)" "$KIT/bin/$a" ;; esac
+            case $a in busybox|bash) ;; *) ln -s "$BB" "$KIT/bin/$a" ;; esac
         done
         cp keytriage.sh "$KIT/"
         standin() { rm -f "$1"; cat > "$1"; chmod 755 "$1"; }   # standin FILE : the script on standard input
@@ -216,6 +218,12 @@ EOT
         standin "$KIT/bin/kcore-keyscan" <<EOT
 #!/bin/bash
 exec "$SCAN" "$T/fx.lime"
+EOT
+        standin "$KIT/bin/sync" <<EOT
+#!/bin/bash
+printf '%s\\n' "\$*" >> "$T/sync.log"
+[ ! -e "$STUB/sync-fails" ] || { echo "sync: stand-in failure" >&2; exit 1; }
+exec "$BB" sync "\$@"
 EOT
         standin "$SYS/dmsetup" <<EOT
 #!/bin/bash
@@ -241,11 +249,13 @@ EOT
         status t_keyring LUKS2 aes-xts-plain64 512 keyring "$T/l2.img"
 
         # triage NAME [OPTION...] : one run. The screen goes to $T/NAME.txt and the folder of the
-        # run is $T/NAME.d, a link, because the name of the folder carries the time.
+        # run is $T/NAME.d, a link, because the name of the folder carries the time. The run
+        # starts with the umask of an ordinary root shell, so the modes are the script's own doing.
         triage() {
             local name=$1 rc; shift
             mkdir "$T/tevid/$name" || return 1
-            "$TSH" "$KIT/keytriage.sh" -e "$T/tevid/$name" "$@" > "$T/$name.txt" 2>&1; rc=$?
+            : > "$T/sync.log"
+            ( umask 022; "$TSH" "$KIT/keytriage.sh" -e "$T/tevid/$name" "$@" > "$T/$name.txt" 2>&1 ); rc=$?
             ln -s "$(echo "$T/tevid/$name"/triage_*)" "$T/$name.d"
             return "$rc"
         }
@@ -266,6 +276,29 @@ for v in json.load(open(sys.argv[1] + "/verdict.json"))["volumes"]:
             [ "$(python3 -I keep-report.py "$d/verdict.json" --brief | grep -c '^  key held .*: captured and proven$')" -eq 2 ]
         }
         check "keytriage.sh captures and proves a key from the table and one from memory" triage_both
+        cp "$T/sync.log" "$T/both.sync"
+        triage_modes() {
+            local open; open=$(find "$T/both.d/" -perm /077)
+            [ -z "$open" ] || { echo "open to the group or to others:"; echo "$open"; return 1; }
+        }
+        check "keytriage.sh writes nothing that the group or others can read" triage_modes
+        triage_flush() {
+            local f d; d=$(readlink "$T/both.d")
+            for f in keys/t_table.vk keys/t_keyring.vk keys/kcore-candidates.txt headers/t_table.hdr headers/t_keyring.hdr manifest.sha256; do
+                grep -q -F "$d/$f" "$T/both.sync" || { echo "$f is not flushed"; return 1; }
+            done
+            [ "$(tail -n 1 "$T/both.sync")" = "-f $d" ] || { echo "the run does not end with a flush of the file system"; return 1; }
+            grep -q 'every file of this run is flushed' "$T/both.txt"
+        }
+        check "keytriage.sh flushes the headers, the keys and at the end the file system" triage_flush
+        triage_flushfail() {
+            local rc
+            : > "$STUB/sync-fails"; triage noflush; rc=$?; rm -f "$STUB/sync-fails"
+            [ "$rc" -eq 1 ] || { echo "status $rc after a failed flush, 1 is expected"; return 1; }
+            ! grep -q '"verdict": "captured' "$T/noflush.d/verdict.json" || { echo "a key that is not flushed counts as captured"; return 1; }
+            grep -q 'FAILED, the folder is not complete' "$T/noflush.txt"
+        }
+        check "keytriage.sh counts no key as captured when the flush fails, and ends with status 1" triage_flushfail
     else
         skip "busybox is not installed: keytriage.sh is not run"
     fi
