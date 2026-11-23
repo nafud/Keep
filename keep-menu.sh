@@ -3,22 +3,28 @@
 #
 #   sudo /media/tools/bin/bash -p /media/tools/keep-menu.sh
 #
-# It asks for the parameters of one run as plain questions, one per line. A question shows its
-# choices in parentheses and its default in square brackets, and Enter takes the default. A value
-# that cannot be used is asked for again. The values are then listed, a confirmation is asked
-# for, and the script beside this one that does the work is run, with its output shown as it
-# runs. "no" at the confirmation starts the questions again. One run per start.
+# Keep finds the keys of encrypted volumes. This script asks for the parameters of one run as
+# plain questions, one per line. A question shows its choices in parentheses and its default in
+# square brackets, and Enter takes the default. A value that cannot be used is asked for again.
+# The values are then listed, a confirmation is asked for, and the script beside this one that
+# does the work is run, with its output shown as it runs. "no" at the confirmation starts the
+# questions again. One run per start.
+#
+# The first question is where the keys are searched.
+#
+#   system   the open volumes of this running system: keytriage.sh -d DIR -b N. A further
+#            question offers a memory dump of the system, taken after the keys, in LiME format
+#            (-m) or compressed (-m -c).
+#   dump     a memory dump that exists. Where python3 and vkverify.py are present (the lab)
+#            offline-keyscan.sh scans it and proves the keys against disk images. Otherwise (the
+#            tool medium carries no Python) the dump is scanned to
+#            DIR/scan_<dump>_<time>/keys/candidates.txt for the lab.
+#
+# The destination directory is asked for and is by default the directory this script is started
+# in. Where it lies is the examiner's decision and is not tested.
 #
 # The script that does the work is started in the shell that runs this one, with -p, and not
 # through its "#!" line, which would name the bash of the examined system.
-#
-#   Mode live          keytriage.sh -e DIR -b N       the keys of the open volumes of this system
-#   Mode live-memory   keytriage.sh -e DIR -b N -m    the same, and then a memory image, which
-#                      -c writes compressed where that is chosen
-#   Mode offline       a memory dump collected earlier. Where python3 and vkverify.py are present
-#                      (the lab) offline-keyscan.sh scans it and proves the keys against disk
-#                      images. Otherwise (the tool medium carries no Python) the dump is scanned
-#                      to DIR/scan_<dump>_<time>/keys/candidates.txt for the lab.
 #
 #   -n   dry run: ask, list the values and the command, and do not run it
 #   -h   this text
@@ -38,10 +44,11 @@ case $- in
 esac
 set -u
 umask 077                               # a candidate list holds key material
-VERSION="2.4 (2026-11)"
+VERSION="3.0 (2026-11)"
 ME=keep-menu.sh
 case $0 in */*) HERE=${0%/*} ;; *) HERE=. ;; esac   # no dirname: nothing external before PATH is set
 HERE=$(cd "$HERE" && pwd)
+START=$(pwd -P)                         # the default destination: where the examiner stands
 # On the medium PATH is its bin/ and nothing else, as in keytriage.sh. Without a medium beside
 # this script it is the lab, where python3 and the scanner are the workstation's own.
 SYSDIRS=/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/sbin:/usr/local/bin
@@ -145,14 +152,14 @@ sysinfo() {
     printf '\n'
 }
 
-# Each mode asks its questions and leaves: ROWS (the values to list), KIND and CMD (what to run),
-# WHAT (the word for the run) and AFTER (a closing line).
-live() {  # live 0|1 : 1 adds the memory image
-    local evid budget
+# Each source asks its questions and leaves: ROWS (the values to list), KIND and CMD (what to
+# run), WHAT (the word for the run) and AFTER (a closing line).
+from_system() {
+    local dest budget
     [ -r "$TRIAGE" ] || fail "keytriage.sh is not beside this script"
-    [ "$DRY" = 1 ] || [ "$(id -u)" = 0 ] || fail "a live capture needs root, start this script under sudo"
+    [ "$DRY" = 1 ] || [ "$(id -u)" = 0 ] || fail "the keys of a running system need root, start this script under sudo"
     sysinfo
-    ask_dir "Evidence directory" "${KEEP_EVID:-/media/evidence}"; evid=$REPLY
+    ask_dir "Destination directory" "$START"; dest=$REPLY
     while :; do
         ask "Proof attempts per volume on the memory route" 64; budget=$REPLY
         case $budget in
@@ -161,26 +168,22 @@ live() {  # live 0|1 : 1 adds the memory image
         esac
     done
     KIND=triage; WHAT=Triage; AFTER=""
-    CMD=("$BASH" -p "$TRIAGE" -e "$evid" -b "$budget")
-    ROWS+=("Evidence directory|$evid ($(free_of "$evid"))" "Proof attempts per volume|$budget")
-    if [ "$1" = 1 ]; then
-        CMD+=(-m)
-        choose "Memory image format" "lime compressed" lime
-        if [ "$REPLY" = compressed ]; then
-            CMD+=(-c)
-            ROWS+=("Memory image|after the keys, AVML, compressed format, at most the size of the memory above")
-        else
-            ROWS+=("Memory image|after the keys, AVML, LiME format, the size of the memory above")
-        fi
-    else
-        ROWS+=("Memory image|no")
-    fi
+    CMD=("$BASH" -p "$TRIAGE" -d "$dest" -b "$budget")
+    ROWS+=("Destination directory|$dest ($(free_of "$dest"))" "Proof attempts per volume|$budget")
+    choose "Collect a memory dump" "no lime compressed" no
+    case $REPLY in
+        lime)       CMD+=(-m)
+                    ROWS+=("Memory dump|after the keys, AVML, LiME format, the size of the memory above") ;;
+        compressed) CMD+=(-m -c)
+                    ROWS+=("Memory dump|after the keys, AVML, compressed format, at most the size of the memory above") ;;
+        *)          ROWS+=("Memory dump|no") ;;
+    esac
     ROWS+=("Command|${CMD[*]}")
 }
 
-offline() {
+from_dump() {
     local dump name scanner="" c imgs=() i
-    ask_file "Memory dump (raw, LiME or ELF core)"; dump=$REPLY
+    ask_file "Memory dump (raw, LiME, compressed AVML or ELF core)"; dump=$REPLY
     ROWS+=("Memory dump|$dump")
     if command -v python3 >/dev/null && [ -r "$HERE/vkverify.py" ] && [ -r "$OFFLINE" ]; then
         while :; do
@@ -193,11 +196,11 @@ offline() {
             case $REPLY in /*) ;; *) REPLY=$PWD/$REPLY ;; esac
             imgs+=("$REPLY")
         done
-        ask_dir "Output directory" "$PWD"; OUTDIR=$REPLY
+        ask_dir "Destination directory" "$START"; OUTDIR=$REPLY
         KIND=offline; WHAT=Scan; AFTER=""
         CMD=("$BASH" -p "$OFFLINE" -k "$HERE" "$dump" "${imgs[@]}")
         for i in "${imgs[@]}"; do ROWS+=("Image|$i"); done
-        ROWS+=("Output directory|$OUTDIR ($(free_of "$OUTDIR"))" "Proof|against every LUKS header located in the images"
+        ROWS+=("Destination directory|$OUTDIR ($(free_of "$OUTDIR"))" "Proof|against every LUKS header located in the images"
                "Command|${CMD[*]}")
     else
         for c in "$HERE/bin/kcore-keyscan" "$HERE/kcore-keyscan" "$(command -v kcore-keyscan 2>/dev/null)"; do
@@ -205,13 +208,13 @@ offline() {
         done
         [ -n "$scanner" ] || fail "kcore-keyscan was not found beside this script or on PATH"
         printf 'python3 or vkverify.py is not here, so the dump is scanned to a candidate list for the lab.\n'
-        ask_dir "Output directory" "${KEEP_EVID:-/media/evidence}"; OUTDIR=$REPLY
+        ask_dir "Destination directory" "$START"; OUTDIR=$REPLY
         name=${dump##*/}; name=${name//[!A-Za-z0-9._-]/_}
         SCANDIR=$OUTDIR/scan_${name}_$(printf '%(%Y%m%d_%H%M%S)T' -1)
         KIND=scan; WHAT=Scan
         CMD=("$scanner" "$dump")
         AFTER="In the lab: python3 -I vkverify.py $SCANDIR/keys/candidates.txt --image DISK"
-        ROWS+=("Output directory|$OUTDIR ($(free_of "$OUTDIR"))" "Proof|none here, the candidate list goes to the lab"
+        ROWS+=("Destination directory|$OUTDIR ($(free_of "$OUTDIR"))" "Proof|none here, the candidate list goes to the lab"
                "Command|${CMD[*]} > $SCANDIR/keys/candidates.txt")
     fi
 }
@@ -233,12 +236,10 @@ printf '%s %s\n\n' "$ME" "$VERSION"
 KIND=""; WHAT=""; AFTER=""; OUTDIR=""; SCANDIR=""; CMD=()
 while :; do
     printf 'Parameters required, please provide the necessary input\n'
-    choose "Mode" "live live-memory offline" live
-    ROWS=("Mode|$REPLY")
+    choose "Search for keys in" "system dump" system
     case $REPLY in
-        live)        live 0 ;;
-        live-memory) live 1 ;;
-        offline)     offline ;;
+        system) ROWS=("Search for keys in|this running system"); from_system ;;
+        dump)   ROWS=("Search for keys in|a memory dump"); from_dump ;;
     esac
     printf '\nThe following parameters were provided:\n'
     for r in "${ROWS[@]}"; do row "${r%%|*}" "${r#*|}"; done

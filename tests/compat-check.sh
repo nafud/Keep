@@ -17,15 +17,14 @@
 # Around these two it checks what only real device-mapper and real mounts can show:
 #   No        a mapping of that name, made with dmsetup from a known key: "captured, in use"
 #   kc_null   a mapping with the null cipher and no key: "no key needed"
-#   the evidence directory: one on the guest's own disk is refused without -f, also on another
-#             partition of that disk (/boot/efi or /boot, where the guest has one), and a FAT file
-#             system on a loop device is accepted and takes every file (where the guest has
-#             mkfs.vfat and can mount FAT)
+#   the destination: the main run names none and is started in a directory on the guest's own
+#             disk, which must take the folder of the run. A FAT file system on a loop device,
+#             named with -d, takes every file (where the guest has mkfs.vfat and can mount FAT)
 #   kc_pv     a LUKS2 volume that carries an LVM volume group, as an installer lays out an
 #             encrypted system, with a logical volume that is mounted and one that is swap:
 #             the mapping below them is the one that is listed and proven, both are named as
-#             what it carries, and an evidence directory on the logical volume is taken as
-#             lying on that dm-crypt volume (where the guest has lvm2 and mkfs.ext4)
+#             what it carries, and the logical volume is the destination of that run (where
+#             the guest has lvm2 and mkfs.ext4)
 # A part that the guest cannot run is reported as SKIP and does not fail the check.
 #
 # Needs root, cryptsetup, dmsetup and losetup on the guest (package cryptsetup on Debian, Ubuntu,
@@ -65,8 +64,8 @@ cleanup() {
     rm -rf "$W"
 }
 trap cleanup EXIT
-rm -rf "$W"; mkdir -p "$W/evid" || fail "cannot create $W"
-chmod 700 "$W"; cd "$W" || exit 1
+rm -rf "$W"; mkdir -p "$W/dest" || fail "cannot create $W"
+chmod 700 "$W"; cd "$W" && W=$(pwd -P) || exit 1
 
 # the key file option was renamed in cryptsetup 2.5.0, as in keytriage.sh
 if cryptsetup --help 2>&1 | grep -q -e '--volume-key-file'; then VK=--volume-key-file; else VK=--master-key-file; fi
@@ -93,12 +92,11 @@ head -c 64 /dev/urandom > No.vk
 dm No aes-xts-plain64 "$(od -An -v -tx1 No.vk | tr -d ' \n')"
 dm kc_null cipher_null-ecb -
 
-# $W is on the disk of this guest, which keytriage.sh refuses as an evidence directory unless -f
-"$KIT/bin/bash" -p "$KIT/keytriage.sh" -e "$W/evid" > "$W/refused.txt" 2>&1
-REFUSED=$?
-"$KIT/bin/bash" -p "$KIT/keytriage.sh" -f -e "$W/evid" $MEM > "$W/screen.txt" 2>&1
+# No destination is named: it is the directory of the start, which lies on the disk of this
+# guest. Where the destination lies is the examiner's decision, and no place is refused.
+( cd "$W/dest" && "$KIT/bin/bash" -p "$KIT/keytriage.sh" $MEM ) > "$W/screen.txt" 2>&1
 RC=$?
-O=$(ls -d "$W"/evid/triage_* 2>/dev/null | tail -n 1)
+O=$(ls -d "$W"/dest/triage_* 2>/dev/null | tail -n 1)
 J=$O/verdict.json
 
 echo "==== Keep compatibility check"
@@ -157,42 +155,27 @@ if [ -n "$MEM" ]; then
     fi
 fi
 (cd "$O" && sha256sum -c --quiet manifest.sha256 >/dev/null 2>&1) && echo "PASS   manifest of the triage folder" || { echo "FAIL   manifest"; PASS=0; }
-if [ "$REFUSED" = 1 ] && grep -q 'is refused: it lies on' "$W/refused.txt" && [ "$(ls "$W/evid" | wc -l)" = 1 ]; then
-    echo "PASS   an evidence directory on the guest's own disk is refused without -f"
+if [ -n "$O" ] && [ -f "$J" ] && grep -q "^output: $O\$" "$W/screen.txt" && grep -q '^destination: .* mounted at ' "$W/screen.txt"; then
+    echo "PASS   no destination named: the folder of the run is in the directory of the start, on the guest's own disk"
 else
-    echo "FAIL   an evidence directory on the guest's own disk is not refused: $(head -n 1 "$W/refused.txt")"; PASS=0
+    echo "FAIL   no destination named: the folder of the run is not in the directory of the start: $(head -n 1 "$W/screen.txt")"; PASS=0
 fi
-# another partition of the disk that carries the root file system
-OTHER=""
-for d in /boot/efi /boot; do
-    [ "$(stat -c %d "$d" 2>/dev/null)" != "$(stat -c %d /)" ] && [ -d "$d" ] && grep -q " $d " /proc/self/mountinfo && { OTHER=$d; break; }
-done
-if [ -n "$OTHER" ]; then
-    "$KIT/bin/bash" -p "$KIT/keytriage.sh" -e "$OTHER" > "$W/refused2.txt" 2>&1
-    if [ $? = 1 ] && grep -q 'is refused: it lies on the disk' "$W/refused2.txt" && ! ls -d "$OTHER"/triage_* >/dev/null 2>&1; then
-        echo "PASS   $OTHER is refused: $(sed -n 's/.*\(it lies on the disk [^,]*\),.*/\1/p' "$W/refused2.txt")"
-    else
-        echo "FAIL   $OTHER, a partition beside the root file system, is not refused: $(head -n 1 "$W/refused2.txt")"; PASS=0
-    fi
-else
-    echo "SKIP   no /boot/efi or /boot on a partition of its own, the test of a second partition is not run"
-fi
-# an evidence medium with FAT, on a disk of its own: accepted without -f, and every name is taken
+# a destination with FAT, named with -d: every name is taken
 mkdir "$W/fat"; truncate -s 96M fat.img
 if command -v mkfs.vfat >/dev/null && mkfs.vfat fat.img >/dev/null 2>&1 && mount -o loop fat.img "$W/fat" 2>/dev/null; then
-    "$KIT/bin/bash" -p "$KIT/keytriage.sh" -e "$W/fat" > "$W/screen-fat.txt" 2>&1; rcf=$?
+    "$KIT/bin/bash" -p "$KIT/keytriage.sh" -d "$W/fat" > "$W/screen-fat.txt" 2>&1; rcf=$?
     F=$(ls -d "$W"/fat/triage_* 2>/dev/null | tail -n 1)
     ok=1
     [ "$rcf" = 0 ] && grep -q '(vfat) mounted at' "$W/screen-fat.txt" || ok=0
     for n in kc_l2 kc_l1 No; do cmp -s "$F/keys/$n.vk" "$n.vk" || ok=0; done
     (cd "$F" 2>/dev/null && sha256sum -c --quiet manifest.sha256 >/dev/null 2>&1) || ok=0
     if [ "$ok" = 1 ]; then
-        echo "PASS   evidence medium with FAT: accepted without -f, three keys equal the ground truth, manifest"
+        echo "PASS   destination with FAT, named with -d: three keys equal the ground truth, manifest"
     else
-        echo "FAIL   evidence medium with FAT, status $rcf"; sed 's/^/       /' "$W/screen-fat.txt"; PASS=0
+        echo "FAIL   destination with FAT, status $rcf"; sed 's/^/       /' "$W/screen-fat.txt"; PASS=0
     fi
 else
-    echo "SKIP   no mkfs.vfat or no FAT in this kernel, the evidence medium with FAT is not run"
+    echo "SKIP   no mkfs.vfat or no FAT in this kernel, the destination with FAT is not run"
 fi
 # LVM on LUKS: the stack of an encrypted installation
 mkdir "$W/lvm"
@@ -204,11 +187,10 @@ if command -v vgcreate >/dev/null && command -v mkfs.ext4 >/dev/null; then
         && mkswap /dev/mapper/kc_vg-swap >/dev/null 2>>"$W/lvm.txt" && swapon /dev/mapper/kc_vg-swap 2>>"$W/lvm.txt"; then
         # the file system is mounted at ten places, of which the line names eight
         for i in 1 2 3 4 5 6 7 8 9; do mkdir "$W/bind$i" && mount --bind "$W/lvm" "$W/bind$i"; done
-        "$KIT/bin/bash" -p "$KIT/keytriage.sh" -e "$W/lvm" > "$W/screen-lvm.txt" 2>&1; rcl=$?
+        "$KIT/bin/bash" -p "$KIT/keytriage.sh" -d "$W/lvm" > "$W/screen-lvm.txt" 2>&1; rcl=$?
         L=$(ls -d "$W"/lvm/triage_* 2>/dev/null | tail -n 1)
         ok=1
         [ "$rcl" = 0 ] || ok=0
-        grep -q 'the evidence directory lies on the open dm-crypt volume kc_pv' "$W/screen-lvm.txt" || ok=0
         grep '"name": "kc_pv"' "$L/verdict.json" 2>/dev/null | grep -q '"verdict": "captured and proven"' || ok=0
         cmp -s "$L/keys/kc_pv.vk" kc_pv.vk || ok=0
         grep -q '"name": "kc_vg-data"' "$L/verdict.json" 2>/dev/null && ok=0
@@ -220,7 +202,7 @@ if command -v vgcreate >/dev/null && command -v mkfs.ext4 >/dev/null; then
         case $use in *" and 2 more mounts") ;; *) ok=0 ;; esac
         grep -A3 '^==== kc_l1$' "$W/screen-lvm.txt" | grep -q '^  in use: not mounted' || ok=0
         if [ "$ok" = 1 ]; then
-            echo "PASS   LVM on LUKS: kc_pv is captured and proven, the logical volumes are not listed as volumes and are named as what kc_pv carries, one mounted at ten places and one as swap, the evidence directory is taken as lying on kc_pv"
+            echo "PASS   LVM on LUKS: kc_pv is captured and proven, the logical volumes are not listed as volumes and are named as what kc_pv carries, one mounted at ten places and one as swap"
         else
             echo "FAIL   LVM on LUKS, status $rcl"; sed 's/^/       /' "$W/screen-lvm.txt"; PASS=0
         fi

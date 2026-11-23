@@ -368,7 +368,7 @@ open(sys.argv[2], "wb").write(raw)' "$T/l2.img" "$T/list.img" || return 1
     check "the on-scene proof accepts the key of a header and refuses another ($VK)" proof
 
     menu_offline() {
-        printf 'offline\n%s\n%s\n\n%s\nyes\n' "$T/fx.lime" "$T/disk.dd" "$T/lab2" | KEYSCAN=$SCAN bash -p keep-menu.sh > "$T/menu.txt" 2>&1 || return 1
+        printf 'dump\n%s\n%s\n\n%s\nyes\n' "$T/fx.lime" "$T/disk.dd" "$T/lab2" | KEYSCAN=$SCAN bash -p keep-menu.sh > "$T/menu.txt" 2>&1 || return 1
         grep -q '^keep-menu.sh: SUCCESS$' "$T/menu.txt" && no_key_in "$KEYS" "$T/menu.txt"
     }
     check "keep-menu.sh runs the offline mode through a pipe" menu_offline
@@ -498,7 +498,7 @@ EOT
             local name=$1 rc; shift
             mkdir "$T/tevid/$name" || return 1
             : > "$T/sync.log"
-            ( umask 022; PATH=$T/foreign:$PATH "${HOSTILE[@]}" "$TSH" -p "$KIT/keytriage.sh" -f -p "/nowhere:$SYS" -e "$T/tevid/$name" "$@" > "$T/$name.txt" 2>&1 ); rc=$?
+            ( umask 022; PATH=$T/foreign:$PATH "${HOSTILE[@]}" "$TSH" -p "$KIT/keytriage.sh" -p "/nowhere:$SYS" -d "$T/tevid/$name" "$@" > "$T/$name.txt" 2>&1 ); rc=$?
             ln -s "$(echo "$T/tevid/$name"/triage_*)" "$T/$name.d"
             return "$rc"
         }
@@ -565,15 +565,15 @@ sys.exit(0 if ok else "the reports say %r and %r" % (a, b))' "$d" "$c" || return
         }
         check "keytriage.sh removes the part of a memory image that could not be finished" triage_memory_fail
         triage_c_alone() {
-            "$TSH" -p "$KIT/keytriage.sh" -f -c -p "$SYS" -e "$T/tevid" > "$T/calone.txt" 2>&1
+            "$TSH" -p "$KIT/keytriage.sh" -c -p "$SYS" -d "$T/tevid" > "$T/calone.txt" 2>&1
             [ $? -eq 2 ] && grep -q -e '-c belongs to -m' "$T/calone.txt"
         }
         check "keytriage.sh refuses -c without -m with status 2" triage_c_alone
         triage_shell() {
-            "$TSH" "$KIT/keytriage.sh" -f -p "$SYS" -e "$T/tevid" > "$T/nop.txt" 2>&1
+            "$TSH" "$KIT/keytriage.sh" -p "$SYS" -d "$T/tevid" > "$T/nop.txt" 2>&1
             [ $? -eq 1 ] && grep -q 'start this script with bash -p' "$T/nop.txt" || { echo "a start without -p is not refused"; return 1; }
             [ "$TSH" -ef /bin/bash ] && return 0      # no second shell on this machine to try
-            /bin/bash -p "$KIT/keytriage.sh" -f -p "$SYS" -e "$T/tevid" > "$T/nop.txt" 2>&1
+            /bin/bash -p "$KIT/keytriage.sh" -p "$SYS" -d "$T/tevid" > "$T/nop.txt" 2>&1
             [ $? -eq 1 ] && grep -q 'runs in the shell of the medium' "$T/nop.txt" || { echo "another shell than that of the kit is not refused"; return 1; }
         }
         check "keytriage.sh refuses a start without bash -p and a shell that is not the kit's" triage_shell
@@ -582,7 +582,7 @@ sys.exit(0 if ok else "the reports say %r and %r" % (a, b))' "$d" "$c" || return
         menu_shell() {
             mkdir -p "$T/kit2" && ln -s "$KIT/bin" "$T/kit2/bin" && cp keep-menu.sh "$T/kit2/" || return 1
             printf '#!/bin/false\ncase $- in *p*) echo "ran in $BASH with -p" ;; esac\n' > "$T/kit2/keytriage.sh"; chmod 755 "$T/kit2/keytriage.sh"
-            printf 'live\n%s\n\nyes\n' "$T/evid" | "$TSH" -p "$T/kit2/keep-menu.sh" > "$T/menu2.txt" 2>&1 || { cat "$T/menu2.txt"; return 1; }
+            printf 'system\n%s\n\n\nyes\n' "$T/evid" | "$TSH" -p "$T/kit2/keep-menu.sh" > "$T/menu2.txt" 2>&1 || { cat "$T/menu2.txt"; return 1; }
             grep -q "^ran in $TSH with -p\$" "$T/menu2.txt" || { cat "$T/menu2.txt"; return 1; }
         }
         check "keep-menu.sh starts keytriage.sh in the shell of the medium with -p" menu_shell
@@ -603,12 +603,21 @@ sys.exit(0 if ok else "the reports say %r and %r" % (a, b))' "$d" "$c" || return
             grep -q 'FAILED, the folder is not complete' "$T/noflush.txt"
         }
         check "keytriage.sh counts no key as captured when the flush fails, and ends with status 1" triage_flushfail
-        triage_own_disk() {
-            "$TSH" -p "$KIT/keytriage.sh" -e / > "$T/own.txt" 2>&1
-            [ $? -eq 1 ] && grep -q 'is refused: it lies on the root file system' "$T/own.txt" || { cat "$T/own.txt"; return 1; }
-            grep -q 'accepted with -f although it lies on' "$T/both.d/triage.txt" || [ "$(stat -c %d "$T")" != "$(stat -c %d /)" ]
+        # The destination is the examiner's decision. Without -d it is the directory of the start,
+        # and no place is refused for the medium it lies on: this one is on the disk of the
+        # machine that runs the test. The option that once accepted such a place is gone.
+        triage_here() {
+            mkdir "$T/tevid/here" || return 1
+            ( cd "$T/tevid/here" && "$TSH" -p "$KIT/keytriage.sh" -p "/nowhere:$SYS" > "$T/here.txt" 2>&1 ) || { cat "$T/here.txt"; return 1; }
+            [ -f "$(echo "$T"/tevid/here/triage_*/verdict.json)" ] || { echo "no folder of the run in the directory of the start"; return 1; }
+            grep -q '^destination: .* mounted at ' "$T/here.txt" || { echo "the destination is not named"; return 1; }
+            ! grep -q -i 'refused\|evidence' "$T/here.txt" || { echo "the run still speaks of an evidence medium"; return 1; }
+            "$TSH" -p "$KIT/keytriage.sh" -f -p "$SYS" -d "$T/tevid" > "$T/optf.txt" 2>&1
+            [ $? -eq 2 ] || { echo "-f is still an option"; return 1; }
+            "$TSH" -p "$KIT/keytriage.sh" -p "$SYS" -d "$T/tevid/absent" > "$T/absent.txt" 2>&1
+            [ $? -eq 1 ] && grep -q 'does not exist' "$T/absent.txt" || { echo "a destination that does not exist is not reported"; return 1; }
         }
-        check "keytriage.sh refuses an evidence directory on the root file system without -f" triage_own_disk
+        check "keytriage.sh writes to the directory it is started in, or to the one of -d, and tests no medium" triage_here
         triage_names() {
             local d=$T/both.d
             cmp "$d/keys/T_plain.vk" "$T/keys/other.vk" && cmp "$d/keys/t_plain_.vk" "$T/keys/other.vk" || return 1
@@ -636,7 +645,7 @@ sys.exit(0 if host == "pc/../../out [2Jside" else "host in the report: %r" % hos
             grep -q 'gave no table line' "$T/edge.txt" && [ "$(verdict_of "$d" t_notable)" = "captured and proven" ] || { echo "the mapping without a table line"; return 1; }
             [ "$(verdict_of "$d" t_odd)" = "needs a memory read" ] && [ ! -e "$d/keys/t_odd.vk" ] || { echo "a key field that is no key: $(verdict_of "$d" t_odd)"; return 1; }
             python3 -I keep-report.py "$d/verdict.json" --brief | grep -q '^  no key needed  *t_null: no key needed$' || { echo "keep-report.py does not class the null cipher"; return 1; }
-            python3 -I keep-report.py "$d/verdict.json" | grep -q '^    Evidence medium: ' || { echo "keep-report.py does not print the evidence medium"; return 1; }
+            python3 -I keep-report.py "$d/verdict.json" | grep -q '^    Destination: ' || { echo "keep-report.py does not print the destination"; return 1; }
         }
         check "keytriage.sh takes mappings named No and with a space, the null cipher, a missing table and a bad key field" triage_edge
         triage_nohdr() {
@@ -661,19 +670,28 @@ fi
 
 # ---- menu --------------------------------------------------------------------------------------
 menu_dry() {
-    printf 'live\n%s\n\nyes\n' "$T/evid" | bash -p keep-menu.sh -n > "$T/menu.txt" 2>&1 || return 1
-    grep -q "keytriage.sh -e $T/evid -b 64\$" "$T/menu.txt" && grep -q 'dry run, nothing was run' "$T/menu.txt"
+    printf 'system\n%s\n\n\nyes\n' "$T/evid" | bash -p keep-menu.sh -n > "$T/menu.txt" 2>&1 || return 1
+    grep -q "keytriage.sh -d $T/evid -b 64\$" "$T/menu.txt" && grep -q 'dry run, nothing was run' "$T/menu.txt"
 }
 check "keep-menu.sh asks, lists the command and runs nothing with -n" menu_dry
-# the mode with a memory image asks for its format, and "compressed" adds -c to the command
-menu_memory() {
-    printf 'live-memory\n%s\n\ncompressed\nyes\n' "$T/evid" | bash -p keep-menu.sh -n > "$T/menu-m.txt" 2>&1 || return 1
-    grep -q -e ' -m -c$' "$T/menu-m.txt" || { echo "no -m -c in the command"; cat "$T/menu-m.txt"; return 1; }
-    printf 'live-memory\n%s\n\n\nyes\n' "$T/evid" | bash -p keep-menu.sh -n > "$T/menu-m.txt" 2>&1 || return 1
-    grep -q -e ' -m$' "$T/menu-m.txt" || { echo "the default is not -m alone"; cat "$T/menu-m.txt"; return 1; }
+# Enter at every question: the keys of this system, into the directory of the start, no dump
+menu_defaults() {
+    local here menu=$PWD/keep-menu.sh
+    here=$(cd "$T/evid" && pwd -P)
+    ( cd "$T/evid" && printf '\n\n\n\n\n' | bash -p "$menu" -n ) > "$T/menu-d.txt" 2>&1 || { cat "$T/menu-d.txt"; return 1; }
+    grep -q "^Destination directory \[$here\]: " "$T/menu-d.txt" || { echo "the default destination is not the directory of the start"; cat "$T/menu-d.txt"; return 1; }
+    grep -q "keytriage.sh -d $here -b 64\$" "$T/menu-d.txt" || { echo "the defaults do not give the plain search for keys"; cat "$T/menu-d.txt"; return 1; }
 }
-check "keep-menu.sh asks for the format of the memory image" menu_memory
-menu_eof() { printf 'offline\n' | bash -p keep-menu.sh -n > /dev/null 2>&1; [ $? -eq 1 ]; }
+check "keep-menu.sh takes the directory it is started in as the destination, and Enter at every question finds keys" menu_defaults
+# the memory dump is an option of the search on a system: "lime" adds -m, "compressed" -m -c
+menu_memory() {
+    printf 'system\n%s\n\ncompressed\nyes\n' "$T/evid" | bash -p keep-menu.sh -n > "$T/menu-m.txt" 2>&1 || return 1
+    grep -q -e ' -m -c$' "$T/menu-m.txt" || { echo "no -m -c in the command"; cat "$T/menu-m.txt"; return 1; }
+    printf 'system\n%s\n\nlime\nyes\n' "$T/evid" | bash -p keep-menu.sh -n > "$T/menu-m.txt" 2>&1 || return 1
+    grep -q -e ' -m$' "$T/menu-m.txt" || { echo "lime does not give -m alone"; cat "$T/menu-m.txt"; return 1; }
+}
+check "keep-menu.sh offers a memory dump of the system, in LiME format or compressed" menu_memory
+menu_eof() { printf 'dump\n' | bash -p keep-menu.sh -n > /dev/null 2>&1; [ $? -eq 1 ]; }
 check "keep-menu.sh ends with status 1 when the input ends early" menu_eof
 # -h prints the whole comment at the head of a script, whatever its length, and a wrong option
 # is an error

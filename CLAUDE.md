@@ -1,11 +1,13 @@
 # Keep
 
-Keep is a decryption-readiness triage toolkit for digital forensics. An investigator meets a
-running Linux machine whose encrypted storage is unlocked. Powering it off turns the data back
-into ciphertext. Before power-off, Keep decides for every open dm-crypt volume whether its volume
-key can be preserved as evidence and proven correct now, whether a memory image must be taken
-first, or whether only a copy of the mounted files is possible. A second mode does the same from a
-memory dump and a disk image that were collected earlier.
+Keep finds the keys of encrypted volumes. It is a decryption-readiness triage toolkit for digital
+forensics. An investigator meets a running Linux machine whose encrypted storage is unlocked.
+Powering it off turns the data back into ciphertext. Before power-off, Keep decides for every
+open dm-crypt volume whether its volume key can be preserved as evidence and proven correct now,
+whether a memory image must be taken first, or whether only a copy of the mounted files is
+possible. Finding the keys is the main objective. Two options go with it: Keep can collect a
+memory dump of the running system, and it can search a memory dump that exists for the keys and
+prove them against a disk image.
 
 Keep is for lawful examination of systems the examiner is authorised to examine. It is not a
 general artefact collector and it depends on no other collector.
@@ -17,15 +19,15 @@ README.
 
 | File | Runs | Purpose |
 |---|---|---|
-| `keytriage.sh` | scene, as root | The triage itself. Enumerates the open dm-crypt volumes, backs up LUKS headers, walks the route ladder, prints one verdict per volume, writes the evidence folder |
+| `keytriage.sh` | scene, as root | The triage itself. Enumerates the open dm-crypt volumes, backs up LUKS headers, walks the route ladder, prints one verdict per volume, writes the folder of the run into the destination |
 | `kcore-keyscan.c` | scene and lab | Static C scanner. Finds AES-128 and AES-256 key schedules in `/proc/kcore` or in a memory image |
-| `keep-menu.sh` | scene and lab | Interactive front-end in the manner of `ewfacquire`. Asks for the parameters of one run as plain questions and calls `keytriage.sh` or `offline-keyscan.sh` |
+| `keep-menu.sh` | scene and lab | The way Keep is started: the interactive front-end in the manner of `ewfacquire`. Asks for each parameter of one run as a plain question and calls `keytriage.sh` or `offline-keyscan.sh` |
 | `vkverify.py` | lab | Verifier. Proves which scanner candidates are the volume key of a LUKS1 or LUKS2 header |
 | `offline-keyscan.sh` | lab | Driver for a dump collected earlier. Runs the scanner on the dump and `vkverify.py` against disk images |
 | `keep-report.py` | lab | Prints the verdict reports as text in the manner of `ewfinfo`, and compares several reports |
 | `build-toolkit.sh` | workstation | Assembles the scene tool medium and writes it as an ISO |
 | `tests/make-schedule-fixture.py` | test | Writes a memory image with the schedules of known keys and five traps, as raw, ELF, LiME or compressed AVML |
-| `tests/compat-check.sh` | test, throwaway guest only | Checks `keytriage.sh` on real device-mapper: containers and mappings of known keys, the null cipher, LVM on LUKS, the memory image, and where the evidence directory may lie |
+| `tests/compat-check.sh` | test, throwaway guest only | Checks `keytriage.sh` on real device-mapper: containers and mappings of known keys, the null cipher, LVM on LUKS, the memory image, and the destination by default and on FAT |
 | `tests/compat-guest.sh` | test, workstation and pipeline | Boots a distribution's cloud image as a throwaway guest in QEMU, runs `compat-check.sh` in it and prints its output |
 | `tests/compat-images.txt` | test | The cloud images for `compat-guest.sh`: a name, the address of one dated build and its published SHA-256 or SHA-512 |
 | `tests/make-compat-vm.sh` | test, workstation | Starts a libvirt guest that stays, from a distribution's cloud image, for work by hand |
@@ -81,14 +83,14 @@ route does not apply.
 
 | Verdict | Meaning |
 |---|---|
-| `captured and proven` | The key is on the evidence medium and opens the LUKS header |
+| `captured and proven` | The key is written to the destination and opens the LUKS header |
 | `captured, in use` | The key is read from the live table of a volume without a header digest (plain, tcrypt). Opening the image in the lab confirms it |
 | `captured, not proven` | A key is read but there was no header backup, or the header refused it |
 | `needs a memory read` | The key was not reached in this run. A memory image keeps the route open |
 | `live copy only` | No key route is open: a non-AES cipher behind a keyring reference, lockdown `confidentiality`, or a refused read of `/proc/kcore` |
 | `no key needed` | The mapping has no key: key size 0 in the table, the null cipher. The device holds the data as they are |
 
-A key counts as captured only when it is on the evidence medium and flushed. When the write or
+A key counts as captured only when it is written to the destination and flushed. When the write or
 the flush fails, the verdict is `needs a memory read` and the run ends with status 1.
 
 `vkverify.py` writes `proven`, `not proven` and `unreadable header`, and with `--truth` also
@@ -239,16 +241,19 @@ SHA-256.
 
 Keep has no full-screen interface and opens no window. Every tool writes lines of text and, where
 it asks, reads lines of text. The model is the libewf tools: `keep-menu.sh` behaves like
-`ewfacquire` and `keep-report.py` like `ewfinfo`.
+`ewfacquire` and `keep-report.py` like `ewfinfo`. Keep is started through `keep-menu.sh`, which
+asks for every parameter and shows a default for each, so that Enter at every question searches
+the running system for keys and writes into the directory of the start. `keytriage.sh` takes
+the same parameters as options, for a run without questions.
 
 `keep-menu.sh` runs once per start, in this order.
 
 1. It prints its name and version.
 2. It asks the questions, one per line. A question shows its choices in parentheses and its
-   default in square brackets, as in `Mode (live, live-memory, offline) [live]: `. Enter takes the
-   default. A value that cannot be used is reported and asked for again.
-3. For a live mode it first prints `System information:` with the host, the system, the kernel,
-   the lockdown mode, the memory size and the open dm-crypt volumes.
+   default in square brackets, as in `Search for keys in (system, dump) [system]: `. Enter takes
+   the default. A value that cannot be used is reported and asked for again.
+3. For the running system it first prints `System information:` with the host, the system, the
+   kernel, the lockdown mode, the memory size and the open dm-crypt volumes.
 4. It prints `The following parameters were provided:` with every value and the exact command.
 5. It asks `Continue with these values (yes, no) [yes]: `. `no` starts the questions again.
 6. It prints the start time, runs the command with its output shown as it runs, prints the end
@@ -256,12 +261,14 @@ it asks, reads lines of text. The model is the libewf tools: `keep-menu.sh` beha
    script is started in the shell that runs the menu, with `-p`, and not through its `#!` line,
    which would name the bash of the examined system.
 
-| Mode | Questions | Runs |
+| Search for keys in | Questions | Runs |
 |---|---|---|
-| `live` | Evidence directory, proof attempts per volume | `bash -p keytriage.sh -e DIR -b N` |
-| `live-memory` | The same, and the format of the memory image (`lime`, `compressed`) | `keytriage.sh -e DIR -b N -m`, with `-c` for `compressed` |
-| `offline`, where `python3` and `vkverify.py` are present | Memory dump, one or more disk images or header backups, output directory | `offline-keyscan.sh -k KIT DUMP IMAGE...` in the output directory |
-| `offline`, elsewhere (the tool medium) | Memory dump, output directory | `kcore-keyscan DUMP` into `DIR/scan_<dump>_<time>/keys/candidates.txt` |
+| `system`, the running system | Destination directory, proof attempts per volume, and `Collect a memory dump (no, lime, compressed) [no]` | `bash -p keytriage.sh -d DIR -b N`, with `-m` for `lime` and `-m -c` for `compressed` |
+| `dump`, a memory dump that exists, where `python3` and `vkverify.py` are present | Memory dump, one or more disk images or header backups, destination directory | `offline-keyscan.sh -k KIT DUMP IMAGE...` in the destination directory |
+| `dump`, elsewhere (the tool medium) | Memory dump, destination directory | `kcore-keyscan DUMP` into `DIR/scan_<dump>_<time>/keys/candidates.txt` |
+
+The destination directory is by default the directory in which Keep is started. Keep asks for
+it and does not test where it lies.
 
 The rules of this interface:
 
@@ -271,9 +278,9 @@ The rules of this interface:
 - An input that ends before the parameters are complete ends the run with status 1, so a closed
   pipe cannot loop.
 - Paths are made absolute before they are passed on. A dump or an image must be a readable regular
-  file, and an output directory must exist and be writable.
-- `-n` asks and lists everything and runs nothing. A live mode without root is refused, except
-  with `-n`.
+  file, and a destination directory must exist and be writable.
+- `-n` asks and lists everything and runs nothing. The search on the running system without
+  root is refused, except with `-n`.
 - Exit status: that of the script that was run, 0 after a dry run, 1 when the dialogue ended
   without a run, 2 for a wrong option.
 
@@ -309,51 +316,51 @@ sudo apt install bash-static busybox-static xorriso gcc curl file
 
 ## Use
 
-On scene, with the medium at `/media/tools` and an evidence medium at `/media/evidence`:
+On scene, with the medium at `/media/tools`, started in the directory that is to take the
+output:
 
 ```bash
-sudo /media/tools/bin/bash -p /media/tools/keytriage.sh -e /media/evidence        # keys
-sudo /media/tools/bin/bash -p /media/tools/keytriage.sh -e /media/evidence -m     # keys, then a memory image
-sudo /media/tools/bin/bash -p /media/tools/keytriage.sh -e /media/evidence -m -c  # the image compressed
-sudo /media/tools/bin/bash -p /media/tools/keep-menu.sh                           # the same through questions, -n is a dry run
+sudo /media/tools/bin/bash -p /media/tools/keep-menu.sh              # asks for every parameter, -n is a dry run
+sudo /media/tools/bin/bash -p /media/tools/keytriage.sh              # keys, into the current directory
+sudo /media/tools/bin/bash -p /media/tools/keytriage.sh -d DIR -m    # keys into DIR, then a memory image
+sudo /media/tools/bin/bash -p /media/tools/keytriage.sh -d DIR -m -c # the image compressed
 ```
 
 - `keytriage.sh` and `keep-menu.sh` start only under `bash -p`, and on the medium only in its own
   `bin/bash`. Without `-p` bash runs the file that `BASH_ENV` names, takes functions from the
   environment and obeys `SHELLOPTS`, all before the first line of a script. `sudo` removes these
   variables (`initial_badenv_table` in its `env.c`), a root shell does not.
-- The evidence directory must lie on a medium of its own. `keytriage.sh` finds the mount that
-  holds it in `/proc/self/mountinfo` and the whole disks beneath it in `/sys` (a partition lies in
-  the directory of its disk, a device-mapper or md device lists what it stands on in `slaves/`).
-  A directory on the root file system, or on a disk that also carries the root file system, is
-  refused. `-f` accepts it for a test. A directory on an open dm-crypt volume is accepted with a
-  note, because an encrypted evidence medium is one too.
+- The destination is the directory of `-d`, or the current directory. Where it lies is the
+  examiner's decision: `keytriage.sh` does not test what medium holds it and refuses no place.
+  It must exist and be writable. The report names the file system that holds it, with its
+  source, its type and its mount point, as `destination:` on the screen and as
+  `evidence_medium` in `verdict.json`, a field name that is kept with the schema.
 - `-p DIRS` names the directories of the examined system's `dmsetup` and `cryptsetup`, by default
   `/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/sbin:/usr/local/bin`. `-b N` limits the proof attempts
   per volume on the memory route.
 - Exit status of `keytriage.sh`: 0 when the run completed and was flushed, 1 when it could not
-  start or a write or a flush to the medium failed, 2 for a wrong option.
+  start or a write or a flush to the destination failed, 2 for a wrong option.
 
 The output folder is `triage_<host>_<UTC time>/` with `triage.txt`, `verdict.json`, `headers/`,
 `keys/`, `log/` (what `cryptsetup status`, the scanner and AVML wrote), `memory/` with `-m`, and
 `manifest.sha256`. In the names of the folder and of the files every character of the host name
 or of a mapping name that is not a letter, a digit or one of `. _ + = @ , -` becomes `_`, so
-that a name cannot leave the evidence directory and FAT and exFAT take it. Two mapping names
+that a name cannot leave the destination and FAT and exFAT take it. Two mapping names
 that differ only by case are kept apart by a further `_`.
 
 Every file is created with `umask 077`. A header backup, the candidate list and a key are
 flushed with `fsync` as soon as they are written (`sync FILE` of busybox, which reports a
-failure), and the run ends with `syncfs` on the evidence medium (`sync -f`).
+failure), and the run ends with `syncfs` on the file system of the destination (`sync -f`).
 
 With `-m` the keys are taken first, because an event can close their window within seconds, and
 then AVML writes `memory/memory.lime`. Beside the image go the kernel banner, the release,
 `os-release` and `System.map`, which Volatility 3 needs for its symbol table. A `System.map` is
 kept only when it lists `_stext` or `linux_banner`, because some distributions keep a placeholder
-without symbols in `/boot`. The image is skipped when the evidence medium has less free space than
+without symbols in `/boot`. The image is skipped when the destination has less free space than
 the machine has RAM plus 64 MiB.
 
-With `-m -c` AVML writes its compressed format to `memory/memory.avml`, for a medium with less
-free space than the machine has memory. The scanner reads it, and Volatility 3 reads it where
+With `-m -c` AVML writes its compressed format to `memory/memory.avml`, for a destination with
+less free space than the machine has memory. The scanner reads it, and Volatility 3 reads it where
 the Snappy library is installed. Its size is known only at the end, so it is started whatever
 space is free. How much it saves depends on what the memory holds: in the three runs of the
 pipeline that took it, on runners with 16 GiB, the image had 85 % to 87 % of the size of the
@@ -383,12 +390,16 @@ machine or an EnCase image.
    not reach the JSON report.
 2. Key material is written only below a `keys/` directory, by a process with `umask 077`. This
    covers the candidate list, which is key material too. On scene a key counts as captured only
-   after it is flushed to the medium. FAT and exFAT keep no modes, so on such a medium the modes
-   do not exist and the medium itself has to be kept safe.
-3. On scene nothing is written to the storage of the examined system. `keytriage.sh` writes into
-   the evidence directory and nowhere else, refuses an evidence directory on the root file system
-   or on a disk that carries it, and uses no name of the examined system in a file name as it is.
-   What a run still changes is memory: the programs it starts, and the lock file `L_major:minor`
+   after it is flushed to the destination. FAT and exFAT keep no modes, so on such a file system
+   the modes do not exist and the medium itself has to be kept safe.
+3. Keep writes into the destination directory and nowhere else. The destination is asked for,
+   and is by default the directory in which Keep is started. Where it lies is the examiner's
+   decision: Keep does not test what medium holds it, looks for no evidence medium and refuses
+   no place. What follows from the choice is the examiner's to weigh: a file written to the
+   storage of the examined system changes that storage, and a key written into one of its
+   encrypted volumes is locked in with the data at power-off. No name of the examined system is
+   used in a file name as it is. Beside the destination a run changes memory: the programs it
+   starts, and the lock file `L_major:minor`
    that cryptsetup creates in `/run/cryptsetup` while it reads a LUKS2 header (seen with
    cryptsetup 2.7.0), which lies in memory where `/run` is a tmpfs. The inputs of the lab tools
    are only read.
@@ -463,8 +474,9 @@ LUKS2 container (key in the kernel keyring, memory route) and a LUKS1 container 
 table, table route) from key files it has just drawn, a mapping named `No` and one with the null
 cipher, runs the triage, and passes when the verdicts are right and the captured keys have the
 SHA-256 of their key files. With `-m` or `-c` the memory image must be read by the scanner to
-its end and hold the schedules of both volume keys. It also checks that an evidence directory on
-the guest's own disk is refused, that a FAT evidence medium on a loop device is accepted, and the
+its end and hold the schedules of both volume keys. The main run names no destination and is
+started in a directory on the guest's own disk, which must take the folder of the run. It also
+checks that a FAT file system on a loop device, named with `-d`, takes every file, and the
 layout of an encrypted installation: a LUKS2 volume that carries an LVM volume group, where the
 mapping below the logical volumes must be the one listed and proven, and the logical volumes
 must be named as what that volume carries, one with its mount points and one as swap.
@@ -534,8 +546,7 @@ kept as artifacts of the pipeline.
 
 On every one of the ten guests the on-scene pairing of the XTS halves found the key, with each of
 the four XTS drivers that the runs met: `xts-aes-aesni`, `xts-aes-vaes-avx2`,
-`xts-aes-vaes-avx512` and `xts-aes-vaes-avx10_512`. On the Arch guest the test of a second partition was skipped,
-because its image has no `/boot` or `/boot/efi` of its own. Debian keeps a placeholder as
+`xts-aes-vaes-avx512` and `xts-aes-vaes-avx10_512`. Debian keeps a placeholder as
 `System.map`, and the Arch image has none, so no symbol table is kept beside the image there.
 
 Three further systems were checked on guests with a version before 1.3, with outputs that are not
@@ -557,18 +568,12 @@ on, where lockdown is `integrity`, with a version from 1.3 on.
 - Mounted file systems that encrypt by themselves (eCryptfs, ZFS, gocryptfs, CryFS, EncFS) are
   named in the report as not examined. Keep covers dm-crypt only.
 - Plain and tcrypt volumes have no header digest, so their keys cannot be proven on scene.
-- The test of the evidence directory knows the disks only where the kernel names a block device
-  for a file system. For a network share, tmpfs or ZFS only the test against the root file system
-  applies, and a loop device counts as a disk of its own. The step from a partition to its disk
-  is checked on the runners and the guests, where `/boot/efi` is refused as lying on the disk of
-  the root file system. On the runner with the kernel 7.0.0-1014-aws the root file system was
-  the device-mapper device `/dev/mapper/cow-root`, so there the step through `slaves/` was taken
-  as well. LVM on LUKS is checked with a volume group on a loop device. A root file system on
-  LVM on LUKS, as an installer lays it out, is not checked.
+- LVM on LUKS is checked with a volume group on a loop device. A root file system on LVM on
+  LUKS, as an installer lays it out, is not checked.
 - A mapping whose name holds a line break is not listed. A mapping whose name begins with `-` is
   not tested.
-- The memory image is taken in every run of the pipeline, to the disk of the runner or guest
-  with `-f`. A memory image on a machine with kernel lockdown is not checked with this version.
+- The memory image is taken in every run of the pipeline, to the disk of the runner or guest.
+  A memory image on a machine with kernel lockdown is not checked with this version.
 - `keep-menu.sh` is tested through a pipe and in a pseudo-terminal with the medium's static
   bash, with `keytriage.sh` replaced by a stand-in. A real capture through it is not yet run.
 - The header search of `--image` is tested on a real LUKS partition image and on a small test disk

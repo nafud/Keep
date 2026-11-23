@@ -27,7 +27,7 @@ import json
 import os
 import sys
 
-VERSION = "1.2"
+VERSION = "1.3"
 SCHEMA = "keep-report/1"
 TOP = ("tool", "host", "kernel", "os", "cryptsetup", "other_filesystems", "started_utc", "finished_utc",
        "lockdown", "secure_boot", "source", "evidence_medium")
@@ -134,7 +134,7 @@ def print_report(r):
     row("Started (UTC)", r["started_utc"])
     row("Finished (UTC)", r["finished_utc"])
     row("Key source", r["source"])
-    row("Evidence medium", r["evidence_medium"])
+    row("Destination", r["evidence_medium"])
     row("Not examined", r["other_filesystems"])
     c = r.get("candidates")
     if c:
