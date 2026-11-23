@@ -362,9 +362,9 @@ the machine has RAM plus 64 MiB.
 With `-m -c` AVML writes its compressed format to `memory/memory.avml`, for a destination with
 less free space than the machine has memory. The scanner reads it, and Volatility 3 reads it where
 the Snappy library is installed. Its size is known only at the end, so it is started whatever
-space is free. How much it saves depends on what the memory holds: in the three runs of the
+space is free. How much it saves depends on what the memory holds: in the four runs of the
 pipeline that took it, on runners with 16 GiB, the image had 85 % to 87 % of the size of the
-memory (13.7 GB for 15.7 GB, and twice 11.3 GB for 13.3 GB). Where AVML cannot finish it, the part that was written is removed, so that the
+memory (twice 13.7 GB for 15.7 GB, and twice 11.3 GB for 13.3 GB). Where AVML cannot finish it, the part that was written is removed, so that the
 report still has room, and the image counts as failed.
 
 In the lab:
@@ -521,8 +521,8 @@ be opened and emulated otherwise, and starts the check over SSH through `sudo`.
 `compat-check.sh` passed on these x86-64 systems, each with a memory image. A row names the
 kernel and the cryptsetup of the latest run it stands for, and the XTS driver that the kernel
 chose in that run. The driver follows the processor of the machine behind the runner, which a
-guest under KVM sees as its own: the Debian 13 guest used `xts-aes-vaes-avx2` in one run and
-`xts-aes-vaes-avx10_512` in three others. The first ten are guests that
+guest under KVM sees as its own: the guests of Debian 13, AlmaLinux 10.3 and openSUSE Leap 16.1
+each used `xts-aes-vaes-avx2` in one run and `xts-aes-vaes-avx10_512` in the others. The first ten are guests that
 `distros.yml` boots from the cloud images of `tests/compat-images.txt`, under KVM with BIOS boot,
 so lockdown is `none` on all of them. The next three are the runner images of `checks.yml`. The
 machine behind a runner image differs from run to run and with it the kernel. The outputs are
@@ -530,19 +530,19 @@ kept as artifacts of the pipeline.
 
 | System | Kernel | cryptsetup | Key option | XTS driver | `keytriage.sh` |
 |---|---|---|---|---|---|
-| Debian 13 | 6.12.117+deb13-amd64 | 2.7.5 | `--volume-key-file` | `xts-aes-vaes-avx10_512` | 1.4.2 |
-| Debian 12 | 6.1.0-56-amd64 | 2.6.1 | `--volume-key-file` | `xts-aes-aesni` | 1.4.2 |
-| Ubuntu 26.04.1 | 7.0.0-43-generic | 2.8.4 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.4.2 |
-| Ubuntu 24.04.5 | 6.8.0-147-generic | 2.7.0 | `--volume-key-file` | `xts-aes-aesni` | 1.4.2 |
-| Fedora 45 | 7.2.11-300.fc45.x86_64 | 2.8.8 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.4.2 |
-| AlmaLinux 10.3 | 6.12.0-264.16.1.el10_3.x86_64 | 2.8.6 | `--volume-key-file` | `xts-aes-vaes-avx10_512` | 1.4.2 |
-| AlmaLinux 9.9 | 5.14.0-741.22.1.el9_9.x86_64 | 2.8.6 | `--volume-key-file` | `xts-aes-aesni` | 1.4.2 |
-| Rocky Linux 10.3 | 6.12.0-264.16.1.el10_3.x86_64 | 2.8.6 | `--volume-key-file` | `xts-aes-vaes-avx10_512` | 1.4.2 |
-| openSUSE Leap 16.1 | 6.12.0-160100.9-default | 2.8.4 | `--volume-key-file` | `xts-aes-vaes-avx10_512` | 1.4.2 |
-| Arch Linux, image of 2026-11-15 | 7.3.4-arch1-2 | 2.8.8 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.4.2 |
+| Debian 13 | 6.12.117+deb13-amd64 | 2.7.5 | `--volume-key-file` | `xts-aes-vaes-avx10_512` | 1.5.0 |
+| Debian 12 | 6.1.0-56-amd64 | 2.6.1 | `--volume-key-file` | `xts-aes-aesni` | 1.5.0 |
+| Ubuntu 26.04.1 | 7.0.0-43-generic | 2.8.4 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.5.0 |
+| Ubuntu 24.04.5 | 6.8.0-147-generic | 2.7.0 | `--volume-key-file` | `xts-aes-aesni` | 1.5.0 |
+| Fedora 45 | 7.2.11-300.fc45.x86_64 | 2.8.8 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.5.0 |
+| AlmaLinux 10.3 | 6.12.0-264.16.1.el10_3.x86_64 | 2.8.6 | `--volume-key-file` | `xts-aes-vaes-avx2` | 1.5.0 |
+| AlmaLinux 9.9 | 5.14.0-741.22.1.el9_9.x86_64 | 2.8.6 | `--volume-key-file` | `xts-aes-aesni` | 1.5.0 |
+| Rocky Linux 10.3 | 6.12.0-264.16.1.el10_3.x86_64 | 2.8.6 | `--volume-key-file` | `xts-aes-vaes-avx10_512` | 1.5.0 |
+| openSUSE Leap 16.1 | 6.12.0-160100.9-default | 2.8.4 | `--volume-key-file` | `xts-aes-vaes-avx10_512` | 1.5.0 |
+| Arch Linux, image of 2026-11-15 | 7.3.4-arch1-2 | 2.8.8 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.5.0 |
 | Ubuntu 24.04.5, runner image | 7.0.0-1014-aws | 2.7.0 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.4.2 |
-| Ubuntu 24.04.5, runner image | 7.0.0-1017-azure | 2.7.0 | `--volume-key-file` | `xts-aes-vaes-avx2` | 1.4.1 |
-| Ubuntu 22.04.5, runner image | 6.8.0-1070-azure | 2.4.3 | `--master-key-file` | `xts-aes-aesni` | 1.4.2 |
+| Ubuntu 24.04.5, runner image | 7.0.0-1017-azure | 2.7.0 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.5.0 |
+| Ubuntu 22.04.5, runner image | 6.8.0-1070-azure | 2.4.3 | `--master-key-file` | `xts-aes-aesni` | 1.5.0 |
 
 On every one of the ten guests the on-scene pairing of the XTS halves found the key, with each of
 the four XTS drivers that the runs met: `xts-aes-aesni`, `xts-aes-vaes-avx2`,
