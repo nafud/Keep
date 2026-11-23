@@ -1,4 +1,4 @@
-# Temporary: what the runner offers for guests, and what the distributions publish as cloud images.
+# Temporary: the checksum files of the cloud images that are to be pinned.
 name: probe
 on:
   push:
@@ -10,38 +10,23 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - name: KVM
+      - name: Checksum files
         run: |
-          ls -l /dev/kvm || echo "no /dev/kvm"
-          grep -c -E 'vmx|svm' /proc/cpuinfo || true
-          id
-          nproc; grep MemTotal /proc/meminfo; df -h "$RUNNER_TEMP"
-          apt-cache policy qemu-system-x86 | sed -n 1,3p
-      - name: Listings
-        run: |
-          show() { echo "#### $1"; curl -s -L --max-time 40 "$1" | grep -o 'href="[^"?]*"' | sed 's/href=//' | tr -d '"' | tr '\n' ' ' | fold -w 200; echo; }
-          text() { echo "#### $1"; curl -s -L --max-time 40 "$1" | head -n "${2:-40}"; echo; }
-          show https://dl.fedoraproject.org/pub/fedora/linux/releases/
-          for n in 43 44 45; do show https://dl.fedoraproject.org/pub/fedora/linux/releases/$n/Cloud/x86_64/images/; done
-          for n in 9 10; do show https://repo.almalinux.org/almalinux/$n/cloud/x86_64/images/; text https://repo.almalinux.org/almalinux/$n/cloud/x86_64/images/CHECKSUM 60; done
-          for n in 9 10; do show https://dl.rockylinux.org/pub/rocky/$n/images/x86_64/; text https://dl.rockylinux.org/pub/rocky/$n/images/x86_64/CHECKSUM 60; done
-          show https://cloud.debian.org/images/cloud/trixie/
-          text https://cloud.debian.org/images/cloud/trixie/latest/SHA512SUMS 80
-          show https://cloud.debian.org/images/cloud/bookworm/
-          show https://download.opensuse.org/distribution/leap/
-          for n in 15.6 16.0 16.1; do show https://download.opensuse.org/distribution/leap/$n/appliances/; done
-          show https://download.opensuse.org/tumbleweed/appliances/
-          show https://geo.mirror.pkgbuild.com/images/
-          show https://geo.mirror.pkgbuild.com/images/latest/
-          show https://cloud.centos.org/centos/10-stream/x86_64/images/
-      - name: Fedora checksum files
-        run: |
-          for n in 43 44 45; do
-            b=https://dl.fedoraproject.org/pub/fedora/linux/releases/$n/Cloud/x86_64/images/
-            f=$(curl -s -L --max-time 40 "$b" | grep -o 'href="[^"]*CHECKSUM"' | sed 's/href=//' | tr -d '"' | head -n 1)
-            [ -n "$f" ] && { echo "#### $b$f"; curl -s -L --max-time 40 "$b$f" | grep -v '^-----\|^Hash\|^$' | head -n 30; }
-          done
-          for u in https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2.SHA256 \
-                   https://download.opensuse.org/tumbleweed/appliances/openSUSE-Tumbleweed-Minimal-VM.x86_64-Cloud.qcow2.sha256; do
-            echo "#### $u"; curl -s -L --max-time 40 "$u" | head -n 5
+          text() { echo "#### $1"; curl -s -L --max-time 40 "$1" | grep -v -E 'arm64|aarch64|ppc64|s390x|riscv|\.raw|\.json|\.tar' | head -n "${2:-12}"; echo; }
+          text https://cloud.debian.org/images/cloud/trixie/20261116-2664/SHA512SUMS
+          text https://cloud.debian.org/images/cloud/bookworm/20261117-2665/SHA512SUMS
+          text https://cloud.centos.org/centos/10-stream/x86_64/images/CentOS-Stream-GenericCloud-10-20261118.0.x86_64.qcow2.SHA256SUM
+          text https://download.opensuse.org/distribution/leap/16.1/appliances/Leap-16.1-Minimal-VM.x86_64-Cloud-Build3.21.qcow2.sha256
+          text https://download.opensuse.org/distribution/leap/15.6/appliances/openSUSE-Leap-15.6-Minimal-VM.x86_64-15.6.0-Cloud-Build19.146.qcow2.sha256
+          text https://geo.mirror.pkgbuild.com/images/v20261115.625457/Arch-Linux-x86_64-cloudimg-20261115.625457.qcow2.SHA256
+          for u in https://cloud.debian.org/images/cloud/trixie/20261116-2664/debian-13-generic-amd64-20261116-2664.qcow2 \
+                   https://cloud.debian.org/images/cloud/bookworm/20261117-2665/debian-12-generic-amd64-20261117-2665.qcow2 \
+                   https://cloud.centos.org/centos/10-stream/x86_64/images/CentOS-Stream-GenericCloud-10-20261118.0.x86_64.qcow2 \
+                   https://download.opensuse.org/distribution/leap/16.1/appliances/Leap-16.1-Minimal-VM.x86_64-Cloud-Build3.21.qcow2 \
+                   https://geo.mirror.pkgbuild.com/images/v20261115.625457/Arch-Linux-x86_64-cloudimg-20261115.625457.qcow2 \
+                   https://dl.fedoraproject.org/pub/fedora/linux/releases/45/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-45-1.4.x86_64.qcow2 \
+                   https://repo.almalinux.org/almalinux/10/cloud/x86_64/images/AlmaLinux-10-GenericCloud-10.3-20261116.0.x86_64.qcow2 \
+                   https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-9.9-20261116.x86_64.qcow2 \
+                   https://dl.rockylinux.org/pub/rocky/10/images/x86_64/Rocky-10-GenericCloud-Base-10.3-20261112.0.x86_64.qcow2; do
+            echo "#### $u"; curl -s -I -L --max-time 40 "$u" | grep -i -E '^HTTP|^content-length|^location' | tr -d '\r' | tr '\n' ' '; echo
           done
