@@ -39,6 +39,9 @@
  *
  * Build:  gcc -static -O2 -Wall -o kcore-keyscan kcore-keyscan.c
  * /proc/kcore needs root, and the kernel refuses it in lockdown mode "confidentiality".
+ *
+ * Built with -DKEYSCAN_LIBRARY the file has no main: the C program of Keep links the same
+ * search as keyscan_run (src/keyscan.h) and takes the schedules from memory.
  */
 #define _FILE_OFFSET_BITS 64
 #include <elf.h>
@@ -52,6 +55,8 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "src/keyscan.h"
+
 #define CHUNK   (1u << 20)      /* bytes read at once */
 #define KEEP    240             /* longest schedule: bytes kept in front of the next chunk */
 #define MAXHIT  4096
@@ -61,10 +66,11 @@
 static uint8_t sbox[256];
 static const uint8_t rcon[11] = {0, 1, 2, 4, 8, 16, 32, 64, 128, 0x1b, 0x36};
 
-static struct hit { int nk; uint64_t phys; uint8_t key[32]; } hits[MAXHIT];
+static struct keyscan_hit hits[MAXHIT];
 static int nhit, dropped;
 static unsigned long long nbytes, nfail;
 static unsigned step = 1;
+static FILE *keys_out, *msg_out;        /* the schedules, and the counts and messages */
 
 static void init_sbox(void)
 {
@@ -114,7 +120,7 @@ static int is_schedule(const uint8_t *s, int nk)
 }
 
 /* The scanner is checked against the two expansions printed in FIPS-197, appendix A. */
-static void selftest(void)
+static int selftest(void)
 {
     static const uint8_t k128[16] = {0x2b,0x7e,0x15,0x16,0x28,0xae,0xd2,0xa6,
                                      0xab,0xf7,0x15,0x88,0x09,0xcf,0x4f,0x3c};
@@ -133,10 +139,10 @@ static void selftest(void)
     memcpy(s, k256, 32);
     for (i = 8; i < 60; i++) next_word(s, i, 8, s + 4 * i);
     if (memcmp(s + 236, last256, 4) || !is_schedule(s, 8)) goto bad;
-    return;
+    return 0;
 bad:
-    fprintf(stderr, "kcore-keyscan: self-test failed, the result would not be reliable\n");
-    exit(3);
+    fprintf(msg_out, "kcore-keyscan: self-test failed, the result would not be reliable\n");
+    return -1;
 }
 
 static void report(int nk, const uint8_t *s, uint64_t phys, uint64_t virt)
@@ -148,11 +154,11 @@ static void report(int nk, const uint8_t *s, uint64_t phys, uint64_t virt)
             return;
     if (nhit == MAXHIT) { dropped++; return; }
     hits[nhit].nk = nk; hits[nhit].phys = phys; memcpy(hits[nhit].key, s, len); nhit++;
-    printf("AES-%d phys 0x%016llx virt ", len * 8, (unsigned long long)phys);
-    if (virt == NONE) printf("-"); else printf("0x%016llx", (unsigned long long)virt);
-    printf(" key ");
-    for (i = 0; i < len; i++) printf("%02x", s[i]);
-    printf("\n");
+    fprintf(keys_out, "AES-%d phys 0x%016llx virt ", len * 8, (unsigned long long)phys);
+    if (virt == NONE) fprintf(keys_out, "-"); else fprintf(keys_out, "0x%016llx", (unsigned long long)virt);
+    fprintf(keys_out, " key ");
+    for (i = 0; i < len; i++) fprintf(keys_out, "%02x", s[i]);
+    fprintf(keys_out, "\n");
 }
 
 /*
@@ -394,47 +400,64 @@ static const struct { const char *mark; size_t len; const char *name, *advice; }
     {"\x04\x22\x4d\x18", 4, "an lz4 file", "decompress it first"},    /* LZ4 frame format: 0x184D2204 */
 };
 
-int main(int argc, char **argv)
+const struct keyscan_hit *keyscan_hits(int *n)
 {
-    const char *path = "/proc/kcore", *format;
+    *n = nhit;
+    return hits;
+}
+
+void keyscan_wipe(void)
+{
+    memset(hits, 0, sizeof hits);
+    memset(buf, 0, sizeof buf);
+    nhit = 0;
+}
+
+/*
+ * The search of one file. The schedules go to KEYS, one line each, and stay in memory for
+ * keyscan_hits. The counts and every message go to MSG. *FAILED is the errno of a file that
+ * could not be opened or read at its start, else 0. Returns the exit status of kcore-keyscan:
+ * 0, 1 for an input that is unreadable, refused or could not be read to its end, 3 for a failed
+ * self-test.
+ */
+int keyscan_run(const char *path, int raw, unsigned every, FILE *keys, FILE *msg, int *failed)
+{
+    const char *format;
     unsigned char head[64];
     struct timespec t0, t1;
     struct stat st;
     const char *why = NULL;
     uint64_t stopped = 0;
-    int fd, i, j, raw = 0, nseg = 0, n128 = 0, n256 = 0, u128 = 0, u256 = 0;
+    int fd, i, j, nseg = 0, n128 = 0, n256 = 0, u128 = 0, u256 = 0, status = 1;
 
-    while (argc > 1 && argv[1][0] == '-') {
-        if (!strcmp(argv[1], "-s") && argc > 2 && atoi(argv[2]) > 0) {
-            step = (unsigned)atoi(argv[2]); argv += 2; argc -= 2;
-        } else if (!strcmp(argv[1], "-r")) {
-            raw = 1; argv++; argc--;
-        } else {
-            fprintf(stderr, "usage: kcore-keyscan [-s STEP] [-r] [FILE]   (FILE defaults to /proc/kcore)\n");
-            return 2;
-        }
-    }
-    if (argc > 1) path = argv[1];
+    keys_out = keys; msg_out = msg; step = every;
+    nhit = dropped = 0; nbytes = nfail = nbadcrc = 0; have = 0;
+    *failed = 0;
     init_sbox();
     init_crc();
-    selftest();
+    if (selftest())
+        return 3;
     fd = open(path, O_RDONLY);
     if (fd < 0 || fstat(fd, &st)) {
-        fprintf(stderr, "kcore-keyscan: %s: %s\n", path, strerror(errno));
+        *failed = errno;
+        fprintf(msg_out, "kcore-keyscan: %s: %s\n", path, strerror(errno));
+        if (fd >= 0) close(fd);
         return 1;
     }
     memset(head, 0, sizeof head);
     if (pread(fd, head, sizeof head, 0) < 0) {
-        fprintf(stderr, "kcore-keyscan: %s: %s\n", path, strerror(errno));
+        *failed = errno;
+        fprintf(msg_out, "kcore-keyscan: %s: %s\n", path, strerror(errno));
+        close(fd);
         return 1;
     }
     for (i = 0; !raw && i < (int)(sizeof packed / sizeof packed[0]); i++)
         if (!memcmp(head, packed[i].mark, packed[i].len) && memcmp(head, "AVML\2\0\0\0", 8)) {
-            fprintf(stderr, "kcore-keyscan: %s begins like %s. Such a file holds memory in another form, and a "
+            fprintf(msg_out, "kcore-keyscan: %s begins like %s. Such a file holds memory in another form, and a "
                     "search of its bytes misses key schedules, so it is not searched: %s. -r searches it as "
                     "raw bytes all the same.\n",
                     path, packed[i].name, packed[i].advice);
-            return 1;
+            goto out;
         }
     clock_gettime(CLOCK_MONOTONIC, &t0);
 
@@ -450,8 +473,8 @@ int main(int argc, char **argv)
         memcpy(&eh, head, sizeof eh);
         for (i = 0; i < eh.e_phnum; i++) {
             if (!full_read(fd, &ph, sizeof ph, eh.e_phoff + (uint64_t)i * eh.e_phentsize)) {
-                fprintf(stderr, "kcore-keyscan: cannot read program header %d\n", i);
-                return 1;
+                fprintf(msg_out, "kcore-keyscan: cannot read program header %d\n", i);
+                goto out;
             }
             if (ph.p_type != PT_LOAD || !ph.p_filesz || ph.p_paddr == NONE)
                 continue;
@@ -501,24 +524,50 @@ int main(int argc, char **argv)
                 break;
         if (hits[i].nk == 4) { n128++; u128 += j == i; } else { n256++; u256 += j == i; }
     }
-    fflush(stdout);
-    fprintf(stderr, "kcore-keyscan %s: %s, %s, %d segment%s, %llu bytes (%.2f GiB), %.1f seconds\n",
+    fflush(keys_out);
+    fprintf(msg_out, "kcore-keyscan %s: %s, %s, %d segment%s, %llu bytes (%.2f GiB), %.1f seconds\n",
             VERSION, path, format, nseg, nseg == 1 ? "" : "s", nbytes, nbytes / 1073741824.0,
             (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9);
-    fprintf(stderr, "kcore-keyscan: AES-128 schedules: %d (%d different keys), "
+    fprintf(msg_out, "kcore-keyscan: AES-128 schedules: %d (%d different keys), "
             "AES-256 schedules: %d (%d different keys)\n", n128, u128, n256, u256);
     if (nfail)
-        fprintf(stderr, "kcore-keyscan: %llu bytes could not be read and count as zeros\n", nfail);
+        fprintf(msg_out, "kcore-keyscan: %llu bytes could not be read and count as zeros\n", nfail);
     if (nbadcrc)
-        fprintf(stderr, "kcore-keyscan: chunks that differ from their checksum: %llu. Their data is searched as it is\n", nbadcrc);
+        fprintf(msg_out, "kcore-keyscan: chunks that differ from their checksum: %llu. Their data is searched as it is\n", nbadcrc);
     if (why) {
-        fprintf(stderr, "kcore-keyscan: the image is damaged or ends early at file offset %llu: %s. "
+        fprintf(msg_out, "kcore-keyscan: the image is damaged or ends early at file offset %llu: %s. "
                 "%llu bytes of the file from there on are not searched.\n",
                 (unsigned long long)stopped, why, (unsigned long long)st.st_size - (unsigned long long)stopped);
-        return 1;
+        goto out;
     }
     if (dropped)
-        fprintf(stderr, "kcore-keyscan: %d further schedules were not listed (more than %d)\n",
+        fprintf(msg_out, "kcore-keyscan: %d further schedules were not listed (more than %d)\n",
                 dropped, MAXHIT);
-    return 0;
+    status = 0;
+out:
+    fflush(msg_out);
+    close(fd);
+    return status;
 }
+
+#ifndef KEYSCAN_LIBRARY
+int main(int argc, char **argv)
+{
+    const char *path = "/proc/kcore";
+    unsigned every = 1;
+    int raw = 0, failed;
+
+    while (argc > 1 && argv[1][0] == '-') {
+        if (!strcmp(argv[1], "-s") && argc > 2 && atoi(argv[2]) > 0) {
+            every = (unsigned)atoi(argv[2]); argv += 2; argc -= 2;
+        } else if (!strcmp(argv[1], "-r")) {
+            raw = 1; argv++; argc--;
+        } else {
+            fprintf(stderr, "usage: kcore-keyscan [-s STEP] [-r] [FILE]   (FILE defaults to /proc/kcore)\n");
+            return 2;
+        }
+    }
+    if (argc > 1) path = argv[1];
+    return keyscan_run(path, raw, every, stdout, stderr, &failed);
+}
+#endif
