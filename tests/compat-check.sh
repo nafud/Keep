@@ -79,6 +79,15 @@ for n in kc_l2 kc_l1 kc_null No kc_pv kc_vg-data kc_vg-swap kc_it kc_ik kc_re; d
 
 LOOPS=()
 RP=""
+close_lvm() {   # the volume group on kc_pv with what is mounted from it, and kc_pv
+    local b
+    for b in "$W"/bind*; do [ -d "$b" ] && umount "$b" 2>/dev/null; done
+    umount "$W/lvm" 2>/dev/null
+    swapoff /dev/mapper/kc_vg-swap 2>/dev/null
+    vgchange -an kc_vg >/dev/null 2>&1
+    vgremove -ff kc_vg >/dev/null 2>&1
+    cryptsetup close kc_pv 2>/dev/null
+}
 cleanup() {
     # a re-encryption that is still paused: let it go on and end it
     [ -z "$RP" ] || { kill -CONT "$RP" 2>/dev/null; kill -INT "$RP" 2>/dev/null; wait "$RP" 2>/dev/null; }
@@ -86,12 +95,7 @@ cleanup() {
     cryptsetup close kc_it 2>/dev/null
     cryptsetup close kc_ik 2>/dev/null
     umount "$W/fat" 2>/dev/null
-    for b in "$W"/bind*; do [ -d "$b" ] && umount "$b" 2>/dev/null; done
-    umount "$W/lvm" 2>/dev/null
-    swapoff /dev/mapper/kc_vg-swap 2>/dev/null
-    vgchange -an kc_vg >/dev/null 2>&1
-    vgremove -ff kc_vg >/dev/null 2>&1
-    cryptsetup close kc_pv 2>/dev/null
+    close_lvm
     cryptsetup close kc_l2 2>/dev/null
     cryptsetup close kc_l1 2>/dev/null
     dmsetup remove kc_null 2>/dev/null
@@ -313,6 +317,10 @@ if command -v vgcreate >/dev/null && command -v mkfs.ext4 >/dev/null; then
 else
     echo "SKIP   no lvm2 or no mkfs.ext4, LVM on LUKS is not run"
 fi
+# The two volumes with their keys in the keyring are closed here. The parts that follow are not
+# about them, and every run with one of them open searches the whole memory once more.
+close_lvm
+cryptsetup close kc_l2 2>/dev/null
 sha() { sha256sum < "$1" | cut -c1-16; }
 # cfield FOLDER VOLUME FIELD : a field of a volume in a report, not one of its further keys
 cfield() { grep "\"name\": \"$2\"" "$1/verdict.json" | sed -n "s/.*\"name\": \"$2\"[^[]*\"$3\": \"\\([^\"]*\\)\".*/\\1/p"; }

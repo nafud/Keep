@@ -33,7 +33,7 @@ README.
 | `keep-report.py` | lab | Prints the verdict reports as text in the manner of `ewfinfo`, and compares several reports |
 | `build-toolkit.sh` | workstation | Assembles the scene tool medium and writes it as an ISO |
 | `tests/make-schedule-fixture.py` | test | Writes a memory image with the schedules of known keys and five traps, as raw, ELF, LiME or compressed AVML |
-| `tests/compat-check.sh` | test, throwaway guest only | Checks `keytriage.sh` on real device-mapper: containers and mappings of known keys, the null cipher, LVM on LUKS, the memory image, and the destination by default and on FAT |
+| `tests/compat-check.sh` | test, throwaway guest only | Checks `keytriage.sh` on real device-mapper: containers and mappings of known keys, the null cipher, LVM on LUKS, LUKS2 with integrity, the memory image, and the destination by default and on FAT. Runs the C program beside it, and alone on a volume in re-encryption |
 | `tests/compat-guest.sh` | test, workstation and pipeline | Boots a distribution's cloud image as a throwaway guest in QEMU, runs `compat-check.sh` in it and prints its output |
 | `tests/compat-images.txt` | test | The cloud images for `compat-guest.sh`: a name, the address of one dated build and its published SHA-256 or SHA-512 |
 | `tests/make-compat-vm.sh` | test, workstation | Starts a libvirt guest that stays, from a distribution's cloud image, for work by hand |
@@ -565,24 +565,38 @@ with integrity. It is corrected in 1.5.1, with its check in `selftest.sh`.
 
 ### Where it has run
 
-`keep triage` 2.0-pre1 is run beside `keytriage.sh` 1.5.0 by `compat-check.sh`: before any
-mapping is made, on the four mappings of the main run and on LVM on LUKS. It gave the same line
-of `verdict.json` for every volume, on the table route, the memory route, a mapping without a
-type and the null cipher, and header backups and keys that are the same byte for byte, on these
-systems:
+`keep` 2.0-pre3 is run beside `keytriage.sh` 1.5.1 by `compat-check.sh`: before any mapping is
+made, on the four mappings of the main run, started through its dialogue, on LVM on LUKS and on
+LUKS2 with integrity, and alone on a volume in re-encryption. Beside `keytriage.sh` it gave the
+same line of `verdict.json` for every volume, on the table route, the memory route, a mapping
+without a type and the null cipher, and header backups and keys that are the same byte for
+byte. On the volume in re-encryption it proved both keys, from memory and from the table, each
+for its part. The output of each of these runs was read line by line:
 
-| System | Kernel | Where |
-|---|---|---|
-| Ubuntu 24.04.5, runner image | 7.0.0-1017-azure, cryptsetup 2.7.0 | `checks.yml`, also the build with the sanitizers |
-| Ubuntu 22.04.5, runner image | 6.8.0-1070-azure, cryptsetup 2.4.3 | `checks.yml`, also the build with the sanitizers |
-| AlmaLinux 10.3 | 6.12.0-264.16.1.el10_3.x86_64 | `distros.yml` |
-| openSUSE Leap 16.1 | 6.12.0-160100.9-default | `distros.yml` |
-| Debian 13, Debian 12, Ubuntu 26.04.1, Ubuntu 24.04.5, Fedora 45, AlmaLinux 9.9, Rocky Linux 10.3, Arch Linux | those of the images, as in "Systems checked" | `distros.yml`: the jobs ended with `RESULT: PASS`, which they do not where the C program differs. Their outputs are kept as artifacts and were not read line by line |
-| Ubuntu 24.04.5 | 6.8.0-147-generic | a guest emulated on the workstation, output not kept |
+| System | Kernel | cryptsetup | Where |
+|---|---|---|---|
+| Debian 13 | 6.12.117+deb13-amd64 | 2.7.5 | `distros.yml` |
+| Debian 12 | 6.1.0-56-amd64 | 2.6.1 | `distros.yml` |
+| Ubuntu 26.04.1 | 7.0.0-43-generic | 2.8.4 | `distros.yml` |
+| Ubuntu 24.04.5 | 6.8.0-147-generic | 2.7.0 | `distros.yml` |
+| Fedora 45 | 7.2.11-300.fc45.x86_64 | 2.8.8 | `distros.yml` |
+| AlmaLinux 10.3 | 6.12.0-264.16.1.el10_3.x86_64 | 2.8.6 | `distros.yml` |
+| AlmaLinux 9.9 | 5.14.0-741.22.1.el9_9.x86_64 | 2.8.6 | `distros.yml` |
+| Rocky Linux 10.3 | 6.12.0-264.16.1.el10_3.x86_64 | 2.8.6 | `distros.yml` |
+| openSUSE Leap 16.1 | 6.12.0-160100.9-default | 2.8.4 | `distros.yml`, without the part with integrity |
+| Arch Linux | 7.3.4-arch1-2 | 2.8.8 | `distros.yml` |
+| Ubuntu 24.04.5, runner image | 7.0.0-1014-aws | 2.7.0 | `checks.yml`, also the build with the sanitizers |
+| Ubuntu 22.04.5, runner image | 6.8.0-1070-azure | 2.4.3 | `checks.yml`, also the build with the sanitizers |
 
-On the guest that was emulated on the workstation, `tests/keep-unit` gave the list, the tables,
-the UUIDs and the keys of `dmsetup` 1.02.185 for six mappings, a plain one and one with a space
-in its name among them.
+On openSUSE Leap 16.1 cryptsetup could not make the container with integrity: the kernel
+refused the table that the format loads (`reload ioctl ... failed: Invalid argument`). That
+part is reported as skipped there, and LUKS2 with integrity is not checked on that system.
+
+The tables of both kinds of volume were first seen on a guest emulated on the workstation
+(Ubuntu 24.04.5, kernel 6.8.0-147-generic, cryptsetup 2.7.0), and `compat-check.sh` passed
+there with every part. On that guest `tests/keep-unit` gave the list, the tables, the UUIDs and
+the keys of `dmsetup` 1.02.185 for six mappings, a plain one and one with a space in its name
+among them. The outputs of the guest are not kept.
 
 ### Not handled or not checked
 
@@ -598,6 +612,8 @@ in its name among them.
   them. A volume with integrity cannot be re-encrypted (`LUKS2_reload` of cryptsetup 2.7.0).
 - A header backup of a volume that cryptsetup is re-encrypting shows the moment of the run.
   The header on the device goes on changing until cryptsetup ends.
+- LUKS2 with integrity on openSUSE Leap 16.1, where the container could not be made (see
+  above).
 - Kernels before 5.14, the oldest of the list above. The requests to the kernel are read in the
   sources from 4.18 on, which is the kernel of RHEL 8, and are not run there.
 - A LUKS2 header whose second copy is the one in use is read in `unit-check.sh` from a file,
@@ -703,7 +719,9 @@ keep-san`), that build is run at the same places and must end with status 0.
 
 Three parts of `compat-check.sh` are there for what the C program does beyond the four
 mappings. It is started once without a command, with the questions of its dialogue answered
-through a pipe. Two LUKS2 containers with integrity are made, one opened with
+through a pipe. Before the two parts that follow, the two volumes with their keys in the
+keyring are closed, because every run with one of them open searches the whole memory once
+more. Two LUKS2 containers with integrity are made, one opened with
 `--disable-keyring`: both tools must give `captured and proven` with the key of 96 bytes it
 was made from and `live copy only` for the other, in the same lines but for the name of the
 cipher. And a LUKS2 volume of 2 GiB is re-encrypted in steps of 1 MiB, which takes seconds:
@@ -839,19 +857,19 @@ kept as artifacts of the pipeline.
 
 | System | Kernel | cryptsetup | Key option | XTS driver | `keytriage.sh` |
 |---|---|---|---|---|---|
-| Debian 13 | 6.12.117+deb13-amd64 | 2.7.5 | `--volume-key-file` | `xts-aes-vaes-avx10_512` | 1.5.0 |
-| Debian 12 | 6.1.0-56-amd64 | 2.6.1 | `--volume-key-file` | `xts-aes-aesni` | 1.5.0 |
-| Ubuntu 26.04.1 | 7.0.0-43-generic | 2.8.4 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.5.0 |
-| Ubuntu 24.04.5 | 6.8.0-147-generic | 2.7.0 | `--volume-key-file` | `xts-aes-aesni` | 1.5.0 |
-| Fedora 45 | 7.2.11-300.fc45.x86_64 | 2.8.8 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.5.0 |
-| AlmaLinux 10.3 | 6.12.0-264.16.1.el10_3.x86_64 | 2.8.6 | `--volume-key-file` | `xts-aes-vaes-avx10_512` | 1.5.0 |
-| AlmaLinux 9.9 | 5.14.0-741.22.1.el9_9.x86_64 | 2.8.6 | `--volume-key-file` | `xts-aes-aesni` | 1.5.0 |
-| Rocky Linux 10.3 | 6.12.0-264.16.1.el10_3.x86_64 | 2.8.6 | `--volume-key-file` | `xts-aes-vaes-avx2` | 1.5.0 |
-| openSUSE Leap 16.1 | 6.12.0-160100.9-default | 2.8.4 | `--volume-key-file` | `xts-aes-vaes-avx10_512` | 1.5.0 |
-| Arch Linux, image of 2026-11-15 | 7.3.4-arch1-2 | 2.8.8 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.5.0 |
-| Ubuntu 24.04.5, runner image | 7.0.0-1014-aws | 2.7.0 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.5.0 |
+| Debian 13 | 6.12.117+deb13-amd64 | 2.7.5 | `--volume-key-file` | `xts-aes-vaes-avx10_512` | 1.5.1 |
+| Debian 12 | 6.1.0-56-amd64 | 2.6.1 | `--volume-key-file` | `xts-aes-aesni` | 1.5.1 |
+| Ubuntu 26.04.1 | 7.0.0-43-generic | 2.8.4 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.5.1 |
+| Ubuntu 24.04.5 | 6.8.0-147-generic | 2.7.0 | `--volume-key-file` | `xts-aes-aesni` | 1.5.1 |
+| Fedora 45 | 7.2.11-300.fc45.x86_64 | 2.8.8 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.5.1 |
+| AlmaLinux 10.3 | 6.12.0-264.16.1.el10_3.x86_64 | 2.8.6 | `--volume-key-file` | `xts-aes-vaes-avx10_512` | 1.5.1 |
+| AlmaLinux 9.9 | 5.14.0-741.22.1.el9_9.x86_64 | 2.8.6 | `--volume-key-file` | `xts-aes-aesni` | 1.5.1 |
+| Rocky Linux 10.3 | 6.12.0-264.16.1.el10_3.x86_64 | 2.8.6 | `--volume-key-file` | `xts-aes-vaes-avx10_512` | 1.5.1 |
+| openSUSE Leap 16.1 | 6.12.0-160100.9-default | 2.8.4 | `--volume-key-file` | `xts-aes-vaes-avx10_512` | 1.5.1 |
+| Arch Linux, image of 2026-11-15 | 7.3.4-arch1-2 | 2.8.8 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.5.1 |
+| Ubuntu 24.04.5, runner image | 7.0.0-1014-aws | 2.7.0 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.5.1 |
 | Ubuntu 24.04.5, runner image | 7.0.0-1017-azure | 2.7.0 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.5.0 |
-| Ubuntu 22.04.5, runner image | 6.8.0-1070-azure | 2.4.3 | `--master-key-file` | `xts-aes-aesni` | 1.5.0 |
+| Ubuntu 22.04.5, runner image | 6.8.0-1070-azure | 2.4.3 | `--master-key-file` | `xts-aes-aesni` | 1.5.1 |
 
 On every one of the ten guests the on-scene pairing of the XTS halves found the key, with each of
 the four XTS drivers that the runs met: `xts-aes-aesni`, `xts-aes-vaes-avx2`,

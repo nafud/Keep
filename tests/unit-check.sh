@@ -195,7 +195,7 @@ dialogue_parts() {
         chmod 500 "$T/menu/out"
         dialogue "$k" 'dump\nfx.lime\nout\n\n\n'; rc=$?
         chmod 700 "$T/menu/out"
-        said ": $T/menu/out is not writable, try again" "a destination that cannot be written to"
+        said ': out is not writable, try again' "a destination that cannot be written to"
     fi
     return $r
 }
