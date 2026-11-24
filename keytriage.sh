@@ -93,7 +93,7 @@ case $- in
     *p*) ;;
     *) printf '%s\n' "keytriage.sh: start this script with bash -p, on scene: sudo /media/tools/bin/bash -p /media/tools/keytriage.sh" >&2; exit 1 ;;
 esac
-VERSION="1.5.0 (2026-11)"
+VERSION="1.5.1 (2026-11)"
 umask 077                               # keys and the candidate list are written by this script
 case $0 in */*) KIT=${0%/*} ;; *) KIT=. ;; esac     # no dirname: no program runs before PATH is set
 KIT=$(cd "$KIT" && pwd)
@@ -352,7 +352,8 @@ for m in "${MAPS[@]}"; do
     status=$OUT/log/$f.status.txt
     "$CRYPTSETUP" status "$m" > "$status" 2>&1 || true
     typ=$(field type); cip=$(field cipher); loc=$(field "key location"); dev=$(field device)
-    ksz=$(awk '/keysize:/{print $2}' "$status")
+    # the line "keysize:" and not "integrity keysize:", which a volume with integrity has as well
+    ksz=$(awk '$1 == "keysize:" {print $2; exit}' "$status")
     case $ksz in ''|*[!0-9]*) ksz="" ;; esac
     say "  type ${typ:-?}, cipher ${cip:-?}, keysize ${ksz:-?} bits, key location ${loc:-?}"
     say "  backing device ${dev:-?}"

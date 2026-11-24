@@ -673,6 +673,18 @@ sys.exit(0 if host == "pc/../../out [2Jside" else "host in the report: %r" % hos
             grep -q ' keys/kcore-candidates.txt$' "$T/nohdr.d/manifest.sha256"
         }
         check "keytriage.sh keeps the candidate list of a volume whose header could not be backed up" triage_nohdr
+        # A LUKS2 volume with integrity, as cryptsetup 2.7.0 shows it: "cryptsetup status" has a
+        # second line with the word keysize, and the key size of the volume is the first.
+        triage_integrity() {
+            printf '0 60728 crypt capi:authenc(hmac(sha256),xts(aes))-plain64 :96:logon:cryptsetup:selftest-d0 0 253:11 0 1 integrity:32:aead\n' > "$STUB/t_integ.table"
+            status t_integ LUKS2 aes-xts-plain64 768 keyring "$T/no-such-device"
+            printf '  integrity: hmac(sha256)\n  integrity keysize: 256 bits\n  integrity tag size: 32 bytes\n' >> "$STUB/t_integ.status"
+            with_list 't_integ\t(253:10)\n' integ || return 1
+            grep -q 'keysize 768 bits' "$T/integ.txt" || { echo "the key size is not 768 bits:"; grep keysize "$T/integ.txt"; return 1; }
+            [ "$(python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["volumes"][0]["key_bits"])' "$T/integ.d/verdict.json")" = 768 ] || return 1
+            [ "$(verdict_of "$T/integ.d" t_integ)" = "live copy only" ]
+        }
+        check "keytriage.sh states the key size of a volume with integrity, whose status has two lines with keysize" triage_integrity
         triage_none() {
             with_list 'No devices found\n' none || return 1
             grep -q '^no open dm-crypt volumes$' "$T/none.txt" || return 1
