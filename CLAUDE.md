@@ -425,7 +425,7 @@ sudo ./keep triage [-d DIR] [-b N]      # the work of keytriage.sh, without -m
 |---|---|---|
 | `dmsetup ls --target crypt`, `dmsetup table --showkeys` | `src/dm.c`: the ioctls `DM_LIST_DEVICES` and `DM_TABLE_STATUS` of `/dev/mapper/control` | `dmsetup` 1.02.185 on kernel 6.8: the same devices, tables, UUIDs and keys |
 | `cryptsetup status` | `src/triage.c`: the type from the UUID of the mapping and the header, the cipher, the key size and the key location from the table line, the device from `/sys/dev/block` | `keytriage.sh` on the same mappings: the same line of `verdict.json` for every volume |
-| `cryptsetup luksHeaderBackup` | `src/luks.c`: the header and the keyslot area read from the backing device | `cryptsetup` 2.7.0: the same file byte for byte, for LUKS1 and LUKS2 |
+| `cryptsetup luksHeaderBackup` | `src/luks.c`: the header and the keyslot area read from the backing device | `cryptsetup` 2.4.3 and 2.7.0: the same file byte for byte, for LUKS1 and LUKS2 |
 | `cryptsetup open --test-passphrase` | `src/luks.c` and `src/hash.c`: PBKDF2 of the key against the digest of the header backup | `cryptsetup` 2.7.0 on the same headers and keys, and Python's `hashlib` |
 | `kcore-keyscan` | `kcore-keyscan.c` linked in without its `main` | the scanner before the change: the same output, messages and status on every format |
 | bash and the applets of busybox | C, with the standard library only | `tests/unit-check.sh` |
@@ -514,7 +514,8 @@ systems:
 
 | System | Kernel | Where |
 |---|---|---|
-| Ubuntu 24.04.5, runner image | 7.0.0-1017-azure | `checks.yml`, also the build with the sanitizers |
+| Ubuntu 24.04.5, runner image | 7.0.0-1017-azure, cryptsetup 2.7.0 | `checks.yml`, also the build with the sanitizers |
+| Ubuntu 22.04.5, runner image | 6.8.0-1070-azure, cryptsetup 2.4.3 | `checks.yml`, also the build with the sanitizers |
 | AlmaLinux 10.3 | 6.12.0-264.16.1.el10_3.x86_64 | `distros.yml` |
 | Debian 13, Debian 12, Ubuntu 26.04.1, Ubuntu 24.04.5, Fedora 45, AlmaLinux 9.9, Rocky Linux 10.3, Arch Linux | those of the images, as in "Systems checked" | `distros.yml`: the jobs ended with `RESULT: PASS`, which they do not where the C program differs. Their outputs are kept as artifacts and were not read line by line |
 | Ubuntu 24.04.5 | 6.8.0-147-generic | a guest emulated on the workstation, output not kept |
