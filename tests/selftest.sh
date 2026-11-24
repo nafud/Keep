@@ -223,6 +223,18 @@ if command -v cryptsetup >/dev/null; then
         [ "$(python3 -I keep-report.py "$d/verdict.json" --brief | grep -c '^  key held .*: proven$')" -eq 2 ]
     }
     check "keep-report.py prints the report with both volumes as key held" report
+    # A volume in re-encryption has two keys, and the C program lists the second in further_keys.
+    report_further() {
+        printf '%s\n' '{"schema": "keep-report/1", "tool": "keep 2.0", "volumes": [{"name": "vol", "type": "LUKS2",' \
+            ' "cipher": "aes-xts-plain64", "key_bits": 512, "key_location": "keyring", "route": "R3 memory",' \
+            ' "verdict": "needs a memory read", "key_sha256_16": "0123456789abcdef", "note": "2 keys",' \
+            ' "further_keys": [{"key_file": null, "cipher": "aes-xts-plain64", "key_bits": 512, "key_location": "keyring",' \
+            ' "route": null, "verdict": "needs a memory read", "key_sha256_16": null, "note": "left\u001b[31mright"}]}]}' > "$T/two.json"
+        python3 -I keep-report.py "$T/two.json" > "$T/two.txt" || return 1
+        grep -q '^        Key 2:  *needs a memory read \[action needed\]$' "$T/two.txt" && grep -q '^        Key 2 size:  *512 bits$' "$T/two.txt" &&
+            grep -q '^        Key 2 note:  *left \[31mright$' "$T/two.txt" || { echo "the second key is not printed:"; cat "$T/two.txt"; return 1; }
+    }
+    check "keep-report.py prints the further keys of a volume that has more than one" report_further
 
     # The same disk as the file of a virtual machine. qemu-img writes it in each format, and
     # the verifier must read from each the disk as it is, byte for byte, find both headers at

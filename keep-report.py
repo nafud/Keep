@@ -7,7 +7,9 @@ REPORT.json is a file of the schema keep-report/1: the verdict.json that keytria
 offline-keyscan.sh write, or the file that "vkverify.py --json" writes. Each report is printed as
 labelled lines: the run, the memory image if one was asked for, every volume with its verdict,
 and the count of the verdicts. With more than one report a table follows that shows each volume
-across the reports, for example the memory images taken before and after an event.
+across the reports, for example the memory images taken before and after an event. A volume
+in re-encryption has two keys: the lines of the volume are those of its first key, and the
+second key follows as "Key 2".
 
 It runs on the investigator's workstation, on collected reports, and not on the system under
 examination. It reads the files named on the command line and writes to standard output only.
@@ -27,7 +29,7 @@ import json
 import os
 import sys
 
-VERSION = "1.3"
+VERSION = "1.4"
 SCHEMA = "keep-report/1"
 TOP = ("tool", "host", "kernel", "os", "cryptsetup", "other_filesystems", "started_utc", "finished_utc",
        "lockdown", "secure_boot", "source", "evidence_medium")
@@ -35,6 +37,8 @@ MEMORY = ("status", "file", "format", "sha256", "tool", "system_map", "note")
 VOLUME = ("name", "type", "cipher", "key_location", "device", "in_use", "header_backup", "route", "verdict",
           "key_sha256_16", "note", "uuid", "digest", "ground_truth")
 NUMBERS = ("key_bits", "attempts", "adjacent_places")
+# A volume in re-encryption has more than one key. The C program lists each key after the first.
+FURTHER = ("key_file", "cipher", "key_location", "route", "verdict", "key_sha256_16", "note")
 
 # The verdicts of keytriage.sh and vkverify.py, and the class each of them falls in.
 VERDICTS = {
@@ -99,6 +103,13 @@ def load(path):
         vol = {k: text(v.get(k)) for k in VOLUME}
         vol.update({k: number(v.get(k)) for k in NUMBERS})
         vol["class"] = VERDICTS.get(vol["verdict"], "unknown")
+        vol["further_keys"] = []
+        further = v.get("further_keys")
+        for k in further[:8] if isinstance(further, list) else []:
+            if isinstance(k, dict):
+                key = {f: text(k.get(f)) for f in FURTHER}
+                key["key_bits"] = number(k.get("key_bits"))
+                vol["further_keys"].append(key)
         report["volumes"].append(vol)
     return report
 
@@ -172,6 +183,15 @@ def print_report(r):
         row("Proof attempts", v["attempts"], 2)
         row("Adjacent places", v["adjacent_places"], 2)
         row("Note", v["note"], 2)
+        for n, k in enumerate(v["further_keys"], 2):
+            row(f"Key {n}", f"{k['verdict'] or '-'} [{class_name(VERDICTS.get(k['verdict'], 'unknown'))}]", 2)
+            row(f"Key {n} cipher", k["cipher"], 2)
+            row(f"Key {n} size", None if k["key_bits"] is None else f"{k['key_bits']} bits", 2)
+            row(f"Key {n} location", k["key_location"], 2)
+            row(f"Key {n} route", k["route"], 2)
+            row(f"Key {n} SHA-256 (16)", k["key_sha256_16"], 2)
+            row(f"Key {n} file", k["key_file"], 2)
+            row(f"Key {n} note", k["note"], 2)
     if r["binaries"]:
         print("\nPrograms of the examined system used for the table route:")
         for b in r["binaries"]:
