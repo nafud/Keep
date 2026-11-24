@@ -59,7 +59,9 @@ For each mapping of `dmsetup ls --target crypt` the script reads `cryptsetup sta
 kernel's own table line (`dmsetup table --showkeys`), then takes the first route that is open.
 A mapping is a line of the listing with a name, a tab and the device number in parentheses
 (`_display_name` in `dmsetup.c`), so every name the kernel allows is taken, also `No` and a name
-with a space.
+with a space. The key size is the line `keysize:` of `cryptsetup status`. A LUKS2 volume with
+integrity has a second line, `integrity keysize:`, which a version before 1.5.1 took as well
+and then stated no key size.
 
 | Route | When | What happens |
 |---|---|---|
@@ -244,6 +246,11 @@ SHA-256.
   `header_backup`, `route`, `verdict`, `key_sha256_16`, `note`. `vkverify.py` names the file of the header in
   `device` and adds `uuid`, `digest`, `attempts`, `adjacent_places` and, with `--truth`,
   `ground_truth`.
+- The C program adds `further_keys` to a volume that has more than one key, which is a volume
+  in re-encryption: a list with `key_file`, `cipher`, `key_bits`, `key_location`, `route`,
+  `verdict`, `key_sha256_16` and `note` for each key after the first. The fields of the volume
+  itself are then those of its first key, and its `verdict` is that of the key that is least
+  far. `keep-report.py` prints each as `Key 2` and so on, below the lines of the volume.
 - `keep-report.py` reads only this schema, prints a fixed list of fields and drops the rest. A
   change of a field name is a change of the schema string and of that script's field lists
   (`TOP`, `MEMORY`, `VOLUME`, `NUMBERS`).
@@ -424,7 +431,7 @@ sudo ./keep triage [-d DIR] [-b N]      # the work of keytriage.sh, without -m
 | In the medium | In the C program | Checked against |
 |---|---|---|
 | `dmsetup ls --target crypt`, `dmsetup table --showkeys` | `src/dm.c`: the ioctls `DM_LIST_DEVICES` and `DM_TABLE_STATUS` of `/dev/mapper/control` | `dmsetup` 1.02.185 on kernel 6.8: the same devices, tables, UUIDs and keys |
-| `cryptsetup status` | `src/triage.c`: the type from the UUID of the mapping and the header, the cipher, the key size and the key location from the table line, the device from `/sys/dev/block` | `keytriage.sh` on the same mappings: the same line of `verdict.json` for every volume |
+| `cryptsetup status` | `src/triage.c` and `src/volume.c`: the type from the UUID of the mapping and the header, the cipher, the key size and the key location from the table line, the device from `/sys/dev/block`. Which devices are one volume, and where its header lies, is read off the tables as `_init_by_name_crypt` of cryptsetup does it | `keytriage.sh` on the same mappings: the same line of `verdict.json` for every volume. For a volume in re-encryption, where `keytriage.sh` gives less, the keys that `dmsetup table --showkeys` shows |
 | `cryptsetup luksHeaderBackup` | `src/luks.c`: the header and the keyslot area read from the backing device | `cryptsetup` 2.4.3 and 2.7.0: the same file byte for byte, for LUKS1 and LUKS2 |
 | `cryptsetup open --test-passphrase` | `src/luks.c` and `src/hash.c`: PBKDF2 of the key against the digest of the header backup | `cryptsetup` 2.7.0 on the same headers and keys, and Python's `hashlib` |
 | `kcore-keyscan` | `kcore-keyscan.c` linked in without its `main` | the scanner before the change: the same output, messages and status on every format |
@@ -461,14 +468,37 @@ Read in Linux 4.18, 5.10, 6.12 and 6.18, cryptsetup 2.0.6, 2.3.7, 2.7.0 and 2.8.
 - Where one copy of a LUKS2 header is damaged, cryptsetup writes it anew from the other when it
   reads the header. The program reads the copy that holds and writes nothing.
 - A process that is not dumpable writes no core file (`do_coredump`).
+- LUKS2 with integrity is two mapped devices (`create_or_reload_device_with_integrity`): `NAME`
+  with a crypt target on `NAME_dif`, and `NAME_dif` with one integrity target on the device.
+  The header lies on that device, and cryptsetup finds it by the option
+  `integrity:<tag size>:<algorithm>` of the crypt line and the single integrity target below
+  (`_init_by_name_crypt`). The line of an integrity target begins with its device in Linux
+  4.18, 5.10, 6.12 and 6.18. A LUKS2 volume on a dm-integrity device that stands alone has no
+  such option, and its header is on that device.
+- With `--integrity hmac-sha256` the volume key is the key of the cipher and then the key of
+  HMAC, 96 bytes for `aes-xts-plain64` (`crypt_copy_authenckey` in `dm-crypt.c`), and the
+  kernel names the cipher `capi:authenc(hmac(sha256),xts(aes))-plain64`. `cryptsetup status`
+  turns that name back into `aes-xts-plain64` (`crypt_capi_to_cipher`).
+- While cryptsetup re-encrypts an open volume, `NAME` is a linear target on `NAME-overlay`,
+  which has the crypt targets of the new and the old key, and the part in work lies on
+  `NAME-hotzone-forward` or `-backward` (`reencrypt_init_device_stack`,
+  `reencrypt_make_targets`). The two helpers have the UUID
+  `CRYPT-SUBDEV-<UUID of the volume>-<name>`. A volume that was interrupted or closed in that
+  state has the crypt targets of both keys in the table of `NAME`
+  (`LUKS2_assembly_multisegment_dmd`). Its header has a digest for each key and a third digest
+  that names no data segment.
+- cryptsetup gives the key of digest N the keyring description `cryptsetup:<UUID>-d<N>`
+  (`get_key_description_by_digest`, the same in 2.0.6, 2.7.0 and 2.8.1), so the reference in a
+  table says which digest of the header its key gives.
 
 ### Its parts
 
 | File | What it does |
 |---|---|
-| `src/main.c` | The command line. Makes the process not dumpable and locks its memory before a triage |
-| `src/triage.c` | The run: destination, system, volumes, ladder, verdicts, `triage.txt`, `verdict.json`, `manifest.sha256` |
+| `src/main.c` | The command line. Makes the process not dumpable |
+| `src/triage.c` | The run: destination, system, volumes, the ladder for each key, verdicts, `triage.txt`, `verdict.json`, `manifest.sha256`. Locks the memory of the process |
 | `src/dm.c` | The list of the mapped devices and the table of one, from the kernel |
+| `src/volume.c` | Which mapped devices are a volume, which further devices are part of it, which keys it has and where its header lies, read off the tables |
 | `src/luks.c` | The header of LUKS1 and LUKS2: reading, the copy for the evidence, the proof of a key |
 | `src/hash.c` | SHA-1, SHA-224, SHA-256, SHA-384, SHA-512, HMAC and PBKDF2, with a self-test against the examples of the standards at every start |
 | `src/json.c` | A reader of JSON as RFC 8259 defines it, for the metadata of LUKS2 |
@@ -495,14 +525,38 @@ Read in Linux 4.18, 5.10, 6.12 and 6.18, cryptsetup 2.0.6, 2.3.7, 2.7.0 and 2.8.
 - The memory of the process is locked (`mlockall`), so that no key reaches the swap space, and
   the process is not dumpable. `cryptsetup` creates no lock file in `/run/cryptsetup`, because
   it does not run.
+- A LUKS2 volume with integrity gets the same verdicts from both. The C program names its
+  cipher as the kernel does, `capi:authenc(hmac(sha256),xts(aes))-plain64`, and `keytriage.sh`
+  as `cryptsetup status` does, `aes-xts-plain64`. With the key in the keyring both end with
+  `live copy only`: the volume key holds the key of HMAC, which is no AES key.
+- A volume in re-encryption has two keys, one for the part that is done and one for the rest.
+  The C program lists the volume once, takes each key through the ladder, proves each against
+  its own digest of the header and writes `keys/NAME.vk` and `keys/NAME-2.vk`, in the order of
+  the table. A key from memory is the key of the digest that its keyring reference names. The
+  verdict of the volume is that of the key that is least far. `keytriage.sh` takes the first
+  key only and proves none, because `cryptsetup open --test-passphrase` refuses one volume key
+  for such a header (seen with cryptsetup 2.7.0), and while cryptsetup works it lists
+  `NAME-overlay` in place of the volume, without a header.
+- `-b N` is the number of proof attempts for each key, which is that for each volume where a
+  volume has one key.
+- It asks cryptsetup nothing and takes none of its locks. `cryptsetup status` waited without
+  end on a volume whose re-encryption was paused in a step, and the C program read the same
+  volume. A header that cryptsetup writes at that moment is read from the copy that holds.
 - It has no dialogue, takes no memory image and does not search a dump with a proof yet.
 
 ### What the checks have found
 
-Three defects of the C program were found by its checks while it was written, and each check
-stays: a copy of zero bytes from a null pointer in the hash code and a sort of an empty list of
-volumes (the sanitizers), and the devices that stand on a volume named in the order of the
-directory and not of their names (the run beside `keytriage.sh` on LVM).
+Five defects of the C program were found by its checks and runs while it was written, and each
+check stays: a copy of zero bytes from a null pointer in the hash code and a sort of an empty
+list of volumes (the sanitizers), the devices that stand on a volume named in the order of the
+directory and not of their names (the run beside `keytriage.sh` on LVM), the two keys of a
+volume in re-encryption found in memory and each written as the key of the other part (a run on
+a guest, now compared with the table in `compat-check.sh`), and a helper device listed as a
+volume of its own in the moment before cryptsetup puts it below its volume (a run on a guest,
+now a case of `unit-check.sh`).
+
+One defect of `keytriage.sh` was found on the way: it stated no key size for a LUKS2 volume
+with integrity. It is corrected in 1.5.1, with its check in `selftest.sh`.
 
 ### Where it has run
 
@@ -517,6 +571,7 @@ systems:
 | Ubuntu 24.04.5, runner image | 7.0.0-1017-azure, cryptsetup 2.7.0 | `checks.yml`, also the build with the sanitizers |
 | Ubuntu 22.04.5, runner image | 6.8.0-1070-azure, cryptsetup 2.4.3 | `checks.yml`, also the build with the sanitizers |
 | AlmaLinux 10.3 | 6.12.0-264.16.1.el10_3.x86_64 | `distros.yml` |
+| openSUSE Leap 16.1 | 6.12.0-160100.9-default | `distros.yml` |
 | Debian 13, Debian 12, Ubuntu 26.04.1, Ubuntu 24.04.5, Fedora 45, AlmaLinux 9.9, Rocky Linux 10.3, Arch Linux | those of the images, as in "Systems checked" | `distros.yml`: the jobs ended with `RESULT: PASS`, which they do not where the C program differs. Their outputs are kept as artifacts and were not read line by line |
 | Ubuntu 24.04.5 | 6.8.0-147-generic | a guest emulated on the workstation, output not kept |
 
@@ -524,14 +579,20 @@ On the guest that was emulated on the workstation, `tests/keep-unit` gave the li
 the UUIDs and the keys of `dmsetup` 1.02.185 for six mappings, a plain one and one with a space
 in its name among them.
 
-The guest of openSUSE Leap 16.1 did not run: the distribution has removed the build of the
-image that `tests/compat-images.txt` names, and the newer build is to be entered there.
-
 ### Not handled or not checked
 
-- A LUKS2 volume with integrity: its header lies below the dm-integrity device that the table
-  names, where the program does not look. Such a mapping is taken as one without a header.
-- A mapping in re-encryption, which cryptsetup builds from several devices.
+- LUKS2 with integrity is run with `--integrity hmac-sha256`. With a cipher that authenticates
+  by itself (`aes-gcm-random`, `chacha20-random` with `poly1305`) it is not run: the guest of
+  the first runs did not offer `aes-gcm-random`. The key of such a volume is taken from the
+  table like any other, and behind a keyring reference the volume gets `live copy only`,
+  also where the key is one AES key that the search could find.
+- Re-encryption is run with a volume that gets a new key (`cryptsetup reencrypt`), forwards.
+  The encryption of a device in place and the decryption are the same to the program, crypt
+  targets and linear targets in one table or in the helper devices: their tables were seen on
+  a guest for the encryption and are a case of `unit-check.sh`, and the program is not run on
+  them. A volume with integrity cannot be re-encrypted (`LUKS2_reload` of cryptsetup 2.7.0).
+- A header backup of a volume that cryptsetup is re-encrypting shows the moment of the run.
+  The header on the device goes on changing until cryptsetup ends.
 - Kernels before 5.14, the oldest of the list above. The requests to the kernel are read in the
   sources from 4.18 on, which is the kernel of RHEL 8, and are not run there.
 - A LUKS2 header whose second copy is the one in use is read in `unit-check.sh` from a file,
@@ -615,6 +676,15 @@ inside a header and random bytes must be named and not read. The code that reads
 device-mapper is given answers laid out as `list_devices` and `retrieve_status` of the kernel lay
 them out, before and from Linux 4.13, and then the same with bytes changed and ends cut off,
 1600 times: each must be read or refused, and the sanitizers report a read outside the buffer.
+The code that finds the volumes is given the tables that cryptsetup 2.7.0 set up on Linux 6.8,
+as they were seen on a guest: LUKS2 with integrity on its dm-integrity device, a LUKS2 volume
+on a dm-integrity device that stands alone, a volume in re-encryption with its two helper
+devices, the moment before the helpers are below the volume, a volume with the crypt targets
+of two keys, one that is encrypted in part, helpers of another volume, and then the same with
+bytes changed. A header in re-encryption, which `cryptsetup reencrypt --init-only` makes there
+from two known keys, must be copied as `luksHeaderBackup` copies it, and each key must give
+its own digest, the old one the first and the new one the second, as `hashlib` computes them:
+cryptsetup accepts neither key alone for such a header.
 The parts that read the system
 are given mount tables, a tree like `/sys` with logical volumes on a volume, a lockdown file, a
 SecureBoot variable and an os-release written there.
@@ -622,6 +692,18 @@ SecureBoot variable and an os-release written there.
 The whole program is checked on real device-mapper by `tests/compat-check.sh`, beside
 `keytriage.sh` (see the pipeline). With `KEEP_SAN` set to a build with the sanitizers (`make
 keep-san`), that build is run at the same places and must end with status 0.
+
+Two parts of `compat-check.sh` are there for what the C program does beyond the four
+mappings. Two LUKS2 containers with integrity are made, one opened with
+`--disable-keyring`: both tools must give `captured and proven` with the key of 96 bytes it
+was made from and `live copy only` for the other, in the same lines but for the name of the
+cipher. And a LUKS2 volume of 2 GiB is re-encrypted in steps of 1 MiB, which takes seconds:
+the re-encryption is interrupted in its first step, and the C program must prove both keys
+from memory. The volume is then opened with `--disable-keyring`, where `dmsetup table
+--showkeys` shows the two keys with their targets, and the keys from memory must be those,
+each for its part, and the key of the part not yet done the key the volume was made from. The
+re-encryption is resumed and paused in a step with `SIGSTOP`, and the program must list the
+volume once, name the two helper devices and give the same two keys.
 
 The scanner and the verifier are then run on a fixture. `make-schedule-fixture.py` expands keys
 with its own code written from FIPS-197, so it and the scanner check each other. Its five traps are
@@ -786,6 +868,9 @@ on, where lockdown is `integrity`, with a version from 1.3 on.
 - Mounted file systems that encrypt by themselves (eCryptfs, ZFS, gocryptfs, CryFS, EncFS) are
   named in the report as not examined. Keep covers dm-crypt only.
 - Plain and tcrypt volumes have no header digest, so their keys cannot be proven on scene.
+- For a LUKS2 volume in re-encryption `keytriage.sh` proves no key, and while cryptsetup works
+  it lists a helper device in place of the volume. The C program does both keys.
+  `vkverify.py` takes the first digest of such a header, so it proves one of the two keys.
 - LVM on LUKS is checked with a volume group on a loop device. A root file system on LVM on
   LUKS, as an installer lays it out, is not checked.
 - A mapping whose name holds a line break is not listed. A mapping whose name begins with `-` is

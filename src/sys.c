@@ -21,19 +21,6 @@
 #define MOUNTS_NAMED 8
 #define MAX_STACK 16            /* devices that stand on each other */
 
-/* A path from its parts. Returns 0, or -1 for a path that does not fit, which is then not used. */
-static int pathf(char out[PATH_MAX], const char *fmt, ...) __attribute__((format(printf, 2, 3)));
-static int pathf(char out[PATH_MAX], const char *fmt, ...)
-{
-    va_list ap;
-    int n;
-
-    va_start(ap, fmt);
-    n = vsnprintf(out, PATH_MAX, fmt, ap);
-    va_end(ap);
-    return n < 0 || n >= PATH_MAX ? -1 : 0;
-}
-
 /* The next field of a line, cut out of it. NULL at the end of the line. */
 static char *next_field(char **line)
 {

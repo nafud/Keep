@@ -10,7 +10,7 @@
  *          the report into a folder triage_<host>_<time>/ of the destination. Needs root.
  *            -d DIR   destination directory, where that folder is made (default: the current
  *                     directory)
- *            -b N     stop after N proof attempts per volume on the memory route (default 64)
+ *            -b N     stop after N proof attempts per key on the memory route (default 64)
  * scan     Search FILE, a memory image or by default /proc/kcore, for AES key schedules, as
  *          kcore-keyscan does. The schedules go to standard output, so the output holds key
  *          material. -s STEP tests only the addresses that are a multiple of STEP, -r reads the
@@ -34,7 +34,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/mman.h>
 #include <sys/prctl.h>
 #include <unistd.h>
 
@@ -51,7 +50,7 @@ static const char help[] =
     "      evidence and proven now. The keys, the header backups and the report go into a\n"
     "      folder triage_<host>_<time>/ of the destination.\n"
     "        -d DIR   destination directory (default: the current directory)\n"
-    "        -b N     proof attempts per volume on the memory route (default 64)\n"
+    "        -b N     proof attempts per key on the memory route (default 64)\n"
     "\n"
     "  ./keep scan [-s STEP] [-r] [FILE]\n"
     "      Search a memory image, or by default /proc/kcore, for AES key schedules. They go\n"
@@ -95,10 +94,6 @@ static int cmd_triage(int argc, char **argv)
         fputs(usage, stderr);
         return 2;
     }
-    /* Keys pass through the memory of this process. Locked memory is not written to the swap
-       space of the examined system. */
-    if (mlockall(MCL_CURRENT | MCL_FUTURE))
-        o.lock_errno = errno;
     return triage_run(&o);
 }
 

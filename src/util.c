@@ -5,6 +5,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -174,6 +175,17 @@ void hex_encode(const uint8_t *p, size_t n, char *out)
         out[2 * i + 1] = digits[p[i] & 15];
     }
     out[2 * n] = 0;
+}
+
+int pathf(char *out, const char *fmt, ...)
+{
+    va_list ap;
+    int n;
+
+    va_start(ap, fmt);
+    n = vsnprintf(out, PATH_MAX, fmt, ap);
+    va_end(ap);
+    return n < 0 || n >= PATH_MAX ? -1 : 0;
 }
 
 int write_all(int fd, const void *buf, size_t n)

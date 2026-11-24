@@ -36,6 +36,22 @@
 #             With KEEP_SAN=/path/to/keep-san in the environment, that build of the program
 #             with the sanitizers of the compiler is run at the same places as well and must
 #             end with status 0, which it does not where a sanitizer finds a fault
+#   kc_it, kc_ik   LUKS2 with integrity (--integrity hmac-sha256), one with its key in the table
+#             and one with its key in the keyring. The crypt target lies on a dm-integrity
+#             device and the header on the device below that. keytriage.sh and the C program
+#             must give the same: the first captured and proven with the key it was made
+#             from, the second "live copy only", because its volume key holds a key of HMAC
+#             that the search for AES key schedules does not find (where the kernel has
+#             dm-integrity)
+#   kc_re     a LUKS2 volume in re-encryption, for the C program alone: keytriage.sh takes one
+#             key of such a volume, and lists the helper device in place of the volume while
+#             cryptsetup works. The re-encryption is started and interrupted, so that the
+#             volume has the crypt targets of two keys, then resumed and paused, so that they
+#             lie in the helper devices that cryptsetup puts below the volume. In each state
+#             the C program must list the volume once, prove both keys against the header and
+#             name each key with its part: the keys are compared with those that the table
+#             shows where the volume is opened with --disable-keyring, and the key of the
+#             part not yet done with the key the volume was made from
 # A part that the guest cannot run is reported as SKIP and does not fail the check.
 #
 # Needs root, cryptsetup, dmsetup and losetup on the guest (package cryptsetup on Debian, Ubuntu,
@@ -57,10 +73,16 @@ fail() { echo "compat-check: $*" >&2; exit 1; }
 [ -x "$KIT/bin/bash" ] && [ -f "$KIT/keytriage.sh" ] || fail "no tool medium at $KIT (mount it with -o ro,exec)"
 [ -x "$KIT/c/keep" ] || fail "no C program on the medium at $KIT/c/keep (build-toolkit.sh puts it there)"
 for c in cryptsetup dmsetup losetup sha256sum; do command -v "$c" >/dev/null || fail "$c is not installed on this guest"; done
-for n in kc_l2 kc_l1 kc_null No kc_pv kc_vg-data kc_vg-swap; do [ ! -e "/dev/mapper/$n" ] || fail "the mapping $n is already open, close it first"; done
+for n in kc_l2 kc_l1 kc_null No kc_pv kc_vg-data kc_vg-swap kc_it kc_ik kc_re; do [ ! -e "/dev/mapper/$n" ] || fail "the mapping $n is already open, close it first"; done
 
 LOOPS=()
+RP=""
 cleanup() {
+    # a re-encryption that is still paused: let it go on and end it
+    [ -z "$RP" ] || { kill -CONT "$RP" 2>/dev/null; kill -INT "$RP" 2>/dev/null; wait "$RP" 2>/dev/null; }
+    cryptsetup close kc_re 2>/dev/null
+    cryptsetup close kc_it 2>/dev/null
+    cryptsetup close kc_ik 2>/dev/null
     umount "$W/fat" 2>/dev/null
     for b in "$W"/bind*; do [ -d "$b" ] && umount "$b" 2>/dev/null; done
     umount "$W/lvm" 2>/dev/null
@@ -189,17 +211,18 @@ if [ -n "$O" ] && [ -f "$J" ] && grep -q "^output: $O\$" "$W/screen.txt" && grep
 else
     echo "FAIL   no destination named: the folder of the run is not in the directory of the start: $(head -n 1 "$W/screen.txt")"; PASS=0
 fi
-# beside FOLDER DEST LABEL : the C program on the mappings as they are now, into DEST, against
-# the folder that keytriage.sh has just written. Both write one volume per line of verdict.json
-# with the same fields in the same order, so the lines must be the same.
+# beside FOLDER DEST LABEL [RULE] : the C program on the mappings as they are now, into DEST,
+# against the folder that keytriage.sh has just written. Both write one volume per line of
+# verdict.json with the same fields in the same order, so the lines must be the same. RULE is
+# a rule of sed for the lines of the C program, for a field that the two name differently.
 beside() {
-    local sh=$1 dest=$2 label=$3 c rc ok=1 f
+    local sh=$1 dest=$2 label=$3 rule=${4:-} c rc ok=1 f
     ( cd "$dest" && "$KIT/c/keep" triage ) > "$dest/screen-c.txt" 2>&1; rc=$?
     c=$(ls -d "$dest"/triage_* 2>/dev/null | tail -n 1)
     [ "$rc" = 0 ] && [ -f "$c/verdict.json" ] || ok=0
     # a volume is a line with a name and a type, which the two lines of "binaries" lack
     if ! diff <(grep '^    {"name": .*, "type": ' "$sh/verdict.json" | sed 's/,$//') \
-              <(grep '^    {"name": .*, "type": ' "$c/verdict.json" 2>/dev/null | sed 's/,$//') > "$dest/diff.txt" 2>&1; then
+              <(grep '^    {"name": .*, "type": ' "$c/verdict.json" 2>/dev/null | sed -e 's/,$//' -e "$rule") > "$dest/diff.txt" 2>&1; then
         ok=0
     fi
     for f in "$sh"/headers/*.hdr "$sh"/keys/*.vk; do
@@ -271,6 +294,133 @@ if command -v vgcreate >/dev/null && command -v mkfs.ext4 >/dev/null; then
     fi
 else
     echo "SKIP   no lvm2 or no mkfs.ext4, LVM on LUKS is not run"
+fi
+sha() { sha256sum < "$1" | cut -c1-16; }
+# cfield FOLDER VOLUME FIELD : a field of a volume in a report, not one of its further keys
+cfield() { grep "\"name\": \"$2\"" "$1/verdict.json" | sed -n "s/.*\"name\": \"$2\"[^[]*\"$3\": \"\\([^\"]*\\)\".*/\\1/p"; }
+# the first 16 digits of the SHA-256 of a key that is read in hexadecimal, as a table shows it
+hexsha() { printf '%b' "$(sed 's/../\\x&/g')" | sha256sum | cut -c1-16; }
+
+# LUKS2 with integrity: the volume key is the key of the cipher and then the key of HMAC, 96
+# bytes, and the kernel names the cipher in the form of its crypto API.
+CAPI='capi:authenc(hmac(sha256),xts(aes))-plain64'
+integ() {  # integ NAME [option of open] : a container with integrity, made from a key drawn here, and opened
+    local n=$1; shift
+    head -c 96 /dev/urandom > "$n.vk"
+    truncate -s 48M "$n.img"
+    cryptsetup luksFormat -q --type luks2 --cipher aes-xts-plain64 --key-size 512 --integrity hmac-sha256 "$VK" "$n.vk" \
+        --pbkdf pbkdf2 --pbkdf-force-iterations 1000 --key-file pw "$n.img" >> "$W/int.txt" 2>&1 &&
+        cryptsetup open --key-file pw "$@" "$n.img" "$n" >> "$W/int.txt" 2>&1
+}
+mkdir "$W/int"
+if integ kc_it --disable-keyring && integ kc_ik; then
+    "$KIT/bin/bash" -p "$KIT/keytriage.sh" -d "$W/int" > "$W/screen-int.txt" 2>&1; rci=$?
+    I=$(ls -d "$W"/int/triage_* 2>/dev/null | tail -n 1)
+    ok=1
+    [ "$rci" = 0 ] || ok=0
+    [ "$(cfield "$I" kc_it verdict)" = "captured and proven" ] && cmp -s "$I/keys/kc_it.vk" kc_it.vk || ok=0
+    [ "$(cfield "$I" kc_ik verdict)" = "live copy only" ] && [ ! -e "$I/keys/kc_ik.vk" ] || ok=0
+    grep '"name": "kc_it"' "$I/verdict.json" 2>/dev/null | grep -q '"key_bits": 768, "key_location": "dm-crypt"' || ok=0
+    grep -q '"name": "kc_it_dif"' "$I/verdict.json" 2>/dev/null && ok=0
+    if [ "$ok" = 1 ]; then
+        echo "PASS   LUKS2 with integrity: kc_it is captured and proven with its key of 96 bytes, kc_ik with its key in the keyring is \"live copy only\", the dm-integrity devices are not listed"
+    else
+        echo "FAIL   LUKS2 with integrity, status $rci"; sed 's/^/       /' "$W/screen-int.txt"; PASS=0
+    fi
+    # the C program names the cipher as the kernel does, and keytriage.sh as cryptsetup does
+    mkdir "$W/int/c" && beside "$I" "$W/int/c" "LUKS2 with integrity, the cipher in the form of the kernel" \
+        "s/\"cipher\": \"$CAPI\"/\"cipher\": \"aes-xts-plain64\"/"
+    grep '"name": "kc_it"' "$W"/int/c/triage_*/verdict.json 2>/dev/null | grep -q -F "\"cipher\": \"$CAPI\"" ||
+        { echo "FAIL   the C program does not name the cipher of kc_it as $CAPI"; PASS=0; }
+else
+    echo "SKIP   LUKS2 with integrity is not run, the container could not be made or opened: $(grep -v '^$' "$W/int.txt" | head -n 1)"
+fi
+
+# A volume in re-encryption. The C program is run alone here.
+# ctriage NAME : the C program on the mappings as they are now, into $W/re/NAME. Its folder is
+# left in C, and the build with the sanitizers is run as well where it is given.
+ctriage() {
+    local d=$W/re/$1 rc
+    mkdir "$d"
+    ( cd "$d" && "$KIT/c/keep" triage ) > "$d/screen.txt" 2>&1; rc=$?
+    C=$(ls -d "$d"/triage_* 2>/dev/null | tail -n 1)
+    [ "$rc" = 0 ] && (cd "$C" 2>/dev/null && sha256sum -c --quiet manifest.sha256 >/dev/null 2>&1) || return 1
+    if [ -n "${KEEP_SAN:-}" ]; then
+        mkdir "$d/san"
+        "$KEEP_SAN" triage -d "$d/san" > "$d/san/screen.txt" 2>&1 || { cat "$d/san/screen.txt" >> "$d/screen.txt"; return 1; }
+    fi
+}
+# reencrypt OPTION... : cryptsetup re-encrypts kc_re in the background, in steps of 1 MiB, each
+# of which it writes down, so that it works for seconds. Returns when cryptsetup is in its first
+# step: it has put its helper devices below the volume, and a crypt target of kc_re-overlay
+# lies on kc_re-hotzone-forward. Returns 1 where cryptsetup ended before that.
+reencrypt() {
+    local i hz
+    cryptsetup reencrypt -q --key-file pw --hotzone-size 1M --pbkdf pbkdf2 --pbkdf-force-iterations 1000 "$@" "$RL" >> "$W/re.txt" 2>&1 &
+    RP=$!
+    for i in $(seq 1 3000); do
+        hz=$(dmsetup info -c --noheadings -o major,minor kc_re-hotzone-forward 2>/dev/null | tr -d ' ')
+        [ -n "$hz" ] && dmsetup table kc_re-overlay 2>/dev/null | grep -q " crypt .* $hz " && return 0
+        kill -0 "$RP" 2>/dev/null || break
+        sleep 0.02
+    done
+    wait "$RP"; RP=""
+    return 1
+}
+mkdir "$W/re"
+re_part() {
+    local t1 t2 use
+    # on a loop device of its own, which stays while the volume is closed and opened again
+    head -c 64 /dev/urandom > kc_re.vk
+    truncate -s 2G kc_re.img
+    RL=$(losetup --find --show kc_re.img) || { echo "no loop device for kc_re.img"; return 1; }
+    LOOPS+=("$RL")
+    cryptsetup luksFormat -q --type luks2 --cipher aes-xts-plain64 --key-size 512 "$VK" kc_re.vk --pbkdf pbkdf2 \
+        --pbkdf-force-iterations 1000 --key-file pw "$RL" && cryptsetup open --key-file pw "$RL" kc_re ||
+        { echo "kc_re could not be made or opened"; return 1; }
+
+    # started and interrupted: the part that is done has the new key, the rest the old one
+    reencrypt || { echo "the re-encryption ended before its helper devices were seen: $(tail -n 1 "$W/re.txt")"; return 1; }
+    kill -INT "$RP"; wait "$RP"; RP=""
+    [ "$(dmsetup table kc_re | grep -c ' crypt ')" = 2 ] || { echo "after the interruption kc_re has not two crypt targets:"; dmsetup table kc_re; return 1; }
+    cryptsetup luksHeaderBackup "$RL" --header-backup-file "$W/re/theirs.hdr" || { echo "cryptsetup made no header backup"; return 1; }
+    ctriage keyring || { echo "the C program on the interrupted volume:"; cat "$W/re/keyring/screen.txt"; return 1; }
+    K=$C
+    cmp -s "$K/headers/kc_re.hdr" "$W/re/theirs.hdr" || { echo "the header backup differs from the file of luksHeaderBackup"; return 1; }
+    [ "$(cfield "$K" kc_re verdict)" = "captured and proven" ] && [ "$(cfield "$K" kc_re route)" = "R3 memory" ] ||
+        { echo "interrupted, keys in the keyring: $(cfield "$K" kc_re verdict)"; cat "$W/re/keyring/screen.txt"; return 1; }
+
+    # the same volume with its keys in the table: what the kernel itself says they are
+    cryptsetup close kc_re && cryptsetup open --disable-keyring --key-file pw "$RL" kc_re || { echo "kc_re could not be opened with --disable-keyring"; return 1; }
+    t1=$(dmsetup table --showkeys kc_re | awk '$3 == "crypt" {print $5}' | sed -n 1p | hexsha)
+    t2=$(dmsetup table --showkeys kc_re | awk '$3 == "crypt" {print $5}' | sed -n 2p | hexsha)
+    [ "$t1" != "$t2" ] && [ "$t2" = "$(sha kc_re.vk)" ] || { echo "the table does not show a new key and then the key the volume was made from"; return 1; }
+    ctriage table || { echo "the C program on the volume with its keys in the table:"; cat "$W/re/table/screen.txt"; return 1; }
+    [ "$(cfield "$C" kc_re verdict)" = "captured and proven" ] && [ "$(cfield "$C" kc_re route)" = "R1 table" ] &&
+        [ "$(sha "$C/keys/kc_re.vk")" = "$t1" ] && [ "$(sha "$C/keys/kc_re-2.vk")" = "$t2" ] ||
+        { echo "keys in the table: not both proven, or not the keys of the table in its order"; cat "$W/re/table/screen.txt"; return 1; }
+    cmp -s "$K/keys/kc_re.vk" "$C/keys/kc_re.vk" && cmp -s "$K/keys/kc_re-2.vk" "$C/keys/kc_re-2.vk" ||
+        { echo "the keys from memory are not the keys of the table, each with its part"; cat "$W/re/keyring/screen.txt"; return 1; }
+    grep '"name": "kc_re"' "$C/verdict.json" | grep -q '"further_keys": \[{"key_file": "keys/kc_re-2.vk", ' || { echo "the report does not name the second key"; return 1; }
+
+    # resumed and paused: the crypt targets are in the helper devices below the volume
+    cryptsetup close kc_re && cryptsetup open --key-file pw "$RL" kc_re || { echo "kc_re could not be opened again"; return 1; }
+    reencrypt --resume-only || { echo "the resumed re-encryption ended before its helper devices were seen: $(tail -n 1 "$W/re.txt")"; return 1; }
+    kill -STOP "$RP"
+    dmsetup table kc_re | grep -q ' linear ' && dmsetup table kc_re-overlay | grep -q ' crypt ' ||
+        { echo "paused, but the crypt targets are not in kc_re-overlay"; dmsetup table kc_re; return 1; }
+    ctriage paused || { echo "the C program on the paused re-encryption:"; cat "$W/re/paused/screen.txt"; return 1; }
+    [ "$(grep -c '"name": "kc_re' "$C/verdict.json")" = 1 ] || { echo "the volume is not listed once and its helper devices not at all"; return 1; }
+    grep -q '^  in re-encryption: cryptsetup works on it with the helper devices kc_re-overlay, kc_re-hotzone-forward$' "$W/re/paused/screen.txt" || { echo "the helper devices are not named"; return 1; }
+    [ "$(cfield "$C" kc_re verdict)" = "captured and proven" ] && [ "$(sha "$C/keys/kc_re.vk")" = "$t1" ] && [ "$(sha "$C/keys/kc_re-2.vk")" = "$t2" ] ||
+        { echo "paused: not both keys proven, or not each with its part"; cat "$W/re/paused/screen.txt"; return 1; }
+    kill -CONT "$RP"; kill -INT "$RP"; wait "$RP"; RP=""
+}
+# in this shell, so that a paused re-encryption is known to the cleanup
+if re_part > "$W/re-out.txt" 2>&1; then
+    echo "PASS   a volume in re-encryption, the C program: interrupted, both keys from memory and proven, each with its part as the table shows them with --disable-keyring, the header backup that of luksHeaderBackup; resumed and paused, the volume listed once with both keys from the helper devices${KEEP_SAN:+, also with the sanitizers}"
+else
+    echo "FAIL   a volume in re-encryption, the C program"; sed 's/^/       /' "$W/re-out.txt"; PASS=0
 fi
 echo
 if [ "$PASS" = 1 ]; then echo "RESULT: PASS"; else echo "RESULT: FAIL"; echo; echo "---- screen output of the tool"; cat "$W/screen.txt"; fi

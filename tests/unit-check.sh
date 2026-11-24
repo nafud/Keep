@@ -18,7 +18,10 @@
 #              messages and status as the static program gives with "keep scan"
 #   kernel     the two answers of device-mapper, laid out as the kernel lays them out, before
 #              and from Linux 4.13, and then with bytes changed and ends cut off 1600 times:
-#              read or refused, never a fault
+#              read or refused, never a fault. Then the volumes among tables as cryptsetup
+#              builds them: one device, LUKS2 with integrity on its dm-integrity device, a
+#              volume in re-encryption with its helper devices, one interrupted in it, and
+#              the same with bytes changed
 #   system     the mount that holds a path, what a volume carries by a tree like /sys with
 #              logical volumes on it, the file systems that encrypt by themselves, the
 #              lockdown mode, the variable SecureBoot, the name of the system and the names of
@@ -28,7 +31,8 @@
 #              and a key must be proven exactly where "cryptsetup open --test-passphrase"
 #              accepts it. Also with erased keyslots, with a hash that is not computed here,
 #              with a damaged first copy, which must be read from the second and left as it
-#              is, and with files that end early
+#              is, with files that end early, and with a header in re-encryption, whose two
+#              keys must each give their own digest, as hashlib computes it
 #
 # It needs neither root nor device-mapper, and writes only below a temporary directory, which
 # is removed at the end. The test keys are drawn from /dev/urandom there and are never printed.
@@ -236,7 +240,7 @@ done
 # dm-ioctl.c lay them out, and then with bytes changed and with their ends cut off.
 cat > "$T/kernel.py" <<'EOF'
 import os, random, struct, subprocess, sys
-unit, tmp, bad = sys.argv[1], sys.argv[2], 0
+unit, tmp, part, bad = sys.argv[1], sys.argv[2], sys.argv[3], 0
 HEAD = 312                                      # sizeof(struct dm_ioctl)
 def align(n): return (n + 7) & ~7
 def encode(major, minor): return (minor & 0xff) | (major << 8) | ((minor & ~0xff) << 12)
@@ -278,6 +282,141 @@ def refused(what, kind, data):
     rc, got, goterr = run(kind, data)
     if rc != 1 or not got.startswith("refused: "):
         bad += 1; print(what, ": status", rc, "output", repr(got[:200]), repr(goterr[-300:]))
+
+# ---- the volumes among tables, as cryptsetup builds them (volume.c)
+def volumes(what, tables, want):
+    """tables: answers of the kernel, one for each mapped device. want: the lines of keep-unit."""
+    global bad
+    paths = []
+    for i, t in enumerate(tables):
+        paths.append(os.path.join(tmp, "table%d.bin" % i))
+        open(paths[-1], "wb").write(t)
+    p = subprocess.run([unit, "volumes"] + paths, capture_output=True)
+    got = p.stdout.decode("latin-1")
+    if p.returncode != 0 or got != want:
+        bad += 1; print(what, ": status", p.returncode, "\n got:", repr(got), "\nwant:", repr(want), p.stderr.decode("latin-1")[-300:])
+    return paths
+
+def volume_checks():
+    global bad
+    U, V = b"0123456789abcdef0123456789abcdef", b"fedcba9876543210fedcba9876543210"
+    hexkey = b"ab" * 64
+    dashed = lambda u: b"-".join((u[:8], u[8:12], u[12:16], u[16:20], u[20:]))
+    ring = lambda u, d, size=b"64": b":" + size + b":logon:cryptsetup:" + dashed(u) + b"-d" + d    # get_key_description_by_digest
+    def crypt(start, length, cipher, key, dev, offset, options=b""):
+        return (start, length, b"crypt", cipher + b" " + key + b" 0 " + dev + b" " + offset + options)
+    xts = b"aes-xts-plain64"
+
+    # one device, one crypt target: LUKS1 with its key in the table
+    plain = table(b"kc_l1", b"CRYPT-LUKS1-" + U + b"-kc_l1", 252, 1, [crypt(0, 126976, xts, hexkey, b"7:0", b"4096")])
+    volumes("a volume of one device", [plain], "kc_l1: device 7:0, 1 key(s)\n  key 1: aes-xts-plain64, 128 characters, 126976 sectors\n")
+
+    # LUKS2 with integrity, as cryptsetup 2.7.0 sets up --integrity hmac-sha256 on Linux 6.8: the
+    # crypt target on NAME_dif, and the header on the device below that
+    auth = b"capi:authenc(hmac(sha256),xts(aes))-plain64"
+    integ = [table(b"kc_i", b"CRYPT-LUKS2-" + U + b"-kc_i", 252, 5,
+                   [crypt(0, 60728, auth, ring(U, b"0", b"96"), b"252:4", b"0", b" 1 integrity:32:aead")]),
+             table(b"kc_i_dif", b"CRYPT-INTEGRITY-" + U + b"-kc_i_dif", 252, 4,
+                   [(0, 60728, b"integrity", b"7:3 32768 32 J 6 journal_sectors:704 interleave_sectors:32768 buffer_sectors:128 journal_watermark:50 commit_time:10000 fix_padding")])]
+    want_i = ("kc_i: device 7:3, 1 key(s), integrity 32 aead, below it kc_i_dif\n"
+              "  key 1: capi:authenc(hmac(sha256),xts(aes))-plain64, :96:logon:cryptsetup:01234567-89ab-cdef-0123-456789abcdef-d0, 60728 sectors\n")
+    volumes("LUKS2 with integrity", integ, want_i)
+    volumes("the same, the devices in the other order", integ[::-1], want_i)
+
+    # a LUKS2 volume on a dm-integrity device that stands alone: its header is on that device
+    alone = [table(b"kc_is", b"CRYPT-LUKS2-" + U + b"-kc_is", 252, 7, [crypt(0, 50000, xts, ring(U, b"0"), b"252:6", b"32768")]),
+             table(b"kc_isdev", b"CRYPT-INTEGRITY-kc_isdev", 252, 6,
+                   [(0, 96824, b"integrity", b"7:4 0 4 J 8 journal_sectors:704 interleave_sectors:32768 buffer_sectors:128 journal_watermark:50 commit_time:10000 fix_padding fix_hmac internal_hash:crc32c")])]
+    want_a = "kc_is: device 252:6, 1 key(s)\n  key 1: aes-xts-plain64, :64:logon:cryptsetup:01234567-89ab-cdef-0123-456789abcdef-d0, 50000 sectors\n"
+    volumes("a volume on a dm-integrity device", alone, want_a)
+
+    # re-encryption that runs, as cryptsetup 2.7.0 had set it up on Linux 6.8 at one moment: NAME
+    # is linear on NAME-overlay, the crypt targets are there, the one of the new key on
+    # NAME-hotzone-forward
+    def helpers(overlay):
+        return [table(b"kc_r", b"CRYPT-LUKS2-" + V + b"-kc_r", 252, 8, [(0, 1540096, b"linear", b"252:10 0")]),
+                table(b"kc_r-hotzone-forward", b"CRYPT-SUBDEV-" + V + b"-kc_r-hotzone-forward", 252, 9, [(0, 1540096, b"linear", b"7:5 32768")]),
+                table(b"kc_r-overlay", b"CRYPT-SUBDEV-" + V + b"-kc_r-overlay", 252, 10, overlay)]
+    def want_helpers(new, old):
+        return ("kc_r: device 7:5, 2 key(s), parts kc_r-overlay kc_r-hotzone-forward\n"
+                "  key 1: aes-xts-plain64, :64:logon:cryptsetup:fedcba98-7654-3210-fedc-ba9876543210-d1, %d sectors\n"
+                "  key 2: aes-xts-plain64, :64:logon:cryptsetup:fedcba98-7654-3210-fedc-ba9876543210-d0, %d sectors\n" % (new, old))
+    running = helpers([crypt(0, 507136, xts, ring(V, b"1"), b"252:9", b"0"),
+                       crypt(507136, 1032960, xts, ring(V, b"0"), b"7:5", b"539904", b"")])
+    want_r = want_helpers(507136, 1032960)
+    paths = volumes("a volume in re-encryption with its helper devices", running, want_r)
+    volumes("the same, the devices in the other order", running[::-1], want_r)
+    # and as reencrypt_make_targets lays it out with a part that is done before the part in work
+    volumes("the same with three crypt targets", helpers([crypt(0, 300000, xts, ring(V, b"1"), b"7:5", b"32768"),
+                                                          crypt(300000, 100000, xts, ring(V, b"1"), b"252:9", b"300000"),
+                                                          crypt(400000, 1140096, xts, ring(V, b"0"), b"7:5", b"432768")]),
+            want_helpers(400000, 1140096))
+    # the moment in which cryptsetup has made the helpers and not yet put them below the volume,
+    # as it was seen with cryptsetup 2.7.0: the volume has its crypt target still, the overlay a
+    # copy of it. The helpers are the volume's by their UUID, and the key maps the volume once.
+    early = [table(b"kc_t", b"CRYPT-LUKS2-" + U + b"-kc_t", 252, 20, [crypt(0, 4161536, xts, ring(U, b"0"), b"7:9", b"32768")]),
+             table(b"kc_t-overlay", b"CRYPT-SUBDEV-" + U + b"-kc_t-overlay", 252, 22, [crypt(0, 4161536, xts, ring(U, b"0"), b"7:9", b"32768")]),
+             table(b"kc_t-hotzone-forward", b"CRYPT-SUBDEV-" + U + b"-kc_t-hotzone-forward", 252, 21, [(0, 4161536, b"linear", b"7:9 32768")])]
+    volumes("helper devices that are not yet below their volume", early,
+            "kc_t: device 7:9, 1 key(s), parts kc_t-hotzone-forward kc_t-overlay\n"
+            "  key 1: aes-xts-plain64, :64:logon:cryptsetup:01234567-89ab-cdef-0123-456789abcdef-d0, 4161536 sectors\n")
+    # the helpers of a volume are not those of another one, and are then listed for themselves
+    other = [table(b"kc_r", b"CRYPT-LUKS2-" + U + b"-kc_r", 252, 8, [(0, 1540096, b"linear", b"252:10 0")])] + running[1:]
+    volumes("helper devices with the UUID of another volume", other,
+            want_r.replace("kc_r: device 7:5, 2 key(s), parts kc_r-overlay kc_r-hotzone-forward", "kc_r-overlay: device 252:9, 2 key(s)"))
+
+    # re-encryption that was interrupted, or a volume opened in that state: both in NAME itself
+    stopped = table(b"kc_s", b"CRYPT-LUKS2-" + U + b"-kc_s", 252, 11,
+                    [crypt(0, 300000, xts, hexkey, b"7:6", b"32768"), crypt(300000, 700000, xts, b"cd" * 64, b"7:6", b"332768")])
+    volumes("a volume with the crypt targets of two keys", [stopped],
+            "kc_s: device 7:6, 2 key(s)\n  key 1: aes-xts-plain64, 128 characters, 300000 sectors\n"
+            "  key 2: aes-xts-plain64, 128 characters, 700000 sectors\n")
+    # encryption of a device in place: the part that is done and the rest as it is
+    partly = table(b"kc_e", b"CRYPT-LUKS2-" + U + b"-kc_e", 252, 12,
+                   [crypt(0, 300000, xts, ring(U, b"0"), b"7:7", b"65536"), (300000, 700000, b"linear", b"7:7 300000")])
+    want_e = "kc_e: device 7:7, 1 key(s)\n  key 1: aes-xts-plain64, :64:logon:cryptsetup:01234567-89ab-cdef-0123-456789abcdef-d0, 300000 sectors\n"
+    volumes("a volume that is encrypted in part", [partly], want_e)
+    # no crypt target, and one whose line is not that of a crypt target
+    lvm = table(b"vg-root", b"LVM-abc", 253, 0, [(0, 100, b"linear", b"8:3 2048")])
+    short = table(b"kc_x", b"", 252, 13, [(0, 100, b"crypt", b"aes-xts-plain64 " + hexkey + b" 0")])
+    null = table(b"kc_null", b"CRYPT-PLAIN-kc_null", 252, 14, [crypt(0, 100, b"cipher_null-ecb", b"-", b"7:8", b"0")])
+    volumes("a device without a crypt target, a crypt line that is cut, a crypt target without a key", [lvm, short, null],
+            "kc_null: device 7:8, 1 key(s)\n  key 1: cipher_null-ecb, -, 100 sectors\n"
+            "kc_x: no device, 0 key(s), 1 crypt line(s) not understood\n")
+
+    # all of them together are the same volumes, by name
+    volumes("all of these devices at once", [plain] + integ + alone + running + [stopped, partly, lvm, short, null],
+            want_e + want_i + want_a +
+            "kc_l1: device 7:0, 1 key(s)\n  key 1: aes-xts-plain64, 128 characters, 126976 sectors\n"
+            "kc_null: device 7:8, 1 key(s)\n  key 1: cipher_null-ecb, -, 100 sectors\n" + want_r +
+            "kc_s: device 7:6, 2 key(s)\n  key 1: aes-xts-plain64, 128 characters, 300000 sectors\n"
+            "  key 2: aes-xts-plain64, 128 characters, 700000 sectors\n"
+            "kc_x: no device, 0 key(s), 1 crypt line(s) not understood\n")
+
+    # the same tables with bytes of their lines changed: read or refused, never a fault
+    rnd = random.Random(3)
+    base = integ + running + [stopped, partly]
+    for _ in range(300):
+        changed = []
+        for t in base:
+            b = bytearray(t)
+            for _ in range(rnd.randrange(0, 3)):
+                at = rnd.randrange(HEAD, len(b))
+                b[at] = rnd.choice((0x20, 0x3a, 0x30, 0x39, 0x2d, rnd.randrange(1, 256)))
+            if rnd.randrange(8) == 0:
+                at = rnd.choice((40, 176 + rnd.randrange(50)))        # the device number, the UUID
+                b[at] = rnd.randrange(1, 256)
+            changed.append(bytes(b))
+        for i, t in enumerate(changed):
+            open(paths[0].replace("table0", "changed%d" % i), "wb").write(t)
+        p = subprocess.run([unit, "volumes"] + [paths[0].replace("table0", "changed%d" % i) for i in range(len(changed))],
+                           capture_output=True)
+        if p.returncode not in (0, 1):
+            bad += 1; print("changed tables ended with status", p.returncode, ":", p.stderr.decode("latin-1")[-400:])
+
+if part == "volumes":
+    volume_checks()
+    sys.exit(1 if bad else 0)
 
 devs = [(b"kc_l2", 252, 0), (b"No", 252, 2), (b"name\\x20with\\x20space", 252, 4), (b"vg-root", 253, 1048575),
         (b"n" * 127, 4095, 300)]
@@ -330,7 +469,8 @@ for kind, base in (("list", listing(devs)), ("list", listing(devs, new=False)), 
 sys.exit(1 if bad else 0)
 EOF
 for u in "${UNITS[@]}"; do
-    check "kernel: ${u##*/} reads the answers of device-mapper and refuses damaged ones without a fault" python3 -I "$T/kernel.py" "$u" "$T"
+    check "kernel: ${u##*/} reads the answers of device-mapper and refuses damaged ones without a fault" python3 -I "$T/kernel.py" "$u" "$T" answers
+    check "kernel: ${u##*/} finds the volumes among tables: one device, with integrity, in re-encryption, with changed bytes" python3 -I "$T/kernel.py" "$u" "$T" volumes
 done
 
 # ---- system --------------------------------------------------------------------------------------
@@ -541,4 +681,46 @@ for u in "${UNITS[@]}"; do
     check "headers: ${u##*/}, both copies damaged, files that end early and random bytes are named and not read" unusable "$u"
     check "headers: ${u##*/}, a default LUKS2 header has an area of 16 MiB" uuid_rule "$u"
 done
+
+# A header in re-encryption has two volume keys and a digest for each, and a third digest that
+# belongs to no data segment. cryptsetup accepts neither key alone for such a header, so the
+# digests are computed here once more by hashlib, from the metadata of the header.
+cat > "$T/digests.py" <<'EOF'
+import base64, hashlib, json, struct, sys
+head = open(sys.argv[1], "rb").read()
+size = struct.unpack(">Q", head[8:16])[0]
+meta = json.loads(head[4096:size].split(b"\0")[0])
+for path in sys.argv[2:]:
+    key, gives = open(path, "rb").read(), []
+    for number, name in enumerate(d for d in sorted(meta["digests"], key=int) if meta["digests"][d]["segments"]):
+        d = meta["digests"][name]
+        want = base64.b64decode(d["digest"])
+        if hashlib.pbkdf2_hmac(d["hash"], key, base64.b64decode(d["salt"]), d["iterations"], len(want)) == want:
+            gives.append(str(number + 1))
+    print(" ".join(gives) or "none")
+EOF
+reencrypted() {
+    local u=$1 r=0 out
+    rm -f "$T/ours.hdr" "$T/theirs.hdr"
+    cryptsetup luksHeaderBackup "$T/re.img" --header-backup-file "$T/theirs.hdr" || { echo "cryptsetup made no backup"; return 1; }
+    "$u" luks "$T/re.img" > "$T/re.txt" || r=1
+    [ "$(grep -c '^digest ' "$T/re.txt")" = 2 ] || { echo "not two digests of data segments:"; cat "$T/re.txt"; r=1; }
+    "$u" luks-backup "$T/re.img" "$T/ours.hdr" || r=1
+    cmp "$T/ours.hdr" "$T/theirs.hdr" || { echo "the copy differs from the file of luksHeaderBackup"; r=1; }
+    [ "$(python3 -I "$T/digests.py" "$T/re.img" "$T/k64" "$T/knew" "$T/other" | tr '\n' ' ')" = "1 2 none " ] ||
+        { echo "hashlib does not give digest 1 for the old key, digest 2 for the new one and none for another"; r=1; }
+    out=$("$u" luks-prove "$T/ours.hdr" "$T/k64"); [ "$out" = "proven by digest 1 of 2, proven" ] || { echo "the old key: $out"; r=1; }
+    out=$("$u" luks-prove "$T/ours.hdr" "$T/knew"); [ "$out" = "proven by digest 2 of 2, proven" ] || { echo "the new key: $out"; r=1; }
+    if "$u" luks-prove "$T/ours.hdr" "$T/other"; then echo "another key is proven"; r=1; fi
+    return $r
+}
+head -c 64 /dev/urandom > "$T/knew"
+if cp "$T/l2.img" "$T/re.img" && cryptsetup reencrypt --init-only -q --key-file "$T/pass" "$VK" "$T/knew" \
+        --pbkdf pbkdf2 --pbkdf-force-iterations 1000 "$T/re.img" 2> "$T/re.err"; then
+    for u in "${UNITS[@]}"; do
+        check "headers: ${u##*/}, a header in re-encryption: the copy equals luksHeaderBackup, the old and the new key each give their digest" reencrypted "$u"
+    done
+else
+    skip "headers: a header in re-encryption (this cryptsetup starts none on a file: $(head -n 1 "$T/re.err"))"
+fi
 finish

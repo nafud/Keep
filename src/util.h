@@ -37,6 +37,9 @@ void unescape_octal(char *s);
 int hex_decode(const char *hex, size_t digits, uint8_t *out);  /* 0, or -1 for another character */
 void hex_encode(const uint8_t *p, size_t n, char *out);        /* 2 * n digits and a zero byte */
 
+/* A path from its parts, as printf writes it. Returns -1 where it does not fit PATH_MAX bytes. */
+int pathf(char *out, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+
 int write_all(int fd, const void *buf, size_t n);              /* 0, or -1 with errno */
 int flush_path(const char *path);                              /* fsync of a file or directory */
 

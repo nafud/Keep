@@ -32,6 +32,7 @@
 #include "../src/luks.h"
 #include "../src/sys.h"
 #include "../src/util.h"
+#include "../src/volume.h"
 
 #include <fcntl.h>
 #include <stdio.h>
@@ -199,7 +200,7 @@ static int cmd_luks(const char *path)
     printf("LUKS%d uuid %s area %llu%s\n", h.version, h.uuid, (unsigned long long)h.area,
            h.secondary ? " second copy in use" : "");
     for (i = 0; i < h.ndigests; i++) {
-        printf("digest %s%s iterations %u salt %zu bytes digest ", h.digests[i].hash,
+        printf("digest %u %s%s iterations %u salt %zu bytes digest ", h.digests[i].number, h.digests[i].hash,
                h.digests[i].alg ? "" : " (not computed here)", h.digests[i].iterations, h.digests[i].saltlen);
         print_hex(h.digests[i].digest, h.digests[i].digestlen);
     }
@@ -248,7 +249,12 @@ static int cmd_luks_prove(const char *path, const char *keypath)
     }
     n = fread(key, 1, sizeof key, kf);
     fclose(kf);
-    r = luks_proves(&h, key, n, &hash);
+    r = luks_proves(&h, key, n, 0, &hash);
+    if (r > 0 && h.ndigests > 1)
+        printf("proven by digest %d of %zu, ", r, h.ndigests);
+    /* with the digest that it gives taken, the key gives no other */
+    if (r > 0 && luks_proves(&h, key, n, 1u << (r - 1), &hash) > 0)
+        printf("and by a second digest, ");
     explicit_bzero(key, sizeof key);
     printf("%s%s\n", r > 0 ? "proven" : r == 0 ? "not proven" : "no digest that is computed here",
            r < 0 && hash ? hash : "");
@@ -374,36 +380,139 @@ static int cmd_dm_table(const char *name)
 
 /* A file as the answer of the kernel, in a buffer of exactly its size, so that a read beyond
    it is a read beyond an allocation. */
-static int cmd_dm_answer(const char *kind, const char *path)
+static void *read_answer(const char *path, size_t *len)
 {
-    char err[DM_ERR_LEN];
-    struct dm_table t;
-    struct dm_dev *devs;
     struct stat st;
     void *buf = NULL;
-    size_t n;
-    int fd = open(path, O_RDONLY | O_CLOEXEC), r;
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
 
     if (fd < 0 || fstat(fd, &st) || !(buf = malloc((size_t)st.st_size + !st.st_size)) ||
         read(fd, buf, (size_t)st.st_size) != st.st_size) {
         perror(path);
         free(buf);
-        return 2;
+        buf = NULL;
     }
-    close(fd);
+    if (fd >= 0)
+        close(fd);
+    *len = buf ? (size_t)st.st_size : 0;
+    return buf;
+}
+
+static int cmd_dm_answer(const char *kind, const char *path)
+{
+    char err[DM_ERR_LEN];
+    struct dm_table t;
+    struct dm_dev *devs;
+    size_t n, len;
+    void *buf = read_answer(path, &len);
+    int r;
+
+    if (!buf)
+        return 2;
     if (!strcmp(kind, "list")) {
-        r = dm_list_answer(buf, (size_t)st.st_size, &devs, &n, err);
+        r = dm_list_answer(buf, len, &devs, &n, err);
         free(buf);
         if (!r)
             print_devs(devs, n);
     } else {
-        r = dm_table_answer(buf, (size_t)st.st_size, &t, err);
+        r = dm_table_answer(buf, len, &t, err);
         if (!r)
             print_table(&t);
     }
     if (r)
         printf("refused: %s\n", err);
     return r ? 1 : 0;
+}
+
+/* The volumes among some tables: one line for each and one for each of its keys. A key in a
+   table is named by its length. */
+static int print_volumes(struct dm_table *tabs, size_t ntabs)
+{
+    char err[VOL_ERR_LEN];
+    struct vol *vols;
+    size_t nvols, i, k;
+    int r = vol_find(tabs, ntabs, &vols, &nvols, err);
+
+    if (r)
+        printf("refused: %s\n", err);
+    for (i = 0; !r && i < nvols; i++) {
+        const struct vol *v = &vols[i];
+
+        printf("%s:", v->top->name);
+        if (v->has_device)
+            printf(" device %u:%u,", v->major, v->minor);
+        else
+            printf(" no device,");
+        printf(" %zu key(s)", v->nkeys);
+        if (v->tag_size)
+            printf(", integrity %u %s", v->tag_size, v->auth);
+        if (v->below)
+            printf(", below it %s", v->below->name);
+        for (k = 0; k < v->nparts; k++)
+            printf("%s %s", k ? "" : ", parts", v->parts[k]->name);
+        if (v->not_understood)
+            printf(", %zu crypt line(s) not understood", v->not_understood);
+        printf("\n");
+        for (k = 0; k < v->nkeys; k++) {
+            const struct vol_key *key = &v->keys[k];
+
+            printf("  key %zu: %s, ", k + 1, key->cipher);
+            if (key->field[0] == ':' || key->field[0] == '-')
+                printf("%.*s", (int)key->field_len, key->field);
+            else
+                printf("%zu characters", key->field_len);
+            printf(", %llu sectors\n", (unsigned long long)key->sectors);
+        }
+    }
+    if (!r)
+        vol_free(vols, nvols);
+    for (i = 0; i < ntabs; i++)
+        dm_table_free(&tabs[i]);
+    free(tabs);
+    return r ? 1 : 0;
+}
+
+/* The volumes among tables that files hold, each file one answer of the kernel. */
+static int cmd_volumes(int count, char **paths)
+{
+    char err[DM_ERR_LEN];
+    struct dm_table *tabs = calloc((size_t)count, sizeof *tabs);
+    size_t n = 0, len;
+    int i;
+
+    for (i = 0; tabs && i < count; i++) {
+        void *buf = read_answer(paths[i], &len);
+
+        if (!buf)
+            return 2;
+        if (dm_table_answer(buf, len, &tabs[n], err))
+            printf("refused: %s: %s\n", paths[i], err);
+        else
+            n++;
+    }
+    return tabs ? print_volumes(tabs, n) : 2;
+}
+
+/* The volumes of the running kernel. */
+static int cmd_dm_volumes(void)
+{
+    char err[DM_ERR_LEN];
+    struct dm_dev *devs;
+    struct dm_table *tabs;
+    size_t ndevs, n = 0, i;
+    int fd = dm_open(err);
+
+    if (fd < 0 || dm_list(fd, &devs, &ndevs, err)) {
+        fprintf(stderr, "keep-unit: %s\n", err);
+        return 1;
+    }
+    if (!(tabs = calloc(ndevs + 1, sizeof *tabs)))
+        return 2;
+    for (i = 0; i < ndevs; i++)
+        n += !dm_table(fd, devs[i].name, &tabs[n], err);
+    free(devs);
+    close(fd);
+    return print_volumes(tabs, n);
 }
 
 int main(int argc, char **argv)
@@ -458,12 +567,17 @@ int main(int argc, char **argv)
         return cmd_names(argv[2]);
     if (argc == 4 && !strcmp(argv[1], "dm-answer") && (!strcmp(argv[2], "list") || !strcmp(argv[2], "table")))
         return cmd_dm_answer(argv[2], argv[3]);
+    if (argc >= 3 && !strcmp(argv[1], "volumes"))
+        return cmd_volumes(argc - 2, argv + 2);
+    if (argc == 2 && !strcmp(argv[1], "dm-volumes"))
+        return cmd_dm_volumes();
     if (argc == 2 && !strcmp(argv[1], "dm-list"))
         return cmd_dm_list();
     if (argc == 3 && !strcmp(argv[1], "dm-table"))
         return cmd_dm_table(argv[2]);
     fprintf(stderr, "usage: keep-unit selftest | hash NAME | pbkdf2 NAME KEY SALT ITERATIONS LENGTH | json | luks FILE | "
             "luks-backup FILE OUT | luks-prove FILE KEYFILE | mount-of MOUNTINFO PATH | in-use SYSFS MOUNTINFO SWAPS MAJOR MINOR | other-fs MOUNTS | "
-            "lockdown FILE | secure-boot DIR | os-name FILE FILE | names NAME | dm-answer list|table FILE | dm-list | dm-table NAME\n");
+            "lockdown FILE | secure-boot DIR | os-name FILE FILE | names NAME | dm-answer list|table FILE | volumes FILE... | "
+            "dm-list | dm-table NAME | dm-volumes\n");
     return 2;
 }

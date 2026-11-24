@@ -246,6 +246,10 @@ static void digest(const struct json *j, struct luks_header *h)
         json_u64(json_member(j, "iterations"), &iterations) || !iterations || iterations > UINT32_MAX)
         return;
     memset(d, 0, sizeof *d);
+    /* a digest is named by its number (LUKS2_digest_by_segment of cryptsetup) */
+    if (!j->name || !*j->name || strspn(j->name, "0123456789") != strlen(j->name) || strlen(j->name) > 9)
+        return;
+    d->number = (unsigned)strtoul(j->name, NULL, 10);
     snprintf(d->hash, sizeof d->hash, "%s", hash);
     d->alg = hash_by_name(hash);
     d->iterations = (uint32_t)iterations;
@@ -386,29 +390,29 @@ out:
     return r;
 }
 
-int luks_proves(const struct luks_header *h, const uint8_t *key, size_t keylen, const char **hash)
+int luks_proves(const struct luks_header *h, const uint8_t *key, size_t keylen, unsigned taken, const char **hash)
 {
     uint8_t out[HASH_MAX_DIGEST];
-    int computed = 0;
+    int computed = 0, proven = 0;
     size_t i;
 
     *hash = NULL;
-    for (i = 0; i < h->ndigests; i++) {
+    for (i = 0; i < h->ndigests && !proven; i++) {
         const struct luks_digest *d = &h->digests[i];
 
+        if (taken >> i & 1)
+            continue;
         if (!d->alg) {
             *hash = d->hash;
             continue;
         }
         computed = 1;
         pbkdf2(d->alg, key, keylen, d->salt, d->saltlen, d->iterations, out, d->digestlen);
-        if (!memcmp(out, d->digest, d->digestlen)) {
-            explicit_bzero(out, sizeof out);
-            return 1;
-        }
+        if (!memcmp(out, d->digest, d->digestlen))
+            proven = (int)i + 1;
     }
     explicit_bzero(out, sizeof out);
-    return computed ? 0 : -1;
+    return proven ? proven : computed || !*hash ? 0 : -1;
 }
 
 int luks_uuid_matches(const struct luks_header *h, const char *dm_uuid)

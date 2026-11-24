@@ -14,6 +14,7 @@
 #define LUKS_MAX_DIGESTS 8              /* LUKS2_DIGEST_MAX of cryptsetup */
 
 struct luks_digest {                    /* PBKDF2 of a volume key, as the header stores it */
+    unsigned number;                    /* LUKS2: the number that names it in the metadata */
     char hash[32];                      /* the name in the header */
     const struct hash_alg *alg;         /* NULL for a function that is not computed here */
     uint8_t salt[64], digest[HASH_MAX_DIGEST];
@@ -45,10 +46,13 @@ int luks_read(int fd, struct luks_header *h, char err[LUKS_ERR_LEN]);
 int luks_backup(int fd, const struct luks_header *h, int out, uint64_t *written, char err[LUKS_ERR_LEN]);
 
 /*
- * Whether a key gives a digest of the header: 1 yes, 0 no, and -1 where no digest of the header
- * can be computed here, with the name of its hash function in *hash.
+ * Whether a key gives a digest of the header. Returns the number of that digest, counted from 1,
+ * or 0 where it gives none, or -1 where no digest could be tried because none of them is
+ * computed here, with the name of the hash function in *hash. A header in re-encryption has a
+ * digest for the old key and one for the new: TAKEN has bit n set for the digest n + 1 that
+ * another key of the volume gives already, and that digest is not tried.
  */
-int luks_proves(const struct luks_header *h, const uint8_t *key, size_t keylen, const char **hash);
+int luks_proves(const struct luks_header *h, const uint8_t *key, size_t keylen, unsigned taken, const char **hash);
 
 /* Whether the UUID of a mapping, as cryptsetup sets it (CRYPT-LUKS2-<32 digits>-<name>), names
    this header: crypt_uuid_cmp of cryptsetup. */

@@ -26,6 +26,7 @@
 #include "luks.h"
 #include "sys.h"
 #include "util.h"
+#include "volume.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -34,6 +35,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <sys/sysmacros.h>
@@ -48,15 +50,25 @@ static const char V_PROVEN[] = "captured and proven", V_IN_USE[] = "captured, in
                   V_LIVE[] = "live copy only", V_NO_KEY[] = "no key needed";
 static const char R_TABLE[] = "R1 table", R_MEMORY[] = "R3 memory";
 
+struct key_result {                     /* one key of a volume, and what became of it */
+    char cipher[VOL_CIPHER_LEN];
+    char file[DM_NAME_LEN + 96];        /* its file in keys/, without the ending */
+    char hash[17], note[320];
+    const char *location, *route, *verdict;
+    unsigned bits;
+    int has_bits;
+};
+
 struct volume {
     char name[DM_NAME_LEN];             /* as the kernel has it */
     char shown[DM_NAME_LEN];            /* for the screen */
     char file[DM_NAME_LEN + 64];        /* as part of a file name */
-    char type[16], cipher[128], device[PATH_MAX], keyhash[17], note[320];
-    const char *location, *route, *verdict;
-    unsigned key_bits;
-    int has_key_bits, has_header;
+    char type[16], device[PATH_MAX], note[320];
+    const char *verdict;
+    int has_header;
     char *in_use;
+    struct key_result *keys;            /* one, and two while the volume is re-encrypted */
+    size_t nkeys;
 };
 
 struct run {
@@ -65,6 +77,8 @@ struct run {
     int write_failed;
     char **files;                       /* every file of the run, relative to the folder */
     size_t nfiles;
+    char **stems;                       /* the names that files of volumes and keys have taken */
+    size_t nstems;
     char lockdown[64];
     unsigned budget;
     int scanned, scan_ok, scan_refused;
@@ -85,18 +99,6 @@ static void say(struct run *r, const char *fmt, ...)
     if (vfprintf(r->report, fmt, ap) < 0 || fputc('\n', r->report) == EOF)
         r->write_failed = 1;
     va_end(ap);
-}
-
-static int pathf(char out[PATH_MAX], const char *fmt, ...) __attribute__((format(printf, 2, 3)));
-static int pathf(char out[PATH_MAX], const char *fmt, ...)
-{
-    va_list ap;
-    int n;
-
-    va_start(ap, fmt);
-    n = vsnprintf(out, PATH_MAX, fmt, ap);
-    va_end(ap);
-    return n < 0 || n >= PATH_MAX ? -1 : 0;
 }
 
 /* A new file of the run. It must not exist, so nothing of an earlier run is written over. */
@@ -157,10 +159,36 @@ static void key_name(const uint8_t *key, size_t n, char out[17])
     hex_encode(digest, 8, out);
 }
 
+/* What became of a key: its verdict, the route that gave it and a note. */
+static void settle(struct key_result *k, const char *what, const char *route, const char *fmt, ...)
+    __attribute__((format(printf, 4, 5)));
+static void settle(struct key_result *k, const char *what, const char *route, const char *fmt, ...)
+{
+    va_list ap;
+
+    va_start(ap, fmt);
+    vsnprintf(k->note, sizeof k->note, fmt, ap);
+    va_end(ap);
+    k->verdict = what;
+    k->route = route;
+}
+
+/* How much of a key is held, for the verdict of a volume with more than one: the volume is as
+   far as the key that is least far. */
+static int held(const char *verdict)
+{
+    static const char *const order[] = { V_LIVE, V_MEMORY, V_NOT_PROVEN, V_IN_USE, V_PROVEN, V_NO_KEY };
+    int i;
+
+    for (i = 0; i < (int)(sizeof order / sizeof order[0]) && order[i] != verdict; i++)
+        ;
+    return i;
+}
+
 /* Close a volume: print the verdict and keep it for the summary and for verdict.json. */
-static void verdict(struct run *r, struct volume *v, const char *what, const char *route, const char *fmt, ...)
-    __attribute__((format(printf, 5, 6)));
-static void verdict(struct run *r, struct volume *v, const char *what, const char *route, const char *fmt, ...)
+static void verdict(struct run *r, struct volume *v, const char *what, const char *fmt, ...)
+    __attribute__((format(printf, 4, 5)));
+static void verdict(struct run *r, struct volume *v, const char *what, const char *fmt, ...)
 {
     va_list ap;
 
@@ -168,7 +196,6 @@ static void verdict(struct run *r, struct volume *v, const char *what, const cha
     vsnprintf(v->note, sizeof v->note, fmt, ap);
     va_end(ap);
     v->verdict = what;
-    v->route = route;
     if (v->note[0])
         say(r, "  VERDICT: %s (%s)", what, v->note);
     else
@@ -177,12 +204,12 @@ static void verdict(struct run *r, struct volume *v, const char *what, const cha
 }
 
 /* Write a key to keys/ and flush it. Only then does it count as captured. */
-static int keep_key(struct run *r, struct volume *v, const uint8_t *key, size_t n)
+static int keep_key(struct run *r, struct key_result *k, const uint8_t *key, size_t n)
 {
     char rel[PATH_MAX];
     int fd, ok;
 
-    if (pathf(rel, "keys/%s.vk", v->file) || (fd = create(r, rel, O_WRONLY, 0600)) < 0) {
+    if (pathf(rel, "keys/%s.vk", k->file) || (fd = create(r, rel, O_WRONLY, 0600)) < 0) {
         r->write_failed = 1;
         return -1;
     }
@@ -191,8 +218,31 @@ static int keep_key(struct run *r, struct volume *v, const uint8_t *key, size_t 
         r->write_failed = 1;
         return -1;
     }
-    key_name(key, n, v->keyhash);
+    key_name(key, n, k->hash);
     return 0;
+}
+
+/*
+ * A name for the files of a volume or of a key that no other has in this run. FAT and exFAT
+ * fold the case of a name, so two names that are the same but for that are kept apart by a
+ * further _. Where the room for those is used up the name stays, and the second file is then
+ * refused, because no file of a run is written over.
+ */
+static void own_stem(struct run *r, char *stem, size_t size)
+{
+    char **grown;
+    size_t i;
+
+    for (i = 0; i < r->nstems; i++)
+        if (!strcasecmp(r->stems[i], stem) && strlen(stem) + 1 < size) {
+            strcat(stem, "_");
+            i = (size_t)-1;
+        }
+    if ((grown = realloc(r->stems, (r->nstems + 1) * sizeof *grown))) {
+        r->stems = grown;
+        if ((r->stems[r->nstems] = strdup(stem)))
+            r->nstems++;
+    }
 }
 
 /* The search of /proc/kcore, run once and used for every volume that needs it. */
@@ -326,13 +376,19 @@ static void back_up_header(struct run *r, struct volume *v, int dev, const struc
     close(out);
 }
 
-/* The memory route for a volume whose header is backed up: pair or take the schedules, prove. */
-static void memory_route(struct run *r, struct volume *v, const struct luks_header *h, int xts)
+/*
+ * The memory route for a key whose header is backed up: pair or take the schedules, prove.
+ * TAKEN names the digests of the header that other keys of the volume give, and OTHERS those
+ * that are not the digest of this key, so that the two keys of a volume in re-encryption are
+ * two keys and each is the key of its part.
+ */
+static void memory_route(struct run *r, struct key_result *k, const struct luks_header *h, int xts, unsigned *taken,
+                         unsigned others)
 {
     const struct keyscan_hit *hits;
     const char *hash = NULL;
     uint8_t key[64];
-    unsigned bits = xts ? v->key_bits / 2 : v->key_bits, tried = 0;
+    unsigned bits = xts ? k->bits / 2 : k->bits, tried = 0;
     int n, i, j, nk = bits == 128 ? 4 : bits == 256 ? 8 : 0, count = 0, proven = 0, uncomputed = 0;
 
     hits = keyscan_hits(&n);
@@ -360,60 +416,77 @@ static void memory_route(struct run *r, struct volume *v, const struct luks_head
             memcpy(key, hits[i].key, len);
         }
         tried++;
-        if ((result = luks_proves(h, key, len, &hash)) < 0) {
+        if ((result = luks_proves(h, key, len, *taken | others, &hash)) < 0) {
             uncomputed = 1;
         } else if (result) {
             proven = 1;
-            if (keep_key(r, v, key, len)) {
+            *taken |= 1u << (result - 1);
+            if (keep_key(r, k, key, len)) {
                 say(r, "  the key could not be written to the destination");
-                verdict(r, v, V_MEMORY, NULL, "the write of the key to the destination failed");
+                settle(k, V_MEMORY, NULL, "the write of the key to the destination failed");
             } else {
-                say(r, "  recovered a volume key of %zu bytes, sha256 %s", len, v->keyhash);
+                say(r, "  recovered a volume key of %zu bytes, sha256 %s", len, k->hash);
                 if (xts)
                     say(r, "  the tweak schedule is at 0x%016llx and the data schedule 496 bytes after it at 0x%016llx",
                         (unsigned long long)hits[i].phys, (unsigned long long)hits[i].phys + XTS_DISTANCE);
                 else
                     say(r, "  its schedule is at 0x%016llx", (unsigned long long)hits[i].phys);
-                verdict(r, v, V_PROVEN, R_MEMORY, "opens the header");
+                settle(k, V_PROVEN, R_MEMORY, "opens the header");
             }
         }
     }
     explicit_bzero(key, sizeof key);
     if (uncomputed) {
         say(r, "  the digest of the header uses %s, which this program does not compute", hash ? hash : "no known function");
-        verdict(r, v, V_MEMORY, NULL, "no proof on scene, the candidate list is kept for the lab verifier");
+        settle(k, V_MEMORY, NULL, "no proof on scene, the candidate list is kept for the lab verifier");
     } else if (!proven) {
         say(r, "  no candidate proved within %u test(s) of budget %u", tried, r->budget);
-        verdict(r, v, V_MEMORY, NULL, "the candidate list is kept for the lab verifier");
+        settle(k, V_MEMORY, NULL, "the candidate list is kept for the lab verifier");
     }
 }
 
-/* What the kernel said about the mapping, kept in log/ with the key replaced by zeros, as
+/* What the kernel said about a device of the volume, with the key replaced by zeros, as
    "dmsetup table" prints it. */
-static void log_table(struct run *r, const struct volume *v, const struct dm_table *t)
+static void table_text(struct str *text, const struct dm_table *t)
+{
+    size_t i;
+
+    str_addf(text, "name %s\nuuid %s\ndevice %u:%u\n", t->name, t->uuid[0] ? t->uuid : "-", t->major, t->minor);
+    for (i = 0; i < t->ntargets; i++) {
+        const char *p = t->targets[i].params, *key = strchr(p, ' ');
+
+        str_addf(text, "%llu %llu %s ", (unsigned long long)t->targets[i].start,
+                 (unsigned long long)t->targets[i].length, t->targets[i].type);
+        if (!strcmp(t->targets[i].type, "crypt") && key && key[1] != ':') {
+            size_t n = strcspn(++key, " ");
+
+            str_addn(text, p, (size_t)(key - p));
+            for (; n; n--)
+                str_add(text, "0");
+            str_add(text, key + strcspn(key, " "));
+        } else {
+            str_add(text, p);
+        }
+        str_add(text, "\n");
+    }
+}
+
+/* The tables of the volume, kept in log/: its own, and those of the devices that are part of it. */
+static void log_tables(struct run *r, const struct volume *v, const struct vol *f)
 {
     char rel[PATH_MAX];
     struct str text = { 0 };
     size_t i;
     int fd;
 
-    str_addf(&text, "name %s\nuuid %s\ndevice %u:%u\n", t->name, t->uuid[0] ? t->uuid : "-", t->major, t->minor);
-    for (i = 0; i < t->ntargets; i++) {
-        const char *p = t->targets[i].params, *key = strchr(p, ' ');
-
-        str_addf(&text, "%llu %llu %s ", (unsigned long long)t->targets[i].start,
-                 (unsigned long long)t->targets[i].length, t->targets[i].type);
-        if (!strcmp(t->targets[i].type, "crypt") && key && key[1] != ':') {
-            size_t n = strcspn(++key, " ");
-
-            str_addn(&text, p, (size_t)(key - p));
-            for (; n; n--)
-                str_add(&text, "0");
-            str_add(&text, key + strcspn(key, " "));
-        } else {
-            str_add(&text, p);
-        }
+    table_text(&text, f->top);
+    for (i = 0; i < f->nparts; i++) {
         str_add(&text, "\n");
+        table_text(&text, f->parts[i]);
+    }
+    if (f->below) {
+        str_add(&text, "\n");
+        table_text(&text, f->below);
     }
     if (text.failed || pathf(rel, "log/%s.table.txt", v->file) || (fd = create(r, rel, O_WRONLY, 0600)) < 0) {
         r->write_failed = 1;
@@ -425,73 +498,184 @@ static void log_table(struct run *r, const struct volume *v, const struct dm_tab
     str_free(&text);
 }
 
-static void one_volume(struct run *r, int dm, struct volume *v)
+/*
+ * The digest of the header that a keyring reference names. cryptsetup gives the key of digest N
+ * the description cryptsetup:<UUID of the header>-d<N> (get_key_description_by_digest), so the
+ * reference says which of the two keys of a volume in re-encryption it stands for. Returns the
+ * place of that digest in the header, or -1 where the reference is not of that form or the
+ * header has no such digest.
+ */
+static int named_digest(const struct luks_header *h, const char *field, size_t len)
 {
-    char err[DM_ERR_LEN], *params = NULL, *field[5] = { 0 }, *p;
-    struct luks_header header, on_device;
-    struct dm_table table;
+    static const char maker[] = ":cryptsetup:";
+    char text[256], *p, *number;
+    size_t i, uuid = strlen(h->uuid);
+
+    if (len >= sizeof text)
+        return -1;
+    memcpy(text, field, len);
+    text[len] = 0;
+    if (!(p = strstr(text, maker)) || strncmp(p += sizeof maker - 1, h->uuid, uuid) || strncmp(p + uuid, "-d", 2))
+        return -1;
+    number = p + uuid + 2;
+    if (!*number || strspn(number, "0123456789") != strlen(number) || strlen(number) > 9)
+        return -1;
+    for (i = 0; i < h->ndigests; i++)
+        if (h->digests[i].number == (unsigned)strtoul(number, NULL, 10))
+            return (int)i;
+    return -1;
+}
+
+/* The ladder for one key: the table, then memory, and what remains where neither gives it. */
+static void one_key(struct run *r, const struct volume *v, struct key_result *k, const struct vol_key *vk,
+                    const struct luks_header *header, unsigned *taken)
+{
+    const char *field = vk->field;
+    size_t keylen = vk->field_len;
+    int luks = !strcmp(v->type, "LUKS1") || !strcmp(v->type, "LUKS2");
+    int xts = !strncmp(k->cipher, "aes-xts-", 8) || !strncmp(k->cipher, "capi:xts(aes)-", 14);
+    int aes = xts || !strncmp(k->cipher, "aes-", 4);
+
+    if (keylen == 1 && field[0] == '-') {
+        /* dm-crypt writes "-" for a key of size 0 (crypt_status), which is the null cipher */
+        say(r, "  R1 table: the mapping has no key (key size 0), the device holds the data as they are");
+        settle(k, V_NO_KEY, R_TABLE, "key size 0 in the table, cipher %s", k->cipher);
+    } else if (field[0] != ':') {
+        uint8_t *key = keylen % 2 ? NULL : malloc(keylen / 2 + 1);
+        const char *hash = NULL;
+        int result;
+
+        if (!key || hex_decode(field, keylen, key)) {
+            say(r, "  R1 table: the key field of the table line is neither a key in hexadecimal nor a keyring reference");
+            settle(k, V_MEMORY, NULL, "the key field of the table line is not understood");
+        } else if (keep_key(r, k, key, keylen / 2)) {
+            say(r, "  R1 table: the key is in the table and could not be written to the destination");
+            settle(k, V_MEMORY, NULL, "the write of the key to the destination failed");
+        } else {
+            say(r, "  R1 table: key of %zu bytes, sha256 %s", keylen / 2, k->hash);
+            if (!v->has_header && luks) {
+                settle(k, V_NOT_PROVEN, R_TABLE, "no header backup to prove against");
+            } else if (!v->has_header) {
+                settle(k, V_IN_USE, R_TABLE, "the key of the live mapping, no header digest exists, the lab open confirms");
+            } else if ((result = luks_proves(header, key, keylen / 2, *taken, &hash)) > 0) {
+                *taken |= 1u << (result - 1);
+                settle(k, V_PROVEN, R_TABLE, "opens the header");
+            } else if (result == 0) {
+                settle(k, V_NOT_PROVEN, R_TABLE, "the header does not accept the key, unexpected");
+            } else {
+                settle(k, V_NOT_PROVEN, R_TABLE, "the digest of the header uses %s, which this program does not "
+                       "compute, the lab verifier proves it", hash ? hash : "no known function");
+            }
+        }
+        if (key) {
+            explicit_bzero(key, keylen / 2);
+            free(key);
+        }
+    } else {
+        say(r, "  R1 table: keyring reference %.*s (no key in the table)", (int)keylen, field);
+        if (!strncmp(k->cipher, "capi:authenc(", 13)) {
+            /* crypt_copy_authenckey in dm-crypt.c: the key of the cipher and the key of the
+               authentication, which is no AES key */
+            say(r, "  R3 memory: the volume key of %s holds a key of the authentication beside the key of the cipher, "
+                "and the AES schedule search finds no such key", k->cipher);
+            settle(k, V_LIVE, NULL, "a memory image keeps another method open");
+        } else if (!aes) {
+            say(r, "  R3 memory: the cipher %s is not AES, so the AES schedule search does not apply", k->cipher);
+            settle(k, V_LIVE, NULL, "a memory image keeps another method open");
+        } else if (!strcmp(r->lockdown, "confidentiality")) {
+            say(r, "  R3 memory: /proc/kcore is blocked under lockdown confidentiality");
+            settle(k, V_LIVE, NULL, "lockdown confidentiality");
+        } else {
+            scan_once(r);
+            if (!r->scan_ok && r->scan_refused) {
+                settle(k, V_LIVE, NULL, "the kernel refused the read of /proc/kcore");
+            } else if (!r->scan_ok) {
+                settle(k, V_MEMORY, NULL, "the search of /proc/kcore failed");
+            } else if (!v->has_header || !k->has_bits) {
+                say(r, "  R3 memory: no header backup or no key size to prove against");
+                settle(k, V_MEMORY, NULL, "no proof on scene, the candidate list is kept for the lab verifier");
+            } else {
+                int named = named_digest(header, field, keylen);
+                unsigned others = named < 0 ? 0 : ~(1u << named);
+
+                /* the key that the reference names, and where it names none, one that no other
+                   key of the volume has given */
+                if (named >= 0 && v->nkeys > 1)
+                    say(r, "  the reference names the key of digest %u of the header", header->digests[named].number);
+                memory_route(r, k, header, xts, taken, others);
+            }
+        }
+    }
+}
+
+static void one_volume(struct run *r, struct volume *v, const struct vol *f)
+{
+    struct luks_header header = { 0 }, on_device;
     struct str why = { 0 };
-    unsigned major = 0, minor = 0;
-    size_t i, keylen;
-    int have_device, xts, aes, luks, dev = -1;
+    unsigned taken = 0;
+    size_t i;
+    int have_device, luks, dev = -1;
 
     say(r, "==== %s", v->shown);
-    snprintf(v->type, sizeof v->type, "n/a");
-    if (dm_table(dm, v->name, &table, err)) {
-        say(r, "  R1 table: %s, so the table route is not open", err);
-        verdict(r, v, V_MEMORY, NULL, "the table of the mapping could not be read");
-        return;
+    log_tables(r, v, f);
+    type_of_uuid(f->top->uuid, v->type);
+    for (i = 0; i < f->nkeys; i++) {
+        struct key_result *k = &v->keys[i];
+        const char *field = f->keys[i].field;
+
+        memcpy(k->cipher, f->keys[i].cipher, sizeof k->cipher);
+        if (field[0] == ':') {
+            k->location = "keyring";
+            k->has_bits = sscanf(field + 1, "%u", &k->bits) == 1;
+            k->bits *= 8;
+        } else {
+            k->location = "dm-crypt";
+            k->has_bits = 1;
+            k->bits = field[0] == '-' ? 0 : (unsigned)f->keys[i].field_len * 4;
+        }
     }
-    log_table(r, v, &table);                    /* as the kernel gave it, before the line is cut into fields */
-    for (i = 0; i < table.ntargets && strcmp(table.targets[i].type, "crypt"); i++)
-        ;
-    if (i < table.ntargets)
-        params = table.targets[i].params;
-    /* a crypt target: cipher, key, IV offset, device, offset, and then its options */
-    for (i = 0, p = params; p && i < 5; i++) {
-        field[i] = p;
-        if ((p = strchr(p, ' ')))
-            *p++ = 0;
-    }
-    if (!field[4]) {
-        say(r, "  R1 table: the kernel gave no table line of a crypt target that is understood");
-        verdict(r, v, V_MEMORY, NULL, "the table of the mapping is not understood");
-        dm_table_free(&table);
-        return;
-    }
-    snprintf(v->cipher, sizeof v->cipher, "%s", field[0]);
-    keylen = strlen(field[1]);
-    type_of_uuid(table.uuid, v->type);
-    if (field[1][0] == ':') {
-        v->location = "keyring";
-        v->has_key_bits = sscanf(field[1] + 1, "%u", &v->key_bits) == 1;
-        v->key_bits *= 8;
-    } else {
-        v->location = "dm-crypt";
-        v->has_key_bits = 1;
-        v->key_bits = strcmp(field[1], "-") ? (unsigned)keylen * 4 : 0;
-    }
-    have_device = sscanf(field[3], "%u:%u", &major, &minor) == 2 &&
-                  !sys_device_path("/sys", major, minor, v->device, sizeof v->device);
+    have_device = f->has_device && !sys_device_path("/sys", f->major, f->minor, v->device, sizeof v->device);
     /* the header decides with the UUID what the mapping is, so it is read before the type is named */
     luks = !strcmp(v->type, "LUKS1") || !strcmp(v->type, "LUKS2");
     if (luks && have_device)
-        dev = find_header(v, table.uuid, major, minor, &on_device, &why);
+        dev = find_header(v, f->top->uuid, f->major, f->minor, &on_device, &why);
+    else if (luks && f->has_device)
+        str_addf(&why, "header backup FAILED: no device node for %u:%u", f->major, f->minor);
     else if (luks)
-        str_addf(&why, "header backup FAILED: no device node for %s", field[3]);
-    if (v->has_key_bits)
-        say(r, "  type %s, cipher %s, keysize %u bits, key location %s", v->type, v->cipher, v->key_bits, v->location);
+        str_addf(&why, "header backup FAILED: the table names no device");
+
+    if (f->nkeys == 1 && v->keys[0].has_bits)
+        say(r, "  type %s, cipher %s, keysize %u bits, key location %s", v->type, v->keys[0].cipher, v->keys[0].bits,
+            v->keys[0].location);
+    else if (f->nkeys == 1)
+        say(r, "  type %s, cipher %s, keysize ? bits, key location %s", v->type, v->keys[0].cipher, v->keys[0].location);
     else
-        say(r, "  type %s, cipher %s, keysize ? bits, key location %s", v->type, v->cipher, v->location);
+        say(r, "  type %s, %zu keys in its tables. A volume in re-encryption has two, one for the part that is done "
+            "and one for the rest", v->type, f->nkeys);
     say(r, "  backing device %s", have_device ? v->device : "?");
-    v->in_use = sys_in_use("/sys", "/proc/self/mountinfo", "/proc/swaps", table.major, table.minor);
+    if (f->below)
+        say(r, "  integrity: %s with tags of %u bytes, kept by the dm-integrity device %s between the volume and its device",
+            f->auth, f->tag_size, f->below->name);
+    else if (f->tag_size)
+        say(r, "  integrity: %s with tags of %u bytes", f->auth, f->tag_size);
+    if (f->nparts) {
+        struct str names = { 0 };
+
+        for (i = 0; i < f->nparts; i++)
+            str_addf(&names, "%s%s", i ? ", " : "", f->parts[i]->name);
+        if (names.s)
+            name_clean(names.s);
+        say(r, "  in re-encryption: cryptsetup works on it with the helper devices %s", str_text(&names));
+        str_free(&names);
+    } else if (!strncmp(f->top->uuid, "CRYPT-SUBDEV-", 13)) {
+        say(r, "  a device that cryptsetup sets up below a volume while it re-encrypts it. That volume is not among the "
+            "mapped devices");
+    }
+    v->in_use = sys_in_use("/sys", "/proc/self/mountinfo", "/proc/swaps", f->top->major, f->top->minor);
     if (v->in_use)
         name_clean(v->in_use);
     say(r, "  in use: %s", v->in_use && v->in_use[0] ? v->in_use
         : "not mounted and not swap, also nothing that stands on it");
-
-    xts = !strncmp(v->cipher, "aes-xts-", 8) || !strncmp(v->cipher, "capi:xts(aes)-", 14);
-    aes = xts || !strncmp(v->cipher, "aes-", 4);
 
     /* a key is useless without the header, so the header comes first */
     if (why.len)
@@ -502,62 +686,44 @@ static void one_volume(struct run *r, int dm, struct volume *v)
         close(dev);
     }
 
-    if (!strcmp(field[1], "-")) {
-        /* dm-crypt writes "-" for a key of size 0 (crypt_status), which is the null cipher */
-        say(r, "  R1 table: the mapping has no key (key size 0), the device holds the data as they are");
-        verdict(r, v, V_NO_KEY, R_TABLE, "key size 0 in the table, cipher %s", v->cipher);
-    } else if (field[1][0] != ':') {
-        uint8_t *key = keylen % 2 ? NULL : malloc(keylen / 2 + 1);
-        const char *hash = NULL;
-        int result;
+    if (f->not_understood)
+        say(r, "  R1 table: the kernel gave %s table line of a crypt target that is understood",
+            f->nkeys ? "a further" : "no");
+    for (i = 0; i < f->nkeys; i++) {
+        struct key_result *k = &v->keys[i];
 
-        if (!key || hex_decode(field[1], keylen, key)) {
-            say(r, "  R1 table: the key field of the table line is neither a key in hexadecimal nor a keyring reference");
-            verdict(r, v, V_MEMORY, NULL, "the key field of the table line is not understood");
-        } else if (keep_key(r, v, key, keylen / 2)) {
-            say(r, "  R1 table: the key is in the table and could not be written to the destination");
-            verdict(r, v, V_MEMORY, NULL, "the write of the key to the destination failed");
-        } else {
-            say(r, "  R1 table: key of %zu bytes, sha256 %s", keylen / 2, v->keyhash);
-            if (!v->has_header && (!strcmp(v->type, "LUKS1") || !strcmp(v->type, "LUKS2")))
-                verdict(r, v, V_NOT_PROVEN, R_TABLE, "no header backup to prove against");
-            else if (!v->has_header)
-                verdict(r, v, V_IN_USE, R_TABLE, "the key of the live mapping, no header digest exists, the lab open confirms");
-            else if ((result = luks_proves(&header, key, keylen / 2, &hash)) > 0)
-                verdict(r, v, V_PROVEN, R_TABLE, "opens the header");
-            else if (result == 0)
-                verdict(r, v, V_NOT_PROVEN, R_TABLE, "the header does not accept the key, unexpected");
+        if (f->nkeys > 1) {
+            if (k->has_bits)
+                say(r, "  key %zu of %zu: cipher %s, keysize %u bits, key location %s, for %llu sectors of 512 bytes",
+                    i + 1, f->nkeys, k->cipher, k->bits, k->location, (unsigned long long)f->keys[i].sectors);
             else
-                verdict(r, v, V_NOT_PROVEN, R_TABLE, "the digest of the header uses %s, which this program does not "
-                        "compute, the lab verifier proves it", hash ? hash : "no known function");
+                say(r, "  key %zu of %zu: cipher %s, keysize ? bits, key location %s, for %llu sectors of 512 bytes",
+                    i + 1, f->nkeys, k->cipher, k->location, (unsigned long long)f->keys[i].sectors);
         }
-        if (key) {
-            explicit_bzero(key, keylen / 2);
-            free(key);
-        }
-    } else {
-        say(r, "  R1 table: keyring reference %s (no key in the table)", field[1]);
-        if (!aes) {
-            say(r, "  R3 memory: the cipher %s is not AES, so the AES schedule search does not apply", v->cipher);
-            verdict(r, v, V_LIVE, NULL, "a memory image keeps another method open");
-        } else if (!strcmp(r->lockdown, "confidentiality")) {
-            say(r, "  R3 memory: /proc/kcore is blocked under lockdown confidentiality");
-            verdict(r, v, V_LIVE, NULL, "lockdown confidentiality");
-        } else {
-            scan_once(r);
-            if (!r->scan_ok && r->scan_refused) {
-                verdict(r, v, V_LIVE, NULL, "the kernel refused the read of /proc/kcore");
-            } else if (!r->scan_ok) {
-                verdict(r, v, V_MEMORY, NULL, "the search of /proc/kcore failed");
-            } else if (!v->has_header || !v->has_key_bits) {
-                say(r, "  R3 memory: no header backup or no key size to prove against");
-                verdict(r, v, V_MEMORY, NULL, "no proof on scene, the candidate list is kept for the lab verifier");
-            } else {
-                memory_route(r, v, &header, xts);
-            }
-        }
+        one_key(r, v, k, &f->keys[i], &header, &taken);
+        if (f->nkeys > 1)
+            say(r, "  key %zu: %s%s%s%s", i + 1, k->verdict, k->note[0] ? " (" : "", k->note, k->note[0] ? ")" : "");
     }
-    dm_table_free(&table);
+
+    if (f->nkeys == 1 && !f->not_understood) {
+        verdict(r, v, v->keys[0].verdict, "%s", v->keys[0].note);
+    } else if (!f->nkeys) {
+        verdict(r, v, V_MEMORY, "the table of the mapping is not understood");
+    } else {
+        /* the volume is as far as the key that is least far */
+        const char *least = f->not_understood ? V_MEMORY : v->keys[0].verdict;
+        struct str all = { 0 };
+
+        for (i = 0; i < f->nkeys; i++) {
+            if (held(v->keys[i].verdict) < held(least))
+                least = v->keys[i].verdict;
+            str_addf(&all, "%skey %zu %s", i ? ", " : "", i + 1, v->keys[i].verdict);
+        }
+        if (f->not_understood)
+            str_addf(&all, ", and a table line that is not understood");
+        verdict(r, v, least, "%zu keys: %s", f->nkeys, str_text(&all));
+        str_free(&all);
+    }
 }
 
 /* A text as the inside of a JSON string: the two characters that end or escape it, control
@@ -598,14 +764,27 @@ static void json_value(FILE *f, const char *s)
     }
 }
 
+/* The fields of a key in verdict.json, in the three places where they stand in the line of a
+   volume: the cipher, the size and the location, then the route, then the name of the key. */
+static void json_key(FILE *f, const struct key_result *k, int part)
+{
+    if (part == 0) {
+        fputs(", \"cipher\": ", f); json_value(f, k->cipher);
+        if (k->has_bits)
+            fprintf(f, ", \"key_bits\": %u", k->bits);
+        else
+            fputs(", \"key_bits\": null", f);
+        fputs(", \"key_location\": ", f); json_value(f, k->location);
+    } else if (part == 1) {
+        fputs(", \"route\": ", f); json_value(f, k->route);
+    } else {
+        fputs(", \"key_sha256_16\": ", f); json_value(f, k->hash);
+    }
+}
+
 static int by_text(const void *a, const void *b)
 {
     return strcmp(*(char *const *)a, *(char *const *)b);
-}
-
-static int by_name(const void *a, const void *b)
-{
-    return strcmp(((const struct volume *)a)->name, ((const struct volume *)b)->name);
 }
 
 /* manifest.sha256: every file of the run with its SHA-256, in the form of sha256sum, by name. */
@@ -647,6 +826,85 @@ static void write_manifest(struct run *r)
     fclose(f);
 }
 
+/*
+ * The tables of all mapped devices, read once: they are what the volumes are found in. The
+ * control device is opened only where the kernel has device-mapper: its node can exist without
+ * it, and opening it would then load the module (the alias devname:mapper/control of dm-mod).
+ * Returns 0, with *present 0 where the kernel has no device-mapper, or -1 with err. The tables
+ * can hold keys: free_tables wipes them.
+ */
+static int load_tables(struct dm_table **tabs, size_t *ntabs, int *present, char err[DM_ERR_LEN])
+{
+    struct dm_dev *devs = NULL;
+    size_t ndevs = 0, i;
+    int dm;
+
+    *tabs = NULL;
+    *ntabs = 0;
+    *present = !access("/sys/class/misc/device-mapper", F_OK);
+    if (!*present)
+        return 0;
+    if ((dm = dm_open(err)) < 0)
+        return -1;
+    if (dm_list(dm, &devs, &ndevs, err)) {
+        close(dm);
+        return -1;
+    }
+    if (ndevs && !(*tabs = calloc(ndevs, sizeof **tabs))) {
+        snprintf(err, DM_ERR_LEN, "the tables of the mapped devices: no memory");
+        free(devs);
+        close(dm);
+        return -1;
+    }
+    for (i = 0; i < ndevs; i++)
+        *ntabs += !dm_table(dm, devs[i].name, &(*tabs)[*ntabs], err);  /* else removed since the list was read */
+    free(devs);
+    close(dm);
+    return 0;
+}
+
+static void free_tables(struct dm_table *tabs, size_t ntabs)
+{
+    size_t i;
+
+    for (i = 0; i < ntabs; i++)
+        dm_table_free(&tabs[i]);
+    free(tabs);
+}
+
+int triage_volume_names(char **names, char err[TRIAGE_ERR_LEN])
+{
+    char why[DM_ERR_LEN > VOL_ERR_LEN ? DM_ERR_LEN : VOL_ERR_LEN];
+    struct dm_table *tabs;
+    struct vol *found = NULL;
+    struct str text = { 0 };
+    size_t ntabs, nvols = 0, i;
+    int present, r;
+
+    *names = NULL;
+    if (load_tables(&tabs, &ntabs, &present, why)) {
+        snprintf(err, TRIAGE_ERR_LEN, "%s", why);
+        return -1;
+    }
+    r = vol_find(tabs, ntabs, &found, &nvols, why);
+    for (i = 0; !r && i < nvols; i++) {
+        char shown[DM_NAME_LEN];
+
+        memcpy(shown, found[i].top->name, DM_NAME_LEN);
+        name_clean(shown);
+        str_addf(&text, "%s%s", i ? " " : "", shown);
+    }
+    vol_free(found, nvols);
+    free_tables(tabs, ntabs);
+    if (r || text.failed) {
+        snprintf(err, TRIAGE_ERR_LEN, "%s", r ? why : "no memory");
+        str_free(&text);
+        return -1;
+    }
+    *names = text.s;
+    return (int)nvols;
+}
+
 static int die(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 static int die(const char *fmt, ...)
 {
@@ -666,16 +924,20 @@ int triage_run(const struct triage_options *o)
     char secure_boot[16], os[256], err[DM_ERR_LEN], *other;
     struct run run = { .budget = o->budget }, *r = &run;
     struct volume *vols = NULL;
-    struct dm_dev *devs = NULL;
+    struct dm_table *tabs = NULL;
+    struct vol *found = NULL;
     struct sys_mount mount;
     struct statvfs vfs;
     struct utsname un;
     struct str medium = { 0 };
     const char *bad;
-    size_t ndevs = 0, nvols = 0, i, k;
+    size_t ntabs = 0, nvols = 0, i, k;
     FILE *json;
-    int dm = -1, fd;
+    int fd, present = 1, no_memory = 0, lock_errno;
 
+    /* Keys pass through the memory of this process. Locked memory is not written to the swap
+       space of the examined system. */
+    lock_errno = mlockall(MCL_CURRENT | MCL_FUTURE) ? errno : 0;
     umask(077);
     if ((bad = hash_selftest()))
         return die("%s does not compute the example of its standard, so a proof would not be reliable", bad);
@@ -729,49 +991,50 @@ int triage_run(const struct triage_options *o)
     else
         say(r, "destination: %s, %llu MiB free", medium.s,
             (unsigned long long)vfs.f_bavail * vfs.f_frsize / 1048576);
-    if (o->lock_errno)
+    if (lock_errno)
         say(r, "the memory of this program could not be locked (%s), so a part of it can reach the swap space",
-            strerror(o->lock_errno));
+            strerror(lock_errno));
     say(r, "%s", "");
 
     /* The open crypt volumes: every mapped device with a crypt target in its table, which is
-       what "dmsetup ls --target crypt" lists. The control device is opened only where the
-       kernel has device-mapper: its node can exist without it, and opening it would then load
-       the module (the alias devname:mapper/control of dm-mod). */
-    if (access("/sys/class/misc/device-mapper", F_OK)) {
-        say(r, "this kernel has no device-mapper loaded, so there is no dm-crypt volume");
-    } else if ((dm = dm_open(err)) < 0 || dm_list(dm, &devs, &ndevs, err)) {
+       what "dmsetup ls --target crypt" lists, and a device whose crypt targets cryptsetup has
+       put into a helper device below it (volume.c). */
+    if (load_tables(&tabs, &ntabs, &present, err)) {
         say(r, "the mapped devices cannot be listed: %s", err);
         r->write_failed = 1;
+    } else if (!present) {
+        say(r, "this kernel has no device-mapper loaded, so there is no dm-crypt volume");
+    } else if (vol_find(tabs, ntabs, &found, &nvols, err)) {
+        say(r, "%s", err);
+        r->write_failed = 1;
     }
-    if (ndevs && !(vols = calloc(ndevs, sizeof *vols)))
-        return die("no memory");
-    for (i = 0; i < ndevs; i++) {
-        struct dm_table t;
+    if (nvols && !(vols = calloc(nvols, sizeof *vols)))
+        no_memory = 1;
+    for (i = 0; vols && i < nvols; i++) {
+        struct volume *v = &vols[i];
 
-        if (dm_table(dm, devs[i].name, &t, err))
-            continue;                           /* removed since the list was read */
-        for (k = 0; k < t.ntargets && strcmp(t.targets[k].type, "crypt"); k++)
-            ;
-        if (k < t.ntargets)
-            memcpy(vols[nvols++].name, devs[i].name, DM_NAME_LEN);
-        dm_table_free(&t);
-    }
-    free(devs);
-    if (nvols)
-        qsort(vols, nvols, sizeof *vols, by_name);
-    for (i = 0; i < nvols; i++) {
-        /* FAT and exFAT fold the case of a name, so two names that are the same but for that
-           are kept apart by a further _. Where the room for those is used up the names stay the
-           same, and the second file is then refused, because no file of a run is written over. */
-        memcpy(vols[i].shown, vols[i].name, DM_NAME_LEN);
-        name_clean(vols[i].shown);
-        name_file(vols[i].name, vols[i].file, DM_NAME_LEN);
-        for (k = 0; k < i; k++)
-            if (!strcasecmp(vols[k].file, vols[i].file) && strlen(vols[i].file) + 1 < sizeof vols[i].file) {
-                strcat(vols[i].file, "_");
-                k = (size_t)-1;
+        memcpy(v->name, found[i].top->name, DM_NAME_LEN);
+        memcpy(v->shown, v->name, DM_NAME_LEN);
+        name_clean(v->shown);
+        name_file(v->name, v->file, DM_NAME_LEN);
+        own_stem(r, v->file, sizeof v->file);
+        v->nkeys = found[i].nkeys;
+        if (v->nkeys && !(v->keys = calloc(v->nkeys, sizeof *v->keys))) {
+            no_memory = 1;
+            break;
+        }
+        for (k = 0; k < v->nkeys; k++) {
+            if (k == 0) {
+                snprintf(v->keys[k].file, sizeof v->keys[k].file, "%s", v->file);
+            } else {
+                snprintf(v->keys[k].file, sizeof v->keys[k].file, "%s-%zu", v->file, k + 1);
+                own_stem(r, v->keys[k].file, sizeof v->keys[k].file);
             }
+        }
+    }
+    if (no_memory) {
+        free_tables(tabs, ntabs);               /* they can hold keys, and this wipes them */
+        return die("no memory");
     }
     if (!nvols) {
         say(r, "no open dm-crypt volumes");
@@ -791,9 +1054,9 @@ int triage_run(const struct triage_options *o)
     say(r, "%s", "");
 
     for (i = 0; i < nvols; i++)
-        one_volume(r, dm, &vols[i]);
-    if (dm >= 0)
-        close(dm);
+        one_volume(r, &vols[i], &found[i]);
+    vol_free(found, nvols);
+    free_tables(tabs, ntabs);
     keyscan_wipe();
 
     say(r, "==== verdicts");
@@ -821,6 +1084,7 @@ int triage_run(const struct triage_options *o)
         fputs(",\n  \"source\": \"/proc/kcore\",\n  \"evidence_medium\": ", json); json_value(json, medium.s);
         fputs(",\n  \"memory\": null,\n  \"binaries\": [\n  ],\n  \"volumes\": [", json);
         for (i = 0; i < nvols; i++) {
+            static const struct key_result none;
             const struct volume *v = &vols[i];
             char header[PATH_MAX] = "";
 
@@ -828,19 +1092,29 @@ int triage_run(const struct triage_options *o)
                 snprintf(header, sizeof header, "headers/%s.hdr", v->file);
             fputs(i ? ",\n    {\"name\": " : "\n    {\"name\": ", json); json_value(json, v->name);
             fputs(", \"type\": ", json); json_value(json, v->type);
-            fputs(", \"cipher\": ", json); json_value(json, v->cipher);
-            if (v->has_key_bits)
-                fprintf(json, ", \"key_bits\": %u", v->key_bits);
-            else
-                fputs(", \"key_bits\": null", json);
-            fputs(", \"key_location\": ", json); json_value(json, v->location);
+            json_key(json, v->nkeys ? &v->keys[0] : &none, 0);
             fputs(", \"device\": ", json); json_value(json, v->device);
             fputs(", \"in_use\": ", json); json_value(json, v->in_use);
             fputs(", \"header_backup\": ", json); json_value(json, header);
-            fputs(", \"route\": ", json); json_value(json, v->route);
+            json_key(json, v->nkeys ? &v->keys[0] : &none, 1);
             fputs(", \"verdict\": ", json); json_value(json, v->verdict);
-            fputs(", \"key_sha256_16\": ", json); json_value(json, v->keyhash);
+            json_key(json, v->nkeys ? &v->keys[0] : &none, 2);
             fputs(", \"note\": ", json); json_value(json, v->note);
+            /* the further keys of a volume that has more than one, each with what became of it */
+            for (k = 1; k < v->nkeys; k++) {
+                char file[PATH_MAX] = "";
+
+                if (v->keys[k].hash[0])
+                    snprintf(file, sizeof file, "keys/%s.vk", v->keys[k].file);
+                fputs(k == 1 ? ", \"further_keys\": [{\"key_file\": " : ", {\"key_file\": ", json);
+                json_value(json, file);
+                json_key(json, &v->keys[k], 0);
+                json_key(json, &v->keys[k], 1);
+                fputs(", \"verdict\": ", json); json_value(json, v->keys[k].verdict);
+                json_key(json, &v->keys[k], 2);
+                fputs(", \"note\": ", json); json_value(json, v->keys[k].note);
+                fputs(k + 1 == v->nkeys ? "}]" : "}", json);
+            }
             fputc('}', json);
         }
         fputs("\n  ]\n}\n", json);
@@ -856,11 +1130,16 @@ int triage_run(const struct triage_options *o)
         r->write_failed = 1;
     if (fd >= 0)
         close(fd);
-    for (i = 0; i < nvols; i++)
+    for (i = 0; i < nvols; i++) {
         free(vols[i].in_use);
+        free(vols[i].keys);
+    }
     for (i = 0; i < r->nfiles; i++)
         free(r->files[i]);
     free(r->files);
+    for (i = 0; i < r->nstems; i++)
+        free(r->stems[i]);
+    free(r->stems);
     free(vols);
     free(other);
     str_free(&medium);

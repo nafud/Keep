@@ -14,8 +14,8 @@ SANCC    = cc
 WARN     = -Wall -Wextra -Wshadow -Wpointer-arith -Wstrict-prototypes -Wmissing-prototypes -Wformat=2 -Werror
 CFLAGS   = -std=c11 -D_GNU_SOURCE -O2 $(WARN)
 SAN      = -g -fsanitize=address,undefined -fno-sanitize-recover=all
-PARTS    = src/dm.c src/hash.c src/json.c src/luks.c src/sys.c src/util.c
-HEADERS  = Makefile src/dm.h src/hash.h src/json.h src/keyscan.h src/luks.h src/sys.h src/triage.h src/util.h
+PARTS    = src/dm.c src/hash.c src/json.c src/luks.c src/sys.c src/util.c src/volume.c
+HEADERS  = Makefile src/dm.h src/hash.h src/json.h src/keyscan.h src/luks.h src/sys.h src/triage.h src/util.h src/volume.h
 PROGRAM  = src/main.c src/triage.c $(PARTS)
 # the scanner is the file of kcore-keyscan, without its main
 SCANNER  = -DKEYSCAN_LIBRARY kcore-keyscan.c
