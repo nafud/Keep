@@ -15,6 +15,8 @@
  *   keep-unit secure-boot DIR                   the value of the variable SecureBoot in DIR
  *   keep-unit os-name FILE FILE                 PRETTY_NAME of the first file that can be read
  *   keep-unit names NAME                        NAME for the screen and as a file name
+ *   keep-unit dm-answer list|table FILE         FILE as an answer of the kernel to one of the two
+ *                                               requests, printed like the two lines below
  *   keep-unit dm-list                           the mapped devices, as "dmsetup ls" prints them
  *   keep-unit dm-table NAME                     the table, as "dmsetup table NAME" prints it,
  *                                               and for a crypt target the length of its key
@@ -35,6 +37,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 static void print_hex(const uint8_t *p, size_t n)
@@ -290,38 +293,40 @@ static int by_name(const void *a, const void *b)
     return strcmp(((const struct dm_dev *)a)->name, ((const struct dm_dev *)b)->name);
 }
 
+static void print_devs(struct dm_dev *devs, size_t n)
+{
+    size_t i;
+
+    if (n)
+        qsort(devs, n, sizeof *devs, by_name);
+    for (i = 0; i < n; i++)
+        printf("%s\t(%u:%u)\n", devs[i].name, devs[i].major, devs[i].minor);
+    if (!n)
+        printf("No devices found\n");
+    free(devs);
+}
+
 static int cmd_dm_list(void)
 {
     char err[DM_ERR_LEN];
     struct dm_dev *devs;
-    size_t n, i;
+    size_t n;
     int fd = dm_open(err);
 
     if (fd < 0 || dm_list(fd, &devs, &n, err)) {
         fprintf(stderr, "keep-unit: %s\n", err);
         return 1;
     }
-    qsort(devs, n, sizeof *devs, by_name);
-    for (i = 0; i < n; i++)
-        printf("%s\t(%u:%u)\n", devs[i].name, devs[i].major, devs[i].minor);
-    if (!n)
-        printf("No devices found\n");
-    free(devs);
+    print_devs(devs, n);
     close(fd);
     return 0;
 }
 
-static int cmd_dm_table(const char *name)
+static void print_table(struct dm_table *tp)
 {
-    char err[DM_ERR_LEN];
-    struct dm_table t;
+    struct dm_table t = *tp;
     size_t i;
-    int fd = dm_open(err);
 
-    if (fd < 0 || dm_table(fd, name, &t, err)) {
-        fprintf(stderr, "keep-unit: %s\n", err);
-        return 1;
-    }
     fprintf(stderr, "name %s, uuid %s, device %u:%u, %zu target(s)\n", t.name, t.uuid, t.major, t.minor, t.ntargets);
     for (i = 0; i < t.ntargets; i++) {
         char *p = t.targets[i].params, *key, *end;
@@ -349,9 +354,56 @@ static int cmd_dm_table(const char *name)
         printf("%llu %llu %s %s\n", (unsigned long long)t.targets[i].start,
                (unsigned long long)t.targets[i].length, t.targets[i].type, p);
     }
-    dm_table_free(&t);
+    dm_table_free(tp);
+}
+
+static int cmd_dm_table(const char *name)
+{
+    char err[DM_ERR_LEN];
+    struct dm_table t;
+    int fd = dm_open(err);
+
+    if (fd < 0 || dm_table(fd, name, &t, err)) {
+        fprintf(stderr, "keep-unit: %s\n", err);
+        return 1;
+    }
+    print_table(&t);
     close(fd);
     return 0;
+}
+
+/* A file as the answer of the kernel, in a buffer of exactly its size, so that a read beyond
+   it is a read beyond an allocation. */
+static int cmd_dm_answer(const char *kind, const char *path)
+{
+    char err[DM_ERR_LEN];
+    struct dm_table t;
+    struct dm_dev *devs;
+    struct stat st;
+    void *buf = NULL;
+    size_t n;
+    int fd = open(path, O_RDONLY | O_CLOEXEC), r;
+
+    if (fd < 0 || fstat(fd, &st) || !(buf = malloc((size_t)st.st_size + !st.st_size)) ||
+        read(fd, buf, (size_t)st.st_size) != st.st_size) {
+        perror(path);
+        free(buf);
+        return 2;
+    }
+    close(fd);
+    if (!strcmp(kind, "list")) {
+        r = dm_list_answer(buf, (size_t)st.st_size, &devs, &n, err);
+        free(buf);
+        if (!r)
+            print_devs(devs, n);
+    } else {
+        r = dm_table_answer(buf, (size_t)st.st_size, &t, err);
+        if (!r)
+            print_table(&t);
+    }
+    if (r)
+        printf("refused: %s\n", err);
+    return r ? 1 : 0;
 }
 
 int main(int argc, char **argv)
@@ -404,12 +456,14 @@ int main(int argc, char **argv)
     }
     if (argc == 3 && !strcmp(argv[1], "names"))
         return cmd_names(argv[2]);
+    if (argc == 4 && !strcmp(argv[1], "dm-answer") && (!strcmp(argv[2], "list") || !strcmp(argv[2], "table")))
+        return cmd_dm_answer(argv[2], argv[3]);
     if (argc == 2 && !strcmp(argv[1], "dm-list"))
         return cmd_dm_list();
     if (argc == 3 && !strcmp(argv[1], "dm-table"))
         return cmd_dm_table(argv[2]);
     fprintf(stderr, "usage: keep-unit selftest | hash NAME | pbkdf2 NAME KEY SALT ITERATIONS LENGTH | json | luks FILE | "
             "luks-backup FILE OUT | luks-prove FILE KEYFILE | mount-of MOUNTINFO PATH | in-use SYSFS MOUNTINFO SWAPS MAJOR MINOR | other-fs MOUNTS | "
-            "lockdown FILE | secure-boot DIR | os-name FILE FILE | names NAME | dm-list | dm-table NAME\n");
+            "lockdown FILE | secure-boot DIR | os-name FILE FILE | names NAME | dm-answer list|table FILE | dm-list | dm-table NAME\n");
     return 2;
 }

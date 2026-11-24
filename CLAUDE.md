@@ -499,10 +499,10 @@ Read in Linux 4.18, 5.10, 6.12 and 6.18, cryptsetup 2.0.6, 2.3.7, 2.7.0 and 2.8.
 
 ### What the checks have found
 
-Three defects of the C program were found by its checks before it was first committed, and each
-check stays: a copy of zero bytes from a null pointer in the hash code and a sort of an empty
-list of volumes (the sanitizers), and the devices that stand on a volume named in the order of
-the directory and not of their names (the run beside `keytriage.sh` on LVM).
+Three defects of the C program were found by its checks while it was written, and each check
+stays: a copy of zero bytes from a null pointer in the hash code and a sort of an empty list of
+volumes (the sanitizers), and the devices that stand on a volume named in the order of the
+directory and not of their names (the run beside `keytriage.sh` on LVM).
 
 ### Where it has run
 
@@ -599,7 +599,11 @@ compared with `cryptsetup` on LUKS1 and LUKS2 containers made there: the copy mu
 `luksHeaderBackup` byte for byte, and a key must be proven exactly where `cryptsetup open
 --test-passphrase` accepts it, also for headers with erased keyslots. A LUKS2 header whose first
 copy is damaged must be read from the second, with the file left as it is. Files that end
-inside a header and random bytes must be named and not read. The parts that read the system
+inside a header and random bytes must be named and not read. The code that reads the answers of
+device-mapper is given answers laid out as `list_devices` and `retrieve_status` of the kernel lay
+them out, before and from Linux 4.13, and then the same with bytes changed and ends cut off,
+1600 times: each must be read or refused, and the sanitizers report a read outside the buffer.
+The parts that read the system
 are given mount tables, a tree like `/sys` with logical volumes on a volume, a lockdown file, a
 SecureBoot variable and an os-release written there.
 

@@ -46,4 +46,9 @@ int dm_list(int fd, struct dm_dev **devs, size_t *ndevs, char err[DM_ERR_LEN]);
 int dm_table(int fd, const char *name, struct dm_table *t, char err[DM_ERR_LEN]);
 void dm_table_free(struct dm_table *t);                         /* wipes the buffer */
 
+/* The two answers of the kernel as bytes, which is what dm_list and dm_table read them from.
+   dm_table_answer takes the buffer, which malloc gave, as its own, also where it fails. */
+int dm_list_answer(const void *buf, size_t len, struct dm_dev **devs, size_t *ndevs, char err[DM_ERR_LEN]);
+int dm_table_answer(void *buf, size_t len, struct dm_table *t, char err[DM_ERR_LEN]);
+
 #endif

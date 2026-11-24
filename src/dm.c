@@ -141,15 +141,30 @@ int dm_open(char err[DM_ERR_LEN])
 int dm_list(int fd, struct dm_dev **devs, size_t *ndevs, char err[DM_ERR_LEN])
 {
     struct dm_ioctl *io;
-    struct dm_dev *list = NULL;
-    const char *data = NULL;
-    size_t len, avail, off = 0, count = 0, room = 0;
-    int r = -1;
+    size_t len;
+    int r;
 
     *devs = NULL;
     *ndevs = 0;
     if (request(fd, DM_LIST_DEVICES, "the list of the mapped devices", NULL, 0, &io, &len, err))
         return -1;
+    r = dm_list_answer(io, len, devs, ndevs, err);
+    free(io);
+    return r;
+}
+
+int dm_list_answer(const void *buf, size_t len, struct dm_dev **devs, size_t *ndevs, char err[DM_ERR_LEN])
+{
+    const struct dm_ioctl *io = buf;
+    struct dm_dev *list = NULL;
+    const char *data = NULL;
+    size_t avail, off = 0, count = 0, room = 0;
+    int r = -1;
+
+    *devs = NULL;
+    *ndevs = 0;
+    if (len < sizeof *io)
+        goto malformed;
     avail = answer(io, len, &data);
     while (avail) {
         struct dm_name_list head;
@@ -193,15 +208,13 @@ malformed:
     snprintf(err, DM_ERR_LEN, "the list of the mapped devices: the answer of the kernel is not understood");
 out:
     free(list);
-    free(io);
     return r;
 }
 
 int dm_table(int fd, const char *name, struct dm_table *t, char err[DM_ERR_LEN])
 {
     struct dm_ioctl *io;
-    const char *data = NULL;
-    size_t len, avail, off = 0, i;
+    size_t len;
 
     memset(t, 0, sizeof *t);
     if (!*name || strlen(name) >= DM_NAME_LEN) {
@@ -211,8 +224,20 @@ int dm_table(int fd, const char *name, struct dm_table *t, char err[DM_ERR_LEN])
     if (request(fd, DM_TABLE_STATUS, "the table of a mapped device", name,
                 DM_STATUS_TABLE_FLAG | DM_SECURE_DATA_FLAG, &io, &len, err))
         return -1;
-    t->buf = io;
+    return dm_table_answer(io, len, t, err);
+}
+
+int dm_table_answer(void *buf, size_t len, struct dm_table *t, char err[DM_ERR_LEN])
+{
+    struct dm_ioctl *io = buf;
+    const char *data = NULL;
+    size_t avail, off = 0, i;
+
+    memset(t, 0, sizeof *t);
+    t->buf = buf;
     t->buflen = len;
+    if (len < sizeof *io)
+        goto malformed;
     io->name[DM_NAME_LEN - 1] = 0;
     io->uuid[DM_UUID_LEN - 1] = 0;
     memcpy(t->name, io->name, DM_NAME_LEN);
@@ -221,6 +246,8 @@ int dm_table(int fd, const char *name, struct dm_table *t, char err[DM_ERR_LEN])
     avail = answer(io, len, &data);
     if (!io->target_count)
         return 0;
+    if (io->target_count > avail / (sizeof(struct dm_target_spec) + 1))  /* each has a line of a byte at least */
+        goto malformed;
     t->targets = calloc(io->target_count, sizeof *t->targets);
     if (!t->targets) {
         snprintf(err, DM_ERR_LEN, "the table of a mapped device: no memory");

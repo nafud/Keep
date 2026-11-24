@@ -13,6 +13,9 @@
 #              and some longer ones
 #   json       texts that RFC 8259 allows and texts that it does not, and a LUKS2 metadata text
 #              with one byte changed at a time, against Python's json module
+#   kernel     the two answers of device-mapper, laid out as the kernel lays them out, before
+#              and from Linux 4.13, and then with bytes changed and ends cut off 1600 times:
+#              read or refused, never a fault
 #   system     the mount that holds a path, what a volume carries by a tree like /sys with
 #              logical volumes on it, the file systems that encrypt by themselves, the
 #              lockdown mode, the variable SecureBoot, the name of the system and the names of
@@ -187,6 +190,108 @@ sys.exit(1 if bad else 0)
 EOF
 for u in "${UNITS[@]}"; do
     check "json: ${u##*/} reads and refuses what RFC 8259 says, as Python's json does" python3 -I "$T/json.py" "$u"
+done
+
+# ---- kernel --------------------------------------------------------------------------------------
+# The two answers of device-mapper, laid out here as list_devices and retrieve_status of
+# dm-ioctl.c lay them out, and then with bytes changed and with their ends cut off.
+cat > "$T/kernel.py" <<'EOF'
+import os, random, struct, subprocess, sys
+unit, tmp, bad = sys.argv[1], sys.argv[2], 0
+HEAD = 312                                      # sizeof(struct dm_ioctl)
+def align(n): return (n + 7) & ~7
+def encode(major, minor): return (minor & 0xff) | (major << 8) | ((minor & ~0xff) << 12)
+def head(size, count=0, dev=0, name=b"", uuid=b""):
+    return struct.pack("<3I7IQ128s129s7s", 4, 48, 0, size, HEAD, count, 0, 0, 0, 0, dev, name, uuid, b"")
+def listing(devs, new=True):
+    """devs: (name, major, minor). new: an event number and flags follow a name (Linux 4.13
+    and later, two words), else one word, as before."""
+    body = b""
+    for i, (name, major, minor) in enumerate(devs):
+        rec = struct.pack("<QI", encode(major, minor), 0) + name + b"\0"
+        rec += b"\0" * (align(len(rec)) - len(rec)) + (b"\0" * 8 if new else b"\0" * 4)
+        rec += b"\0" * (align(len(rec)) - len(rec))
+        if i + 1 < len(devs): rec = rec[:8] + struct.pack("<I", len(rec)) + rec[12:]
+        body += rec
+    return head(HEAD + len(body)) + body if devs else head(305)
+def table(name, uuid, major, minor, targets):
+    body = b""
+    for start, length, kind, params in targets:
+        spec = struct.pack("<QQiI16s", start, length, 0, 0, kind) + params + b"\0"
+        used = len(body) + len(spec)
+        nxt = align(used)
+        spec = spec[:20] + struct.pack("<I", nxt) + spec[24:]
+        body += spec + b"\0" * (nxt - used)
+    size = HEAD + len(body) if targets else 305
+    return head(size, len(targets), encode(major, minor), name, uuid) + body
+def run(kind, data):
+    path = os.path.join(tmp, "answer.bin")
+    open(path, "wb").write(data)
+    p = subprocess.run([unit, "dm-answer", kind, path], capture_output=True)
+    return p.returncode, p.stdout.decode("latin-1"), p.stderr.decode("latin-1")
+def expect(what, kind, data, out, err=None):
+    global bad
+    rc, got, goterr = run(kind, data)
+    if rc != 0 or got != out or (err is not None and err not in goterr):
+        bad += 1; print(what, ": status", rc, "output", repr(got), repr(goterr[-200:]))
+def refused(what, kind, data):
+    global bad
+    rc, got, goterr = run(kind, data)
+    if rc != 1 or not got.startswith("refused: "):
+        bad += 1; print(what, ": status", rc, "output", repr(got[:200]), repr(goterr[-300:]))
+
+devs = [(b"kc_l2", 252, 0), (b"No", 252, 2), (b"name\\x20with\\x20space", 252, 4), (b"vg-root", 253, 1048575),
+        (b"n" * 127, 4095, 300)]
+want = "".join("%s\t(%d:%d)\n" % (n.decode(), ma, mi) for n, ma, mi in sorted(devs))
+expect("a list as Linux 4.13 and later write it", "list", listing(devs), want)
+expect("a list as Linux before 4.13 wrote it", "list", listing(devs, new=False), want)
+expect("a list of one", "list", listing(devs[:1]), "kc_l2\t(252:0)\n")
+expect("no mapped device", "list", listing([]), "No devices found\n")
+expect("a buffer with room behind the list", "list", listing(devs) + b"\0" * 4096, want)
+refused("a name of 128 bytes", "list", listing([(b"n" * 128, 1, 1)]))
+refused("an empty name", "list", listing([(b"", 1, 1)]))
+refused("a list shorter than its header", "list", listing(devs)[:200])
+
+key = b"ab" * 64
+crypt = b"aes-xts-plain64 " + key + b" 0 7:0 32768 1 allow_discards"
+t = table(b"kc_l1", b"CRYPT-LUKS1-0123456789abcdef0123456789abcdef-kc_l1", 252, 1, [(0, 126976, b"crypt", crypt)])
+expect("a crypt table with its key", "table", t,
+       "0 126976 crypt aes-xts-plain64 " + "0" * 128 + " 0 7:0 32768 1 allow_discards\n",
+       "name kc_l1, uuid CRYPT-LUKS1-0123456789abcdef0123456789abcdef-kc_l1, device 252:1, 1 target(s)\nkey of 64 bytes, sha256 ")
+t2 = table(b"kc_l2", b"CRYPT-LUKS2-x", 252, 0, [(0, 98304, b"crypt", b"aes-xts-plain64 :64:logon:cryptsetup:u-d0 0 7:1 32768")])
+expect("a keyring reference stays as it is", "table", t2, "0 98304 crypt aes-xts-plain64 :64:logon:cryptsetup:u-d0 0 7:1 32768\n")
+t3 = table(b"lv", b"", 253, 3, [(0, 100, b"linear", b"8:3 2048"), (100, 50, b"striped_sixteen_", b"2 128 8:3 0 8:4 0"),
+                                (150, 10, b"error", b"")])
+expect("three targets, one type of 16 bytes, one without a line", "table", t3,
+       "0 100 linear 8:3 2048\n100 50 striped_sixteen_ 2 128 8:3 0 8:4 0\n150 10 error \n", "3 target(s)")
+expect("a device without a table", "table", table(b"empty", b"", 253, 9, []), "", "0 target(s)")
+refused("a table shorter than its header", "table", t[:311])
+refused("more targets stated than the answer holds", "table", t[:20] + struct.pack("<I", 100000) + t[24:])
+refused("two targets stated and one held", "table", t[:20] + struct.pack("<I", 2) + t[24:])
+refused("a line without its end", "table", t.rstrip(b"\0")[:-1] + b"x")
+
+# changed and cut answers: read or refused, with status 0 or 1. Any other status is a fault,
+# which the build with the sanitizers reports for a read outside the buffer.
+rnd = random.Random(2)
+for kind, base in (("list", listing(devs)), ("list", listing(devs, new=False)), ("table", t), ("table", t3)):
+    for _ in range(400):
+        b = bytearray(base)
+        how = rnd.randrange(5)
+        if how == 0: del b[rnd.randrange(len(b)):]
+        elif how == 1:
+            for _ in range(rnd.randrange(1, 4)): b[rnd.randrange(len(b))] = rnd.randrange(256)
+        elif how == 2:                          # the words that say where things lie
+            off = rnd.choice((12, 16, 20, 24, HEAD + 8, HEAD + 20))
+            b[off:off + 4] = struct.pack("<I", rnd.choice((0, 1, 7, 8, 12, 40, 311, 312, 313, len(b) - 1, len(b), len(b) + 1, 0x7fffffff, 0xffffffff)))
+        elif how == 3: b[rnd.randrange(HEAD, len(b))] = rnd.choice((0, 0, 0x20, 0xff))
+        else: b += bytes(rnd.randrange(256) for _ in range(rnd.randrange(1, 64)))
+        rc, got, goterr = run(kind, bytes(b))
+        if rc not in (0, 1):
+            bad += 1; print("a changed", kind, "answer ended with status", rc, ":", goterr[-400:])
+sys.exit(1 if bad else 0)
+EOF
+for u in "${UNITS[@]}"; do
+    check "kernel: ${u##*/} reads the answers of device-mapper and refuses damaged ones without a fault" python3 -I "$T/kernel.py" "$u" "$T"
 done
 
 # ---- system --------------------------------------------------------------------------------------
