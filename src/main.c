@@ -1,9 +1,13 @@
 /*
  * keep: decryption-readiness triage for an unlocked Linux system, as one static program.
  *
+ *   sudo ./keep [-n]
  *   sudo ./keep triage [-d DIR] [-b N]
  *   ./keep scan [-s STEP] [-r] [FILE]
  *   ./keep -h | -V
+ *
+ * Without a command it asks for the parameters of one run as plain questions, lists them and
+ * runs the triage or the search of a memory dump (menu.c). -n asks and lists and runs nothing.
  *
  * triage   For every open dm-crypt volume of the running system, decide whether its volume key
  *          can be kept as evidence and proven now, and write the keys, the header backups and
@@ -21,13 +25,15 @@
  * the backing device, and computes the proof of a key itself. It writes into the destination
  * and nowhere else.
  *
- * This is the C program of Keep while it is built. It has no dialogue and takes no memory image
- * yet: keytriage.sh on the tool medium has both.
+ * This is the C program of Keep while it is built. It takes no memory image yet: keytriage.sh
+ * on the tool medium does.
  *
- * Exit status: 0, 1 when a run could not start or a write to the destination failed, 2 for a
- * wrong option. scan ends with the status of kcore-keyscan.
+ * Exit status: 0, 1 when a run could not start, a write to the destination failed or the
+ * dialogue ended without a run, 2 for a wrong option. scan ends with the status of
+ * kcore-keyscan, and the dialogue with the status of the run it made.
  */
 #include "keyscan.h"
+#include "menu.h"
 #include "triage.h"
 
 #include <errno.h>
@@ -38,12 +44,18 @@
 #include <unistd.h>
 
 static const char usage[] =
-    "usage: keep triage [-d DIR] [-b N]\n"
+    "usage: keep [-n]\n"
+    "       keep triage [-d DIR] [-b N]\n"
     "       keep scan [-s STEP] [-r] [FILE]\n"
     "       keep -h | -V\n";
 
 static const char help[] =
     "keep " KEEP_VERSION ": decryption-readiness triage for an unlocked Linux system\n"
+    "\n"
+    "  sudo ./keep [-n]\n"
+    "      Ask for the parameters of one run, one question per line, list them and run it:\n"
+    "      the triage of this system, or the search of a memory dump that exists. Enter takes\n"
+    "      the default of a question. -n asks and lists and runs nothing.\n"
     "\n"
     "  sudo ./keep triage [-d DIR] [-b N]\n"
     "      For every open dm-crypt volume, decide whether its volume key can be kept as\n"
@@ -125,6 +137,10 @@ int main(int argc, char **argv)
        written to the examined system (do_coredump in fs/coredump.c), and no other user's
        process can read its memory. */
     prctl(PR_SET_DUMPABLE, 0);
+    if (argc == 1)
+        return menu_run(0);
+    if (argc == 2 && !strcmp(argv[1], "-n"))
+        return menu_run(1);
     if (argc >= 2 && !strcmp(argv[1], "triage"))
         return cmd_triage(argc - 1, argv + 1);
     if (argc >= 2 && !strcmp(argv[1], "scan"))

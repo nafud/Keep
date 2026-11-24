@@ -32,7 +32,9 @@
 #             what keytriage.sh gave: every field of every volume in verdict.json, header
 #             backups that are the files of "cryptsetup luksHeaderBackup" byte for byte, and
 #             the same keys. Before any mapping is made it is run once on the guest as it
-#             is, which on a guest without encrypted volumes is the run with none.
+#             is, which on a guest without encrypted volumes is the run with none. It is
+#             also started once without a command, as an examiner starts it, with the
+#             questions of its dialogue answered through a pipe.
 #             With KEEP_SAN=/path/to/keep-san in the environment, that build of the program
 #             with the sanitizers of the compiler is run at the same places as well and must
 #             end with status 0, which it does not where a sanitizer finds a fault
@@ -258,6 +260,22 @@ if command -v mkfs.vfat >/dev/null && mkfs.vfat fat.img >/dev/null 2>&1 && mount
     fi
 else
     echo "SKIP   no mkfs.vfat or no FAT in this kernel, the destination with FAT is not run"
+fi
+# The C program started as an examiner starts it, without a command: its questions are answered
+# through a pipe, and the run is made by the dialogue.
+mkdir "$W/cmenu"
+printf 'system\n%s\n\nyes\n' "$W/cmenu" | "$KIT/c/keep" > "$W/screen-cmenu.txt" 2>&1; rcm=$?
+M=$(ls -d "$W"/cmenu/triage_* 2>/dev/null | tail -n 1)
+ok=1
+[ "$rcm" = 0 ] && grep -q '^Triage started at: ' "$W/screen-cmenu.txt" && grep -q '^keep: SUCCESS$' "$W/screen-cmenu.txt" || ok=0
+vols=$(grep '^    Open dm-crypt volumes: ' "$W/screen-cmenu.txt")
+for n in No kc_l1 kc_l2 kc_null; do case $vols in *"($n "*|*" $n "*|*" $n)") ;; *) ok=0 ;; esac; done
+for n in kc_l2 kc_l1 No; do cmp -s "$M/keys/$n.vk" "$n.vk" || ok=0; done
+(cd "$M" 2>/dev/null && sha256sum -c --quiet manifest.sha256 >/dev/null 2>&1) || ok=0
+if [ "$ok" = 1 ]; then
+    echo "PASS   the C program started without a command, through its questions: the open volumes are named before the run, three keys equal the ground truth, manifest"
+else
+    echo "FAIL   the C program started without a command, through its questions, status $rcm"; sed 's/^/       /' "$W/screen-cmenu.txt"; PASS=0
 fi
 # LVM on LUKS: the stack of an encrypted installation
 mkdir "$W/lvm"

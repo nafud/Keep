@@ -563,6 +563,14 @@ int main(int argc, char **argv)
         sys_os_name(argv[2], argv[3], name, sizeof name);
         return cmd_text(strdup(name));
     }
+    if (argc == 3 && !strcmp(argv[1], "memory")) {
+        unsigned long long kib;
+
+        if (sys_memory(argv[2], &kib))
+            return cmd_text(strdup("unknown"));
+        printf("[%llu]\n", kib);
+        return 0;
+    }
     if (argc == 3 && !strcmp(argv[1], "names"))
         return cmd_names(argv[2]);
     if (argc == 4 && !strcmp(argv[1], "dm-answer") && (!strcmp(argv[2], "list") || !strcmp(argv[2], "table")))
@@ -577,7 +585,7 @@ int main(int argc, char **argv)
         return cmd_dm_table(argv[2]);
     fprintf(stderr, "usage: keep-unit selftest | hash NAME | pbkdf2 NAME KEY SALT ITERATIONS LENGTH | json | luks FILE | "
             "luks-backup FILE OUT | luks-prove FILE KEYFILE | mount-of MOUNTINFO PATH | in-use SYSFS MOUNTINFO SWAPS MAJOR MINOR | other-fs MOUNTS | "
-            "lockdown FILE | secure-boot DIR | os-name FILE FILE | names NAME | dm-answer list|table FILE | volumes FILE... | "
+            "lockdown FILE | secure-boot DIR | os-name FILE FILE | memory FILE | names NAME | dm-answer list|table FILE | volumes FILE... | "
             "dm-list | dm-table NAME | dm-volumes\n");
     return 2;
 }

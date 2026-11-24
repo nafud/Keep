@@ -332,6 +332,19 @@ void sys_lockdown(const char *path, char *out, size_t outlen)
     free(line);
 }
 
+int sys_memory(const char *meminfo, unsigned long long *kib)
+{
+    char *text = read_text(meminfo, 1 << 16, NULL), *line, *end;
+    int found = 0;
+
+    for (line = text; line && !found; line = end ? end + 1 : NULL) {
+        end = strchr(line, '\n');
+        found = !strncmp(line, "MemTotal:", 9) && sscanf(line + 9, "%llu kB", kib) == 1;
+    }
+    free(text);
+    return found ? 0 : -1;
+}
+
 /* A variable in efivarfs is four bytes of attributes and then its value. SecureBoot has one
    byte, so the last byte of the file is the value. */
 void sys_secure_boot(const char *dir, char *out, size_t outlen)

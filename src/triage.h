@@ -4,7 +4,7 @@
 #ifndef KEEP_TRIAGE_H
 #define KEEP_TRIAGE_H
 
-#define KEEP_VERSION "2.0-pre2 (2026-11)"
+#define KEEP_VERSION "2.0-pre3 (2026-11)"
 #define TRIAGE_ERR_LEN 256
 
 struct triage_options {

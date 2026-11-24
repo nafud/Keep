@@ -37,6 +37,10 @@ void sys_secure_boot(const char *dir, char *out, size_t outlen);
 /* PRETTY_NAME of the first of the two os-release files that can be read. */
 void sys_os_name(const char *first, const char *second, char *out, size_t outlen);
 
+/* The memory of the machine in KiB, the line MemTotal of MEMINFO (/proc/meminfo). Returns 0, or
+   -1 where the file has no such line. */
+int sys_memory(const char *meminfo, unsigned long long *kib);
+
 /* The path of the node of a block device in /dev, as cryptsetup names it: /dev/mapper/NAME for
    a mapped device, else /dev/ and the name of the kernel. Returns 0, or -1 where /sys does not
    know the device. */
