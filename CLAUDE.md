@@ -506,22 +506,33 @@ directory and not of their names (the run beside `keytriage.sh` on LVM).
 
 ### Where it has run
 
-`keep triage` 2.0-pre1 was run beside `keytriage.sh` 1.5.0 by `compat-check.sh` on a guest of
-Ubuntu 24.04.5 with kernel 6.8.0-147-generic and cryptsetup 2.7.0, emulated on the workstation,
-with outputs that are not kept: the same line of `verdict.json` for every volume, on the table
-route, the memory route, a mapping without a type, the null cipher and LVM on LUKS, and header
-backups and keys that are the same byte for byte. On that guest `tests/keep-unit` gave the list,
-the tables, the UUIDs and the keys of `dmsetup` 1.02.185 for six mappings, a plain one and one
-with a space in its name among them. The runs of the pipeline on the two runner images and the
-ten guests are to be entered here.
+`keep triage` 2.0-pre1 is run beside `keytriage.sh` 1.5.0 by `compat-check.sh`: before any
+mapping is made, on the four mappings of the main run and on LVM on LUKS. It gave the same line
+of `verdict.json` for every volume, on the table route, the memory route, a mapping without a
+type and the null cipher, and header backups and keys that are the same byte for byte, on these
+systems:
+
+| System | Kernel | Where |
+|---|---|---|
+| Ubuntu 24.04.5, runner image | 7.0.0-1017-azure | `checks.yml`, also the build with the sanitizers |
+| AlmaLinux 10.3 | 6.12.0-264.16.1.el10_3.x86_64 | `distros.yml` |
+| Debian 13, Debian 12, Ubuntu 26.04.1, Ubuntu 24.04.5, Fedora 45, AlmaLinux 9.9, Rocky Linux 10.3, Arch Linux | those of the images, as in "Systems checked" | `distros.yml`: the jobs ended with `RESULT: PASS`, which they do not where the C program differs. Their outputs are kept as artifacts and were not read line by line |
+| Ubuntu 24.04.5 | 6.8.0-147-generic | a guest emulated on the workstation, output not kept |
+
+On the guest that was emulated on the workstation, `tests/keep-unit` gave the list, the tables,
+the UUIDs and the keys of `dmsetup` 1.02.185 for six mappings, a plain one and one with a space
+in its name among them.
+
+The guest of openSUSE Leap 16.1 did not run: the distribution has removed the build of the
+image that `tests/compat-images.txt` names, and the newer build is to be entered there.
 
 ### Not handled or not checked
 
 - A LUKS2 volume with integrity: its header lies below the dm-integrity device that the table
   names, where the program does not look. Such a mapping is taken as one without a header.
 - A mapping in re-encryption, which cryptsetup builds from several devices.
-- Every kernel but 6.8, until the pipeline has run. The requests to the kernel are read in the
-  sources of 4.18 to 6.18 and run on 6.8 only.
+- Kernels before 5.14, the oldest of the list above. The requests to the kernel are read in the
+  sources from 4.18 on, which is the kernel of RHEL 8, and are not run there.
 - A LUKS2 header whose second copy is the one in use is read in `unit-check.sh` from a file,
   not from a device of a mapping.
 
