@@ -1,14 +1,15 @@
 #!/bin/bash
 # build-toolkit.sh OUTDIR : assemble the Keep tool medium on the workstation and write it as an ISO.
 #
-#   sudo apt install bash-static busybox-static xorriso gcc curl file
+#   sudo apt install bash-static busybox-static xorriso gcc make musl-tools curl file
 #   ./build-toolkit.sh /path/to/work      -> work/tools/ (the tree) and work/tools.iso
 #
 # The medium carries: bin/bash (bash-static), bin/busybox with one symlink per applet, bin/avml
 # (Microsoft AVML, release binary pinned by SHA-256), bin/kcore-keyscan (the project scanner, built
 # here statically), keep (the launcher, built here statically from keep.c: it starts the
 # dialogue in the shell of the medium), keytriage.sh, keep-menu.sh (the dialogue), VERSIONS.txt
-# and MANIFEST.sha256. The ISO is written with Rock
+# and MANIFEST.sha256. While the C program of Keep is built it rides along as c/keep, static
+# against musl, so that the checks can run it beside keytriage.sh. The ISO is written with Rock
 # Ridge so that symlinks and execute bits survive; attached to a guest it is read-only by nature.
 # The download is kept under work/cache/.
 #
@@ -47,7 +48,13 @@ chmod 755 "$T/keytriage.sh" "$T/keep-menu.sh"
 # the launcher, static like the scanner: "keep" starts keep-menu.sh in the shell of the medium
 gcc -static -O2 -Wall -o "$T/keep" "$HERE/keep.c"
 
-for b in bin/bash bin/busybox bin/avml bin/kcore-keyscan keep; do
+# the C program, which is to take the place of everything above
+make -s -C "$HERE" keep
+mkdir "$T/c"
+cp "$HERE/keep" "$T/c/keep"
+chmod 755 "$T/c/keep"
+
+for b in bin/bash bin/busybox bin/avml bin/kcore-keyscan keep c/keep; do
     file "$T/$b" | grep -q 'statically linked\|static-pie linked' || { echo "$b is not static"; exit 1; }
 done
 {
@@ -57,9 +64,10 @@ done
     echo "avml:         $("$T/bin/avml" --version)  from $AVML_URL"
     echo "kcore-keyscan: built here with $(gcc --version | head -1) from kcore-keyscan.c"
     echo "keep:         built here with the same compiler from keep.c"
+    echo "c/keep:       $("$T/c/keep" -V), built here with $(musl-gcc --version | head -1) against musl $(dpkg-query -W -f='${Version}' musl-dev)"
     echo "keytriage.sh: $(grep -m1 '^VERSION=' "$HERE/keytriage.sh")"
     echo
-    echo "linkage:"; file "$T/bin/bash" "$T/bin/busybox" "$T/bin/avml" "$T/bin/kcore-keyscan" "$T/keep" | sed 's/, BuildID[^,]*//'
+    echo "linkage:"; file "$T/bin/bash" "$T/bin/busybox" "$T/bin/avml" "$T/bin/kcore-keyscan" "$T/keep" "$T/c/keep" | sed 's/, BuildID[^,]*//'
 } > "$T/VERSIONS.txt"
 (cd "$T" && find . -type f ! -name MANIFEST.sha256 -print0 | sort -z | xargs -0 sha256sum > MANIFEST.sha256)
 xorriso -as mkisofs -quiet -volid KEEPTOOLS -rational-rock -joliet -o "$OUT/tools.iso" "$T" 2>/dev/null

@@ -12,6 +12,10 @@ prove them against a disk image.
 Keep is for lawful examination of systems the examiner is authorised to examine. It is not a
 general artefact collector and it depends on no other collector.
 
+The scene side is being written anew as one static C program that starts no other program. Until
+it gives what the scripts give on every system of the list, the scripts on the tool medium are
+Keep. The section "The C program" says how far that work is.
+
 This file is the repository's description and the working rules for it. The repository has no
 README.
 
@@ -21,6 +25,7 @@ README.
 |---|---|---|
 | `keytriage.sh` | scene, as root | The triage itself. Enumerates the open dm-crypt volumes, backs up LUKS headers, walks the route ladder, prints one verdict per volume, writes the folder of the run into the destination |
 | `kcore-keyscan.c` | scene and lab | Static C scanner. Finds AES-128 and AES-256 key schedules in `/proc/kcore` or in a memory image |
+| `src/`, `Makefile` | scene, in work | The C program `keep`, which is to take the place of the medium. `make` builds it statically against musl |
 | `keep.c` | scene | The launcher of the medium, a static program. `keep` starts `keep-menu.sh` in the medium's own shell with `-p`, so that Keep is started by one word |
 | `keep-menu.sh` | scene and lab | The dialogue of Keep, in the manner of `ewfacquire`. Asks for each parameter of one run as a plain question and calls `keytriage.sh` or `offline-keyscan.sh` |
 | `vkverify.py` | lab | Verifier. Proves which scanner candidates are the volume key of a LUKS1 or LUKS2 header |
@@ -33,13 +38,18 @@ README.
 | `tests/compat-images.txt` | test | The cloud images for `compat-guest.sh`: a name, the address of one dated build and its published SHA-256 or SHA-512 |
 | `tests/make-compat-vm.sh` | test, workstation | Starts a libvirt guest that stays, from a distribution's cloud image, for work by hand |
 | `tests/selftest.sh` | test, workstation and pipeline | Runs every check that needs neither root nor device-mapper, `keytriage.sh` included on stand-ins for the examined system, and ends with `RESULT: PASS` or `RESULT: FAIL` |
+| `tests/unit-check.sh` | test, workstation and pipeline | Builds the parts of the C program twice, statically and with the sanitizers of the compiler, and checks each against an independent source: `hashlib`, Python's `json`, `cryptsetup` |
+| `tests/keep-unit.c` | test | Runs one part of the C program at a time, for `unit-check.sh` and for a comparison with `dmsetup` on a guest |
 | `docs/` | GitHub Pages | The page of Keep: `index.html`, `assets/keep.css`, `assets/keep.js` and the fonts |
 | `.github/workflows/` | GitHub | `checks.yml` runs the self-test, builds the medium and runs `compat-check.sh` on two runner images on every push. `distros.yml` runs it in guests of ten distribution releases. `pages.yml` publishes `docs/` from `main` |
 
 The eight files at the root must stay siblings. `build-toolkit.sh` takes `keytriage.sh`,
 `keep-menu.sh`, `keep.c` and `kcore-keyscan.c` from its own directory. `keep-menu.sh` and
 `offline-keyscan.sh` look for `keytriage.sh`, `offline-keyscan.sh` and `vkverify.py` beside
-themselves.
+themselves. `kcore-keyscan.c` includes `src/keyscan.h`, and the `Makefile` at the root builds
+the C program from `src/` and from `kcore-keyscan.c`. `keep.c` at the root is the launcher of
+the medium, and the program `keep` that `make` builds is the C program: two things of one name
+while both exist.
 
 ## How it works
 
@@ -298,7 +308,7 @@ status is 1 when a file could not be read as a report.
 volume label `KEEPTOOLS`).
 
 ```bash
-sudo apt install bash-static busybox-static xorriso gcc curl file
+sudo apt install bash-static busybox-static xorriso gcc make musl-tools curl file
 ./build-toolkit.sh /path/to/work
 ```
 
@@ -313,6 +323,8 @@ sudo apt install bash-static busybox-static xorriso gcc curl file
   `vkverify.py`, `offline-keyscan.sh` and `keep-report.py` are lab tools.
 - The build refuses a binary that is not statically linked, and writes `VERSIONS.txt` and
   `MANIFEST.sha256`.
+- `c/keep` is the C program, built by `make` against musl. It is on the medium only so that
+  the checks can run it beside the scripts.
 - `dmsetup` and `cryptsetup` are not on the medium. The examined system's own are used, and their
   resolved paths and SHA-256 are recorded in the report so they can be checked against the
   distribution's packages afterwards.
@@ -389,6 +401,130 @@ scanner refuses end the run. Any other container format is searched as raw bytes
 tested. `IMAGE` is a raw disk or partition image, a header backup, the disk file of a virtual
 machine or an EnCase image.
 
+## The C program
+
+The scene side of Keep is being written anew as one static C program, `keep`, built from `src/`.
+It is to take the place of the tool medium: of `keytriage.sh`, `keep-menu.sh`, the launcher, the
+bash and busybox of the medium, the examined system's `dmsetup` and `cryptsetup`, and AVML. An
+examiner then copies one file to the system and starts it. The program starts no other program.
+
+Until it gives what `keytriage.sh` gives on every system of the list below, `keytriage.sh` on the
+medium is Keep, and everything in this file outside this section describes it. The lab tools
+stay in Python.
+
+```bash
+sudo apt install make musl-tools
+make                                    # keep and tests/keep-unit, static against musl
+sudo ./keep triage [-d DIR] [-b N]      # the work of keytriage.sh, without -m
+./keep scan [-s STEP] [-r] [FILE]       # the work of kcore-keyscan
+```
+
+### What stands in whose place
+
+| In the medium | In the C program | Checked against |
+|---|---|---|
+| `dmsetup ls --target crypt`, `dmsetup table --showkeys` | `src/dm.c`: the ioctls `DM_LIST_DEVICES` and `DM_TABLE_STATUS` of `/dev/mapper/control` | `dmsetup` 1.02.185 on kernel 6.8: the same devices, tables, UUIDs and keys |
+| `cryptsetup status` | `src/triage.c`: the type from the UUID of the mapping and the header, the cipher, the key size and the key location from the table line, the device from `/sys/dev/block` | `keytriage.sh` on the same mappings: the same line of `verdict.json` for every volume |
+| `cryptsetup luksHeaderBackup` | `src/luks.c`: the header and the keyslot area read from the backing device | `cryptsetup` 2.7.0: the same file byte for byte, for LUKS1 and LUKS2 |
+| `cryptsetup open --test-passphrase` | `src/luks.c` and `src/hash.c`: PBKDF2 of the key against the digest of the header backup | `cryptsetup` 2.7.0 on the same headers and keys, and Python's `hashlib` |
+| `kcore-keyscan` | `kcore-keyscan.c` linked in without its `main` | the scanner before the change: the same output, messages and status on every format |
+| bash and the applets of busybox | C, with the standard library only | `tests/unit-check.sh` |
+| AVML | not written yet | |
+| `keep-menu.sh` and the launcher | not written yet | |
+
+### What the sources say
+
+Read in Linux 4.18, 5.10, 6.12 and 6.18, cryptsetup 2.0.6, 2.3.7, 2.7.0 and 2.8.1, and LVM2
+2.03.22:
+
+- The kernel hands the table of a mapping to every caller with `CAP_SYS_ADMIN`, the key of a
+  crypt target in hexadecimal included (`ctl_ioctl` and `retrieve_status` in `dm-ioctl.c`,
+  `crypt_status` in `dm-crypt.c`). No flag asks for the key and lockdown does not withhold it.
+  It is `dmsetup` that replaces the key by zeros (`_status` in `dmsetup.c`).
+- A request states an interface version, and the kernel refuses one whose minor number is above
+  its own (`check_version`). `dmsetup` states 4.0.0 for both requests, and so does `dm.c`.
+- The structures of `dm-ioctl.h` have not changed their layout in these versions. They are
+  written out in `dm.c`, so the build needs no kernel headers.
+- With `DM_SECURE_DATA_FLAG` the kernel wipes its copy of the answer, which holds the key.
+- `/dev/mapper/control` can exist where the module is not loaded (the alias
+  `devname:mapper/control` of dm-mod), and opening it then loads the module. The program opens
+  it only where `/sys/class/misc/device-mapper` exists.
+- cryptsetup gives a mapping the UUID `CRYPT-<type>-<UUID without hyphens>-<name>`
+  (`dm_prepare_uuid`) and reads the type back from it (`crypt_init_by_name_and_header`). For
+  LUKS it then reads the header from the device of the table, and a header that is missing or
+  has another UUID makes the mapping one without a type (`_init_by_name_crypt`,
+  `crypt_uuid_cmp`).
+- `luksHeaderBackup` writes, for LUKS1, the device up to the end of the last keyslot, with the
+  unused stretch between the header and the first keyslot as zeros, to a multiple of the page
+  size (`LUKS_hdr_backup`), and for LUKS2 both copies of the header and the keyslot area as
+  they are (`LUKS2_hdr_backup`). The four releases write the same bytes.
+- Where one copy of a LUKS2 header is damaged, cryptsetup writes it anew from the other when it
+  reads the header. The program reads the copy that holds and writes nothing.
+- A process that is not dumpable writes no core file (`do_coredump`).
+
+### Its parts
+
+| File | What it does |
+|---|---|
+| `src/main.c` | The command line. Makes the process not dumpable and locks its memory before a triage |
+| `src/triage.c` | The run: destination, system, volumes, ladder, verdicts, `triage.txt`, `verdict.json`, `manifest.sha256` |
+| `src/dm.c` | The list of the mapped devices and the table of one, from the kernel |
+| `src/luks.c` | The header of LUKS1 and LUKS2: reading, the copy for the evidence, the proof of a key |
+| `src/hash.c` | SHA-1, SHA-224, SHA-256, SHA-384, SHA-512, HMAC and PBKDF2, with a self-test against the examples of the standards at every start |
+| `src/json.c` | A reader of JSON as RFC 8259 defines it, for the metadata of LUKS2 |
+| `src/sys.c` | Mounts, what a volume carries, lockdown, Secure Boot, the name of the system, each from a named file |
+| `src/util.c` | Texts that grow, names for the screen and for files, hexadecimal, flushing |
+| `kcore-keyscan.c` | The scanner. `-DKEYSCAN_LIBRARY` leaves out its `main`, and `src/keyscan.h` declares what remains |
+| `tests/keep-unit.c` | Runs one part at a time, for `tests/unit-check.sh` |
+
+### Where it differs from `keytriage.sh`
+
+- A name is shown as the kernel holds it. libdevmapper writes a character outside its list as
+  `\xNN` into the name of a mapping, so a mapping that `dmsetup` shows as `name with space` is
+  `name\x20with\x20space` in the kernel, in `/dev/mapper` and in `/sys`, and in the report.
+- The report has no programs of the examined system to name: `cryptsetup` is `null` and
+  `binaries` is empty. `tool` is `keep` and its version.
+- `log/NAME.table.txt` holds what the kernel said about a mapping, its key replaced by zeros,
+  in place of the output of `cryptsetup status`.
+- The header is read before the type is named, and the proof is made against the backup after
+  it is written and flushed. A candidate key is not written to the destination before it is
+  proven.
+- The digest functions are those of `hash.c`. A header with another one (ripemd160, whirlpool)
+  is backed up, and its key gets `captured, not proven` on the table route and `needs a memory
+  read` on the memory route, with the function named. `vkverify.py` proves it in the lab.
+- The memory of the process is locked (`mlockall`), so that no key reaches the swap space, and
+  the process is not dumpable. `cryptsetup` creates no lock file in `/run/cryptsetup`, because
+  it does not run.
+- It has no dialogue, takes no memory image and does not search a dump with a proof yet.
+
+### What the checks have found
+
+Three defects of the C program were found by its checks before it was first committed, and each
+check stays: a copy of zero bytes from a null pointer in the hash code and a sort of an empty
+list of volumes (the sanitizers), and the devices that stand on a volume named in the order of
+the directory and not of their names (the run beside `keytriage.sh` on LVM).
+
+### Where it has run
+
+`keep triage` 2.0-pre1 was run beside `keytriage.sh` 1.5.0 by `compat-check.sh` on a guest of
+Ubuntu 24.04.5 with kernel 6.8.0-147-generic and cryptsetup 2.7.0, emulated on the workstation,
+with outputs that are not kept: the same line of `verdict.json` for every volume, on the table
+route, the memory route, a mapping without a type, the null cipher and LVM on LUKS, and header
+backups and keys that are the same byte for byte. On that guest `tests/keep-unit` gave the list,
+the tables, the UUIDs and the keys of `dmsetup` 1.02.185 for six mappings, a plain one and one
+with a space in its name among them. The runs of the pipeline on the two runner images and the
+ten guests are to be entered here.
+
+### Not handled or not checked
+
+- A LUKS2 volume with integrity: its header lies below the dm-integrity device that the table
+  names, where the program does not look. Such a mapping is taken as one without a header.
+- A mapping in re-encryption, which cryptsetup builds from several devices.
+- Every kernel but 6.8, until the pipeline has run. The requests to the kernel are read in the
+  sources of 4.18 to 6.18 and run on 6.8 only.
+- A LUKS2 header whose second copy is the one in use is read in `unit-check.sh` from a file,
+  not from a device of a mapping.
+
 ## Rules that every change keeps
 
 1. No key is printed. On screen and in every report a key is named by its length and the first 16
@@ -420,7 +556,7 @@ machine or an EnCase image.
 7. A downloaded binary is pinned by SHA-256 and refused on a mismatch.
 8. A change of behaviour raises the version of the file it is in: `VERSION` in `keytriage.sh`,
    `keep-menu.sh`, `offline-keyscan.sh`, `vkverify.py`, `keep-report.py`, `kcore-keyscan.c` and
-   `keep.c`.
+   `keep.c`, and `KEEP_VERSION` in `src/triage.h` for the C program.
    The versions of `keytriage.sh` and `vkverify.py` are written into every report, that of the
    scanner into its summary line, and that of `keytriage.sh` stands on the page.
 9. A statement about behaviour on a kernel, a cryptsetup release or a distribution is checked
@@ -433,6 +569,12 @@ machine or an EnCase image.
     evidence is its purpose, and a request to work on it is read in that light.
 11. A fix of a defect adds the check that would have found it, to `tests/selftest.sh` or, where
     it needs real device-mapper or a real mount, to `tests/compat-check.sh`.
+12. The C program starts no other program, loads no library and reads a file of the examined
+    system as text only. It is C11 with the standard library, built statically against musl
+    with `-Werror`. What it asks of the kernel changes nothing there, and it writes into the
+    destination and nowhere else. A part of it that reads bytes it did not write (a header, a
+    table of the kernel, a mount table, JSON) has a check in `tests/unit-check.sh` against an
+    independent source and runs there with the sanitizers of the compiler as well.
 
 ## Checks before a commit
 
@@ -446,6 +588,24 @@ python3 -I -m py_compile keep-report.py vkverify.py tests/make-schedule-fixture.
 gcc -static -O2 -Wall -o kcore-keyscan kcore-keyscan.c
 gcc -static -O2 -Wall -o keep keep.c
 ```
+
+`tests/unit-check.sh` is the same for the C program and ends with `RESULT: PASS` too. It builds
+`tests/keep-unit` statically against musl and once more with the address and
+undefined-behaviour sanitizers, and runs every check with both. The hash functions and PBKDF2
+are compared with `hashlib` on messages of every length up to 300 bytes. The JSON reader is
+compared with Python's `json` on texts that the RFC allows and texts that it does not, and on
+the metadata of a LUKS2 header with one to three bytes changed, 1500 times. The header code is
+compared with `cryptsetup` on LUKS1 and LUKS2 containers made there: the copy must be the file of
+`luksHeaderBackup` byte for byte, and a key must be proven exactly where `cryptsetup open
+--test-passphrase` accepts it, also for headers with erased keyslots. A LUKS2 header whose first
+copy is damaged must be read from the second, with the file left as it is. Files that end
+inside a header and random bytes must be named and not read. The parts that read the system
+are given mount tables, a tree like `/sys` with logical volumes on a volume, a lockdown file, a
+SecureBoot variable and an os-release written there.
+
+The whole program is checked on real device-mapper by `tests/compat-check.sh`, beside
+`keytriage.sh` (see the pipeline). With `KEEP_SAN` set to a build with the sanitizers (`make
+keep-san`), that build is run at the same places and must end with status 0.
 
 The scanner and the verifier are then run on a fixture. `make-schedule-fixture.py` expands keys
 with its own code written from FIPS-197, so it and the scanner check each other. Its five traps are
@@ -501,11 +661,18 @@ be opened and emulated otherwise, and starts the check over SSH through `sudo`.
 ## The pipeline and the page
 
 - `checks.yml` has three jobs on every push and pull request. `selftest` runs
-  `tests/selftest.sh -a`. `medium` runs `build-toolkit.sh`, verifies the manifest and starts the
-  scripts in the medium's own shell. `compat` builds the medium and runs `tests/compat-check.sh`
-  with a memory image as root on the runner images `ubuntu-24.04` and `ubuntu-22.04`, which offer
-  device-mapper, loop devices, FAT and a readable `/proc/kcore`. No part of it may be skipped
-  there.
+  `tests/selftest.sh -a` and `tests/unit-check.sh -a`. `medium` runs `build-toolkit.sh`, verifies
+  the manifest and starts the scripts in the medium's own shell. `compat` builds the medium and
+  runs `tests/compat-check.sh` with a memory image as root on the runner images `ubuntu-24.04`
+  and `ubuntu-22.04`, which offer device-mapper, loop devices, FAT and a readable `/proc/kcore`.
+  No part of it may be skipped there.
+- While the C program is built, the medium carries it as `c/keep`, and `compat-check.sh` runs it
+  beside `keytriage.sh` on the same mappings, after the main run and after the run on LVM. It
+  must write the same line for every volume into `verdict.json`, header backups and keys that
+  are the same byte for byte, and a manifest that verifies. Before any mapping is made it is
+  run once on the system as it is. So every run of `compat` and of `distros.yml` is also a run
+  of the C program against the scripts. `compat` also builds it with the address and
+  undefined-behaviour sanitizers and runs that build at the same places.
 - A green `compat` job says something about the kernel and the cryptsetup of that runner image
   (rule 9). The output of each run is kept as an artifact for 30 days. One runner image takes
   the memory image in LiME format and the other compressed.
@@ -626,6 +793,9 @@ on, where lockdown is `integrity`, with a version from 1.3 on.
 ## Conventions
 
 - One branch, `main`.
+- C is C11, built with the warnings of the `Makefile` as errors. A function returns 0 or -1 and
+  writes one line that says what failed into a buffer of the caller. What held a key is wiped
+  before it is freed.
 - Shell is bash, checked with `shellcheck -S warning`. Each script opens with a comment that
   states its usage, what it reads and what it writes. `keytriage.sh`, `keep-menu.sh`,
   `offline-keyscan.sh` and `tests/selftest.sh` print that whole comment with `-h`, read by the

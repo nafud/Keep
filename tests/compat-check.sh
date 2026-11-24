@@ -27,6 +27,15 @@
 #             the mapping below them is the one that is listed and proven, both are named as
 #             what it carries, and the logical volume is the destination of that run (where
 #             the guest has lvm2 and mkfs.ext4)
+#   c/keep    the C program of Keep, which is to take the place of keytriage.sh. It is run on
+#             the same mappings, after the main run and after the run on LVM, and must give
+#             what keytriage.sh gave: every field of every volume in verdict.json, header
+#             backups that are the files of "cryptsetup luksHeaderBackup" byte for byte, and
+#             the same keys. Before any mapping is made it is run once on the guest as it
+#             is, which on a guest without encrypted volumes is the run with none.
+#             With KEEP_SAN=/path/to/keep-san in the environment, that build of the program
+#             with the sanitizers of the compiler is run at the same places as well and must
+#             end with status 0, which it does not where a sanitizer finds a fault
 # A part that the guest cannot run is reported as SKIP and does not fail the check.
 #
 # Needs root, cryptsetup, dmsetup and losetup on the guest (package cryptsetup on Debian, Ubuntu,
@@ -46,6 +55,7 @@ W=/root/kc-compat
 fail() { echo "compat-check: $*" >&2; exit 1; }
 [ "$(id -u)" = 0 ] || fail "run as root"
 [ -x "$KIT/bin/bash" ] && [ -f "$KIT/keytriage.sh" ] || fail "no tool medium at $KIT (mount it with -o ro,exec)"
+[ -x "$KIT/c/keep" ] || fail "no C program on the medium at $KIT/c/keep (build-toolkit.sh puts it there)"
 for c in cryptsetup dmsetup losetup sha256sum; do command -v "$c" >/dev/null || fail "$c is not installed on this guest"; done
 for n in kc_l2 kc_l1 kc_null No kc_pv kc_vg-data kc_vg-swap; do [ ! -e "/dev/mapper/$n" ] || fail "the mapping $n is already open, close it first"; done
 
@@ -66,8 +76,20 @@ cleanup() {
     rm -rf "$W"
 }
 trap cleanup EXIT
-rm -rf "$W"; mkdir -p "$W/dest" || fail "cannot create $W"
+rm -rf "$W"; mkdir -p "$W/dest" "$W/cdest" || fail "cannot create $W"
 chmod 700 "$W"; cd "$W" && W=$(pwd -P) || exit 1
+
+# The C program on the guest as it is, before a mapping is made: on a guest without encrypted
+# volumes this is the run with none, which must end in order like any other.
+mkdir "$W/empty"
+( cd "$W/empty" && "$KIT/c/keep" triage ) > "$W/empty/screen.txt" 2>&1; RCE=$?
+E=$(ls -d "$W"/empty/triage_* 2>/dev/null | tail -n 1)
+EMPTY=FAIL
+[ "$RCE" = 0 ] && grep -q '"volumes": \[' "$E/verdict.json" 2>/dev/null && (cd "$E" && sha256sum -c --quiet manifest.sha256 >/dev/null 2>&1) && EMPTY=PASS
+if [ -n "${KEEP_SAN:-}" ]; then
+    mkdir "$W/empty-san"
+    "$KEEP_SAN" triage -d "$W/empty-san" > "$W/empty-san/screen.txt" 2>&1 || { EMPTY=FAIL; cat "$W/empty-san/screen.txt" >> "$W/empty/screen.txt"; }
+fi
 
 # the key file option was renamed in cryptsetup 2.5.0, as in keytriage.sh
 if cryptsetup --help 2>&1 | grep -q -e '--volume-key-file'; then VK=--volume-key-file; else VK=--master-key-file; fi
@@ -114,6 +136,11 @@ echo "tool:        $(sed -n '1p' "$W/screen.txt"), exit $RC"
 echo
 
 PASS=1
+if [ "$EMPTY" = PASS ]; then
+    echo "PASS   the C program before any mapping is made: $(grep -c '^    {"name": .*, "type": ' "$E/verdict.json") volume(s) of the guest itself, status 0, manifest${KEEP_SAN:+, also with the sanitizers}"
+else
+    echo "FAIL   the C program before any mapping is made, status $RCE"; sed 's/^/       /' "$W/empty/screen.txt"; PASS=0
+fi
 field() { grep "\"name\": \"$1\"" "$J" | sed -n "s/.*\"$2\": \"\\([^\"]*\\)\".*/\\1/p"; }
 for n in kc_l2 kc_l1; do
     want=$(sha256sum < "$n.vk" | cut -c1-16)
@@ -162,6 +189,35 @@ if [ -n "$O" ] && [ -f "$J" ] && grep -q "^output: $O\$" "$W/screen.txt" && grep
 else
     echo "FAIL   no destination named: the folder of the run is not in the directory of the start: $(head -n 1 "$W/screen.txt")"; PASS=0
 fi
+# beside FOLDER DEST LABEL : the C program on the mappings as they are now, into DEST, against
+# the folder that keytriage.sh has just written. Both write one volume per line of verdict.json
+# with the same fields in the same order, so the lines must be the same.
+beside() {
+    local sh=$1 dest=$2 label=$3 c rc ok=1 f
+    ( cd "$dest" && "$KIT/c/keep" triage ) > "$dest/screen-c.txt" 2>&1; rc=$?
+    c=$(ls -d "$dest"/triage_* 2>/dev/null | tail -n 1)
+    [ "$rc" = 0 ] && [ -f "$c/verdict.json" ] || ok=0
+    # a volume is a line with a name and a type, which the two lines of "binaries" lack
+    if ! diff <(grep '^    {"name": .*, "type": ' "$sh/verdict.json" | sed 's/,$//') \
+              <(grep '^    {"name": .*, "type": ' "$c/verdict.json" 2>/dev/null | sed 's/,$//') > "$dest/diff.txt" 2>&1; then
+        ok=0
+    fi
+    for f in "$sh"/headers/*.hdr "$sh"/keys/*.vk; do
+        [ -e "$f" ] || continue
+        cmp -s "$f" "$c/${f#"$sh"/}" || { ok=0; echo "differs: ${f#"$sh"/}" >> "$dest/diff.txt"; }
+    done
+    (cd "$c" 2>/dev/null && sha256sum -c --quiet manifest.sha256 >/dev/null 2>&1) || { ok=0; echo "the manifest does not verify" >> "$dest/diff.txt"; }
+    if [ -n "${KEEP_SAN:-}" ]; then
+        mkdir "$dest/san"
+        "$KEEP_SAN" triage -d "$dest/san" > "$dest/san/screen.txt" 2>&1 || { ok=0; echo "the build with the sanitizers:" >> "$dest/diff.txt"; cat "$dest/san/screen.txt" >> "$dest/diff.txt"; }
+    fi
+    if [ "$ok" = 1 ]; then
+        echo "PASS   $(sed -n '1p' "$dest/screen-c.txt"), $label: $(grep -c '^    {"name": .*, "type": ' "$c/verdict.json") volumes as keytriage.sh gave them in every field, $(ls "$sh"/headers/*.hdr 2>/dev/null | wc -l) header backups and $(ls "$sh"/keys/*.vk 2>/dev/null | wc -l) keys byte for byte the same, manifest${KEEP_SAN:+, also with the sanitizers}"
+    else
+        echo "FAIL   the C program, $label, status $rc"; sed 's/^/       /' "$dest/diff.txt" "$dest/screen-c.txt"; PASS=0
+    fi
+}
+beside "$O" "$W/cdest" "the same mappings"
 # A destination with FAT, and the way an examiner starts Keep: the launcher of the medium and
 # the questions of the dialogue, answered through a pipe. Every name must be taken by FAT.
 mkdir "$W/fat"; truncate -s 96M fat.img
@@ -209,6 +265,7 @@ if command -v vgcreate >/dev/null && command -v mkfs.ext4 >/dev/null; then
         else
             echo "FAIL   LVM on LUKS, status $rcl"; sed 's/^/       /' "$W/screen-lvm.txt"; PASS=0
         fi
+        mkdir "$W/lvm/c" && beside "$L" "$W/lvm/c" "LVM on LUKS"
     else
         echo "FAIL   LVM on LUKS: the volume group, a logical volume, the file system or the swap area could not be made: $(head -n 1 "$W/lvm.txt")"; PASS=0
     fi

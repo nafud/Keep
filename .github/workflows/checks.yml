@@ -2,12 +2,15 @@
 #
 #   selftest   tests/selftest.sh -a: the static checks, the scanner on fixtures, the verifier and
 #              the on-scene proof on LUKS headers made by cryptsetup, keytriage.sh on stand-ins
-#              for the examined system, the menu through a pipe
+#              for the examined system, the menu through a pipe.
+#              tests/unit-check.sh -a: the parts of the C program, each against an independent
+#              source, in a static build and in one with the sanitizers of the compiler
 #   medium     build-toolkit.sh: the scene tool medium builds, its manifest verifies and its own
 #              static shell runs its scripts
 #   compat     tests/compat-check.sh as root on two runner images: keytriage.sh from the medium on
 #              real device-mapper, a real /proc/kcore and real mounts, with a memory image, in
-#              LiME format on one image and compressed on the other
+#              LiME format on one image and compressed on the other, and the C program beside
+#              it, which must give the same verdicts, header backups and keys
 #
 # A green compat job is a statement about the kernel and the cryptsetup of that runner image and
 # about nothing else. Its first step prints both.
@@ -38,7 +41,7 @@ jobs:
       - name: Install shellcheck, cryptsetup and the shell and applets of the medium
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends shellcheck cryptsetup-bin bash-static busybox-static qemu-utils ewf-tools
+          sudo apt-get install -y -q --no-install-recommends shellcheck cryptsetup-bin bash-static busybox-static qemu-utils ewf-tools musl-tools
       - name: Versions
         run: |
           bash --version | head -n 1
@@ -48,6 +51,8 @@ jobs:
           cryptsetup --version
       - name: Self-test
         run: tests/selftest.sh -a
+      - name: The parts of the C program
+        run: tests/unit-check.sh -a
 
   medium:
     runs-on: ubuntu-24.04
@@ -59,7 +64,7 @@ jobs:
       - name: Install the parts of the medium
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends bash-static busybox-static xorriso
+          sudo apt-get install -y -q --no-install-recommends bash-static busybox-static xorriso musl-tools
       - name: Build the medium
         run: ./build-toolkit.sh "$RUNNER_TEMP/work"
       - name: The manifest verifies and the medium's shell runs its scripts
@@ -103,7 +108,7 @@ jobs:
       - name: Install the parts of the medium, cryptsetup and dmsetup
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends bash-static busybox-static xorriso cryptsetup-bin dmsetup dosfstools lvm2
+          sudo apt-get install -y -q --no-install-recommends bash-static busybox-static xorriso musl-tools cryptsetup-bin dmsetup dosfstools lvm2
       - name: What the runner offers
         run: |
           uname -r
@@ -117,9 +122,13 @@ jobs:
           df -h / "$RUNNER_TEMP"
       - name: Build the medium
         run: ./build-toolkit.sh "$RUNNER_TEMP/work"
+      # the C program once more with the address and undefined-behaviour sanitizers, which
+      # compat-check.sh runs at the same places as the static one
+      - name: Build the C program with the sanitizers
+        run: make keep-san
       - name: compat-check.sh
         run: |
-          sudo bash tests/compat-check.sh ${{ matrix.image }} "$RUNNER_TEMP/work/tools" | tee "$RUNNER_TEMP/compat.txt"
+          sudo KEEP_SAN="$PWD/keep-san" bash tests/compat-check.sh ${{ matrix.image }} "$RUNNER_TEMP/work/tools" | tee "$RUNNER_TEMP/compat.txt"
           grep -q '^RESULT: PASS$' "$RUNNER_TEMP/compat.txt"
           # on these runners no part may be skipped
           ! grep '^SKIP' "$RUNNER_TEMP/compat.txt"

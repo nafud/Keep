@@ -1,0 +1,400 @@
+#!/bin/bash
+# unit-check.sh [-a] : the parts of the C program of Keep, each against an independent source.
+#
+#   tests/unit-check.sh        run what this machine can run, a missing program is a SKIP
+#   tests/unit-check.sh -a     as the pipeline runs it: a SKIP counts as a failure
+#
+# It builds tests/keep-unit twice, statically against musl and against the system's C library
+# with the address and undefined-behaviour sanitizers, and runs every check with both.
+#
+#   build      both builds with -Werror
+#   hashes     the examples of the standards, then SHA-1, SHA-224, SHA-256, SHA-384 and SHA-512
+#              and PBKDF2 against Python's hashlib, on messages of every length up to 300 bytes
+#              and some longer ones
+#   json       texts that RFC 8259 allows and texts that it does not, and a LUKS2 metadata text
+#              with one byte changed at a time, against Python's json module
+#   system     the mount that holds a path, what a volume carries by a tree like /sys with
+#              logical volumes on it, the file systems that encrypt by themselves, the
+#              lockdown mode, the variable SecureBoot, the name of the system and the names of
+#              a host or a mapping for the screen and for a file, each on files written here
+#   headers    LUKS1 and LUKS2 headers that cryptsetup makes from keys drawn here: the copy of
+#              the header must equal the file of "cryptsetup luksHeaderBackup" byte for byte,
+#              and a key must be proven exactly where "cryptsetup open --test-passphrase"
+#              accepts it. Also with erased keyslots, with a hash that is not computed here,
+#              with a damaged first copy, which must be read from the second and left as it
+#              is, and with files that end early
+#
+# It needs neither root nor device-mapper, and writes only below a temporary directory, which
+# is removed at the end. The test keys are drawn from /dev/urandom there and are never printed.
+# Programs: make, musl-gcc, cc with the sanitizer libraries, python3 and cryptsetup.
+# Ends with "RESULT: PASS" and status 0, or with "RESULT: FAIL" and status 1.
+set -u
+umask 077
+export LC_ALL=C
+usage() {
+    local line
+    while IFS= read -r line; do
+        case $line in '#!'*) ;; '#'*) printf '%s\n' "$line" ;; *) break ;; esac
+    done < "$0"
+}
+ALL=0
+case ${1:-} in
+    -a) ALL=1 ;;
+    -h|--help) usage; exit 0 ;;
+    '') ;;
+    *) printf 'usage: unit-check.sh [-a]\n' >&2; exit 2 ;;
+esac
+R=$(cd "$(dirname "$0")/.." && pwd)
+T=$(mktemp -d) || exit 1
+trap 'rm -rf "$T"' EXIT
+cd "$R" || exit 1
+
+FAILED=0
+pass() { printf 'PASS  %s\n' "$1"; }
+fail() { printf 'FAIL  %s\n' "$1"; FAILED=1; }
+skip() { printf 'SKIP  %s\n' "$1"; [ "$ALL" = 0 ] || FAILED=1; }
+# check NAME COMMAND... : the output of the command is shown only when it fails
+check() {
+    local name=$1; shift
+    if "$@" > "$T/out.txt" 2>&1; then pass "$name"; else fail "$name"; sed 's/^/      /' "$T/out.txt"; fi
+}
+finish() {
+    if [ "$FAILED" = 0 ]; then echo "RESULT: PASS"; exit 0; fi
+    echo "RESULT: FAIL"; exit 1
+}
+have() { command -v "$1" > /dev/null; }
+
+# ---- build ---------------------------------------------------------------------------------------
+UNITS=()
+if have make && have musl-gcc; then
+    check "build: tests/keep-unit, static against musl, -Werror" make -s tests/keep-unit
+    [ -x tests/keep-unit ] && UNITS+=(tests/keep-unit)
+else
+    skip "build: tests/keep-unit (make and musl-gcc, the package musl-tools)"
+fi
+if have make && have cc; then
+    check "build: tests/keep-unit-san, with the sanitizers, -Werror" make -s tests/keep-unit-san
+    [ -x tests/keep-unit-san ] && UNITS+=(tests/keep-unit-san)
+else
+    skip "build: tests/keep-unit-san (make and cc)"
+fi
+[ "${#UNITS[@]}" -gt 0 ] || finish
+have python3 || { skip "everything else (python3)"; finish; }
+
+# ---- hashes --------------------------------------------------------------------------------------
+cat > "$T/hashes.py" <<'EOF'
+import hashlib, os, subprocess, sys
+unit, bad = sys.argv[1], 0
+def run(*a, data=None):
+    return subprocess.run([unit, *a], input=data, capture_output=True).stdout.decode().strip()
+for name in ("sha1", "sha224", "sha256", "sha384", "sha512"):
+    for n in list(range(0, 300)) + [1000, 4096, 65535, 65536, 65537, 1 << 20]:
+        m = os.urandom(n)
+        if run("hash", name, data=m) != hashlib.new(name, m).hexdigest():
+            bad += 1; print("hash", name, "of", n, "bytes differs")
+    # key and salt lengths around the block sizes, and the lengths of a LUKS digest
+    for keylen, saltlen, it, outlen in ((1, 1, 1, 1), (32, 32, 1000, 20), (64, 32, 2000, 32), (64, 32, 777, 64),
+                                        (200, 64, 300, 100), (129, 7, 50, 200), (0, 0, 3, 16), (64, 32, 60000, 32)):
+        k, s = os.urandom(keylen), os.urandom(saltlen)
+        if run("pbkdf2", name, k.hex(), s.hex(), str(it), str(outlen)) != hashlib.pbkdf2_hmac(name, k, s, it, outlen).hex():
+            bad += 1; print("pbkdf2", name, keylen, saltlen, it, outlen, "differs")
+sys.exit(1 if bad else 0)
+EOF
+for u in "${UNITS[@]}"; do
+    check "hashes: ${u##*/} computes the examples of FIPS 180-4, RFC 4231 and RFC 6070" "$u" selftest
+    check "hashes: ${u##*/} equals hashlib for five functions and PBKDF2" python3 -I "$T/hashes.py" "$u"
+done
+
+# ---- json ----------------------------------------------------------------------------------------
+# Python's module reads more than the RFC allows in three places, which are left out of the
+# comparison and tested by themselves: the words NaN and Infinity, a half of a surrogate pair
+# alone, and any depth of nesting.
+cat > "$T/json.py" <<'EOF'
+import json, random, subprocess, sys
+unit, bad = sys.argv[1], 0
+REFUSED = object()
+class Crash(Exception): pass
+# Every string as its bytes, so that both sides compare whatever the bytes of the text are: the
+# program writes a string as one \u00XX per byte, and Python reads the text as UTF-8 where
+# bytes that are none stay what they are.
+def as_bytes(v, enc):
+    if isinstance(v, str): return v.encode(*enc)
+    if isinstance(v, list): return [as_bytes(x, enc) for x in v]
+    if isinstance(v, dict): return {as_bytes(k, enc): as_bytes(x, enc) for k, x in v.items()}
+    return v
+def ours(text):
+    p = subprocess.run([unit, "json"], input=text, capture_output=True)
+    if p.returncode not in (0, 1):
+        raise Crash("status %d %s" % (p.returncode, p.stderr.decode(errors="replace")[-300:]))
+    return REFUSED if p.returncode else as_bytes(json.loads(p.stdout.decode()), ("latin-1",))
+def theirs(text):
+    def no(_): raise ValueError
+    try: return as_bytes(json.loads(text.decode("utf-8", "surrogateescape"), parse_constant=no), ("utf-8", "surrogateescape"))
+    except (ValueError, RecursionError): return REFUSED
+def same(text):
+    global bad
+    try:
+        if ours(text) != theirs(text):
+            bad += 1; print("differs on", text[:120])
+    except Crash as e:
+        bad += 1; print("crash on", text[:80], e)
+def must(text, accepted):
+    global bad
+    try:
+        if (ours(text) is not REFUSED) != accepted:
+            bad += 1; print("must be", "read" if accepted else "refused", ":", text[:80])
+    except Crash as e:
+        bad += 1; print("crash on", text[:80], e)
+valid = [b'{}', b'[]', b'""', b'0', b'-0', b'1.5e+10', b'-12.25E-3', b'true', b'false', b'null',
+         b' [1, 2 ,3]\n', b'{"a":{"b":[{"c":null}]}}', b'"\\"\\\\\\/\\b\\f\\n\\r\\t"', b'"\\u00e9\\u20ac"',
+         b'"\\ud83d\\ude00"', b'{"a":1,"a":2}', b'"\xc3\xa9 raw bytes"', b'[[[[[[[[[[1]]]]]]]]]]',
+         b'{"keyslots":{"0":{"type":"luks2","key_size":64}},"config":{"json_size":"12288"}}']
+invalid = [b'', b' ', b'{', b'}', b'[1,]', b'{"a":1,}', b'{a:1}', b"{'a':1}", b'[1 2]', b'01', b'1.', b'.5',
+           b'+1', b'1e', b'"abc', b'"\n"', b'"\\x41"', b'"\\u12"', b'tru', b'nul', b'[1] 2', b'{"a"}',
+           b'{"a":}', b'{"a" 1}', b'/* c */ 1', b'[1] // c', b'"a" "b"', b'\x00', b'{"a":1}\x00']
+for t in valid: must(t, True)
+for t in invalid: must(t, False)
+for t in valid + invalid: same(t)
+for t in (b'NaN', b'Infinity', b'-Infinity', b'[NaN]', b'"\\ud800"', b'"\\udc00"', b'"\\ud800\\u0041"'):
+    must(t, False)
+must(b'[' * 32 + b']' * 32, True)
+must(b'[' * 34 + b']' * 34, False)
+must(b'[' * 100000, False)
+# the metadata of a LUKS2 header as cryptsetup lays them out, with one byte changed at a time
+meta = json.dumps({"keyslots": {"0": {"type": "luks2", "key_size": 64, "af": {"type": "luks1", "stripes": 4000, "hash": "sha256"},
+        "area": {"type": "raw", "offset": "32768", "size": "258048", "encryption": "aes-xts-plain64", "key_size": 64},
+        "kdf": {"type": "argon2id", "time": 4, "memory": 1048576, "cpus": 4, "salt": "c2FsdA=="}}},
+    "tokens": {}, "segments": {"0": {"type": "crypt", "offset": "16777216", "size": "dynamic", "iv_tweak": "0",
+        "encryption": "aes-xts-plain64", "sector_size": 512}},
+    "digests": {"0": {"type": "pbkdf2", "keyslots": ["0"], "segments": ["0"], "hash": "sha256", "iterations": 123456,
+        "salt": "c2FsdA==", "digest": "ZGlnZXN0"}},
+    "config": {"json_size": "12288", "keyslots_size": "16744448"}}, separators=(",", ":")).encode()
+same(meta)
+rnd = random.Random(1)
+for _ in range(1500):
+    b = bytearray(meta)
+    for _ in range(rnd.choice((1, 1, 1, 2, 3))):
+        i = rnd.randrange(len(b))
+        how = rnd.randrange(4)
+        if how == 0: b[i] = rnd.choice(b'{}[]",:\\ 0e.-tfn\x00\x1f\x7f\xff')
+        elif how == 1: del b[i]
+        elif how == 2: b.insert(i, rnd.choice(b'{}[]",:\\ 0e.-u'))
+        else: del b[i:]
+    t = bytes(b)
+    if b"NaN" in t or b"Infinity" in t or b"\\ud" in t or b"\\uD" in t: continue
+    same(t)
+sys.exit(1 if bad else 0)
+EOF
+for u in "${UNITS[@]}"; do
+    check "json: ${u##*/} reads and refuses what RFC 8259 says, as Python's json does" python3 -I "$T/json.py" "$u"
+done
+
+# ---- system --------------------------------------------------------------------------------------
+# Lines as the kernel writes them (Documentation/filesystems/proc.rst, 3.5): optional fields
+# before the hyphen, a space in a mount point as \040, two mounts at one place.
+mkdir -p "$T/sys/efi" "$T/sys/noefi"
+cat > "$T/sys/mountinfo" <<'EOF'
+22 1 8:2 / / rw,relatime shared:1 - ext4 /dev/sda2 rw,errors=remount-ro
+30 22 0:26 / /run rw,nosuid shared:5 - tmpfs tmpfs rw,size=800000k
+40 22 8:17 / /mnt/usb rw,relatime shared:9 master:3 - vfat /dev/sdb1 rw,fmask=0022
+41 22 8:18 / /mnt/usb\040two ro,relatime - exfat /dev/sdb2 rw
+42 22 8:19 / /mnt/usbstick rw - ext4 /dev/sdb3 rw
+43 22 8:33 / /mnt/usb rw,relatime - ext4 /dev/sdc1 rw
+44 22 253:3 / /home rw - btrfs /dev/mapper/name\040with\040space rw,subvol=/home
+EOF
+cat > "$T/sys/mounts" <<'EOF'
+/dev/sda2 / ext4 rw 0 0
+tank /tank zfs rw 0 0
+/home/u/.Private /home/u ecryptfs rw 0 0
+gocryptfs /mnt/a fuse.gocryptfs rw 0 0
+tank/b /tank/b zfs rw 0 0
+sshfs /mnt/s fuse.sshfs rw 0 0
+EOF
+printf '/dev/sda2 / ext4 rw 0 0\n' > "$T/sys/mounts-plain"
+printf 'none [integrity] confidentiality\n' > "$T/sys/lockdown"
+# a variable of efivarfs: four bytes of attributes, then the value
+printf '\006\000\000\000\001' > "$T/sys/efi/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c"
+printf 'NAME="Test"\nPRETTY_NAME="Test Linux 1 (One)"\nID=test\n' > "$T/sys/os-release"
+# /sys as the kernel lays it out for a LUKS volume that carries three logical volumes: each
+# device has its directory, a link to it by its number, and the devices that stand on it in
+# holders/. They are made in an order that is not the order of their names.
+blockdev() {    # blockdev KERNELNAME MAJOR:MINOR MAPPINGNAME [BELOW]
+    mkdir -p "$T/sys/tree/devices/virtual/block/$1/dm" "$T/sys/tree/devices/virtual/block/$1/holders" "$T/sys/tree/dev/block"
+    printf '%s\n' "$2" > "$T/sys/tree/devices/virtual/block/$1/dev"
+    printf '%s\n' "$3" > "$T/sys/tree/devices/virtual/block/$1/dm/name"
+    ln -s "../../devices/virtual/block/$1" "$T/sys/tree/dev/block/$2"
+    [ -z "${4:-}" ] || ln -s "../../$1" "$T/sys/tree/devices/virtual/block/$4/holders/$1"
+}
+blockdev dm-0 253:0 kc_pv
+blockdev dm-9 253:9 vg-home dm-0
+blockdev dm-2 253:2 vg-root dm-0
+blockdev dm-10 253:10 vg-data dm-0
+blockdev dm-11 253:11 on-data dm-10
+cat > "$T/sys/mountinfo-lvm" <<'EOF'
+22 1 253:2 / / rw - ext4 /dev/mapper/vg-root rw
+23 22 253:9 / /home rw - ext4 /dev/mapper/vg-home rw
+24 22 253:10 / /data rw - xfs /dev/mapper/vg-data rw
+25 22 253:11 / /data/inner\040one rw - ext4 /dev/mapper/on-data rw
+26 22 8:1 / /boot rw - ext4 /dev/sda1 rw
+EOF
+system_parts() {
+    local u=$1 r=0
+    # expect WHAT WANTED COMMAND... : the output of the command must be the wanted line
+    expect() { local what=$1 want=$2 got; shift 2; got=$("$@" 2>&1); [ "$got" = "$want" ] || { echo "$what: got '$got', expected '$want'"; r=1; }; }
+    expect "the root"                       "/dev/sda2 (ext4) mounted at /"                 "$u" mount-of "$T/sys/mountinfo" /
+    expect "a path below the root"          "/dev/sda2 (ext4) mounted at /"                 "$u" mount-of "$T/sys/mountinfo" /var/tmp
+    expect "optional fields are passed"     "tmpfs (tmpfs) mounted at /run"                 "$u" mount-of "$T/sys/mountinfo" /run/x
+    expect "the later of two mounts at one place" "/dev/sdc1 (ext4) mounted at /mnt/usb"    "$u" mount-of "$T/sys/mountinfo" /mnt/usb/case
+    expect "a mount point with a space"     "/dev/sdb2 (exfat) mounted at /mnt/usb two, read-only" "$u" mount-of "$T/sys/mountinfo" "/mnt/usb two/x"
+    expect "a name that only begins alike"  "/dev/sdb3 (ext4) mounted at /mnt/usbstick"     "$u" mount-of "$T/sys/mountinfo" /mnt/usbstick
+    expect "a sibling of a mount point"     "/dev/sda2 (ext4) mounted at /"                 "$u" mount-of "$T/sys/mountinfo" /mnt/usbother
+    expect "a source with a space"          "/dev/mapper/name with space (btrfs) mounted at /home" "$u" mount-of "$T/sys/mountinfo" /home/u
+    expect "no mount table"                 "none"                                          "$u" mount-of "$T/sys/missing" /
+    # in the order of the names in holders/, as a shell lists them: dm-10, what stands on it, dm-2, dm-9
+    expect "what a volume carries"          "[vg-data at /data, on-data at /data/inner one, vg-root at /, vg-home at /home]" \
+        "$u" in-use "$T/sys/tree" "$T/sys/mountinfo-lvm" /dev/null 253 0
+    expect "what a logical volume carries"  "[vg-home at /home]"                            "$u" in-use "$T/sys/tree" "$T/sys/mountinfo-lvm" /dev/null 253 9
+    expect "a device that /sys does not know" "[]"                                          "$u" in-use "$T/sys/tree" "$T/sys/mountinfo-lvm" /dev/null 8 1
+    expect "file systems that encrypt"      "[ecryptfs fuse.gocryptfs zfs]"                 "$u" other-fs "$T/sys/mounts"
+    expect "none that encrypts"             "[]"                                            "$u" other-fs "$T/sys/mounts-plain"
+    expect "the lockdown mode"              "[integrity]"                                   "$u" lockdown "$T/sys/lockdown"
+    expect "no lockdown file"               "[]"                                            "$u" lockdown "$T/sys/missing"
+    expect "SecureBoot enabled"             "[1]"                                           "$u" secure-boot "$T/sys/efi"
+    expect "no SecureBoot variable"         "[]"                                            "$u" secure-boot "$T/sys/noefi"
+    expect "no efivars"                     "[]"                                            "$u" secure-boot "$T/sys/missing"
+    expect "the name of the system"         "[Test Linux 1 (One)]"                          "$u" os-name "$T/sys/os-release" "$T/sys/missing"
+    expect "the second os-release"          "[Test Linux 1 (One)]"                          "$u" os-name "$T/sys/missing" "$T/sys/os-release"
+    expect "no os-release"                  "[]"                                            "$u" os-name "$T/sys/missing" "$T/sys/missing"
+    expect "a plain name"                   "[kc_l2] [kc_l2]"                               "$u" names kc_l2
+    expect "a name that leaves the folder"  "[../../etc/x] [.._.._etc_x]"                   "$u" names ../../etc/x
+    expect "a name with an escape sequence" "[a [31m b] [a__31m_b]"                         "$u" names "$(printf 'a\033[31m b')"
+    expect "the characters that are kept"   "[A.z_0+=@,-] [A.z_0+=@,-]"                     "$u" names "A.z_0+=@,-"
+    expect "an empty name"                  "[] [_]"                                        "$u" names ""
+    return $r
+}
+for u in "${UNITS[@]}"; do
+    check "system: ${u##*/} reads mounts, lockdown, SecureBoot and os-release, and makes names safe" system_parts "$u"
+done
+
+# ---- headers -------------------------------------------------------------------------------------
+if ! have cryptsetup; then
+    skip "headers: against cryptsetup (cryptsetup)"
+    finish
+fi
+# the option that hands a volume key to cryptsetup: renamed in release 2.5.0
+if cryptsetup --help 2>&1 | grep -q -e '--volume-key-file'; then VK=--volume-key-file; else VK=--master-key-file; fi
+head -c 64 /dev/urandom > "$T/k64"; head -c 32 /dev/urandom > "$T/k32"; head -c 64 /dev/urandom > "$T/other"
+printf 'unit-check\n' > "$T/pass"
+# container NAME KEYFILE OPTIONS... : a container of 32 MiB with that volume key
+container() {
+    local name=$1 key=$2; shift 2
+    truncate -s 32M "$T/$name.img" &&
+        cryptsetup luksFormat -q "$@" "$VK" "$T/$key" --pbkdf-force-iterations 1000 "$T/$name.img" "$T/pass" 2> "$T/$name.err"
+}
+HEADERS=()
+made() { if container "$@"; then HEADERS+=("$1:$2"); else fail "headers: cryptsetup could not make $1"; sed 's/^/      /' "$T/$1.err"; fi; }
+made l1      k64 --type luks1 --cipher aes-xts-plain64 --key-size 512
+made l1sha1  k32 --type luks1 --cipher aes-cbc-essiv:sha256 --key-size 256 --hash sha1
+made l1s512  k64 --type luks1 --cipher aes-xts-plain64 --key-size 512 --hash sha512
+made l2      k64 --type luks2 --cipher aes-xts-plain64 --key-size 512 --pbkdf pbkdf2
+made l2s512  k64 --type luks2 --cipher aes-xts-plain64 --key-size 512 --pbkdf pbkdf2 --hash sha512
+made l2k256  k32 --type luks2 --cipher aes-xts-plain64 --key-size 256 --pbkdf pbkdf2
+made l2big   k64 --type luks2 --cipher aes-xts-plain64 --key-size 512 --pbkdf pbkdf2 --luks2-metadata-size 64k --luks2-keyslots-size 4m
+# both erased: the keyslots are gone and the digest stays
+for n in l1 l2; do
+    cp "$T/$n.img" "$T/${n}e.img" && cryptsetup erase -q "$T/${n}e.img" 2> /dev/null && HEADERS+=("${n}e:k64") ||
+        fail "headers: cryptsetup could not erase the keyslots of $n"
+done
+
+# one_header UNIT NAME KEYFILE : the copy and the proof of one header against cryptsetup
+one_header() {
+    local u=$1 n=$2 key=$3 r=0 bits
+    rm -f "$T/ours.hdr" "$T/theirs.hdr"
+    cryptsetup luksHeaderBackup "$T/$n.img" --header-backup-file "$T/theirs.hdr" || { echo "cryptsetup made no backup"; return 1; }
+    "$u" luks "$T/$n.img" || r=1
+    "$u" luks-backup "$T/$n.img" "$T/ours.hdr" || r=1
+    cmp "$T/ours.hdr" "$T/theirs.hdr" || { echo "the copy differs from the file of luksHeaderBackup"; r=1; }
+    # cryptsetup and this program must agree on the right key and on another one
+    # a header without keyslots does not state the size of its key, so cryptsetup is told
+    bits=$(( $(wc -c < "$T/$key") * 8 ))
+    cryptsetup open --test-passphrase --key-size "$bits" "$VK" "$T/$key" "$T/theirs.hdr" || { echo "cryptsetup refuses the key"; r=1; }
+    "$u" luks-prove "$T/$n.img" "$T/$key" || { echo "the key is not proven"; r=1; }
+    "$u" luks-prove "$T/ours.hdr" "$T/$key" || { echo "the key is not proven against the copy"; r=1; }
+    if cryptsetup open --test-passphrase --key-size 512 "$VK" "$T/other" "$T/theirs.hdr" 2> /dev/null; then echo "cryptsetup accepts another key"; r=1; fi
+    if "$u" luks-prove "$T/$n.img" "$T/other"; then echo "another key is proven"; r=1; fi
+    return $r
+}
+for u in "${UNITS[@]}"; do
+    for h in "${HEADERS[@]}"; do
+        check "headers: ${u##*/}, ${h%%:*}: the copy equals luksHeaderBackup, the key is proven and another is not" \
+            one_header "$u" "${h%%:*}" "${h##*:}"
+    done
+done
+
+# A hash function that is not computed here: the copy is made, and the proof says which function.
+other_hash() {
+    local u=$1
+    rm -f "$T/ours.hdr" "$T/theirs.hdr"
+    cryptsetup luksHeaderBackup "$T/l1rmd.img" --header-backup-file "$T/theirs.hdr" || return 1
+    "$u" luks-backup "$T/l1rmd.img" "$T/ours.hdr" && cmp "$T/ours.hdr" "$T/theirs.hdr" || return 1
+    "$u" luks-prove "$T/l1rmd.img" "$T/k64" | tee "$T/prove.txt"
+    grep -q 'no digest that is computed here.*ripemd160' "$T/prove.txt"
+}
+if container l1rmd k64 --type luks1 --cipher aes-xts-plain64 --key-size 512 --hash ripemd160; then
+    for u in "${UNITS[@]}"; do check "headers: ${u##*/}, a LUKS1 header with ripemd160 is copied, and its proof is named as not computed" other_hash "$u"; done
+else
+    skip "headers: a LUKS1 header with ripemd160 (this cryptsetup makes none)"
+fi
+
+# The first copy of a LUKS2 header damaged in three ways. cryptsetup would write it anew from
+# the second copy. Here the file must be read from the second copy and stay as it is.
+damaged() {
+    local u=$1 how=$2 before after
+    cp "$T/l2.img" "$T/dmg.img" || return 1
+    case $how in
+        magic)    printf 'XXXXXX' | dd of="$T/dmg.img" conv=notrunc status=none ;;
+        zeros)    dd if=/dev/zero of="$T/dmg.img" bs=4096 count=1 conv=notrunc status=none ;;
+        metadata) printf 'X' | dd of="$T/dmg.img" bs=1 seek=5000 conv=notrunc status=none ;;
+    esac
+    before=$(sha256sum < "$T/dmg.img")
+    "$u" luks "$T/dmg.img" | tee "$T/luks.txt"
+    grep -q '^LUKS2 .*second copy in use' "$T/luks.txt" || { echo "the second copy is not the one in use"; return 1; }
+    "$u" luks-prove "$T/dmg.img" "$T/k64" || { echo "the key is not proven from the second copy"; return 1; }
+    if "$u" luks-prove "$T/dmg.img" "$T/other"; then echo "another key is proven"; return 1; fi
+    after=$(sha256sum < "$T/dmg.img")
+    [ "$before" = "$after" ] || { echo "the file was changed"; return 1; }
+}
+# Both copies damaged, and files that end early: named, never read as a header, and no crash.
+unusable() {
+    local u=$1 r=0 n f out rc want whole
+    cp "$T/l2.img" "$T/both.img" && printf 'X' | dd of="$T/both.img" bs=1 seek=5000 conv=notrunc status=none &&
+        printf 'X' | dd of="$T/both.img" bs=1 seek=$(( 16384 + 5000 )) conv=notrunc status=none || return 1
+    out=$("$u" luks "$T/both.img"); [ $? = 1 ] && [ "${out%%:*}" = damaged ] || { echo "both copies damaged: $out"; r=1; }
+    for n in 0 5 6 100 591 592 1023 1024 4095 4096 5000 16383 16384 20000 32767 32768 40000; do
+        for f in l1 l2; do
+            head -c "$n" "$T/$f.img" > "$T/cut.img"
+            out=$("$u" luks "$T/cut.img" 2>&1); rc=$?
+            # a LUKS1 header is whole after 1024 bytes and a copy of this LUKS2 header after 16384
+            case $f in l1) whole=1024 ;; *) whole=16384 ;; esac
+            if [ "$n" -ge "$whole" ]; then want=0; else want=1; fi
+            [ "$rc" = "$want" ] || { echo "$f cut to $n bytes: status $rc, expected $want: $out"; r=1; }
+            rm -f "$T/cut.hdr"
+            "$u" luks-backup "$T/cut.img" "$T/cut.hdr" > "$T/cutb.txt" 2>&1; rc=$?
+            [ "$rc" = 1 ] || { echo "$f cut to $n bytes: a copy was made, status $rc"; r=1; }
+        done
+    done
+    head -c 4096 /dev/urandom > "$T/noise.img"
+    out=$("$u" luks "$T/noise.img"); [ $? = 1 ] && [ "${out%%:*}" = none ] || { echo "random bytes: $out"; r=1; }
+    return $r
+}
+uuid_rule() {   # the UUID of a mapping against the header, as crypt_uuid_cmp of cryptsetup
+    "$1" luks "$T/l2.img" | grep -q '^LUKS2 uuid ........-....-....-....-............ area 16777216$'
+}
+for u in "${UNITS[@]}"; do
+    for how in magic zeros metadata; do
+        check "headers: ${u##*/}, first copy damaged ($how): read from the second copy, proven, the file unchanged" damaged "$u" "$how"
+    done
+    check "headers: ${u##*/}, both copies damaged, files that end early and random bytes are named and not read" unusable "$u"
+    check "headers: ${u##*/}, a default LUKS2 header has an area of 16 MiB" uuid_rule "$u"
+done
+finish

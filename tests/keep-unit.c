@@ -1,0 +1,415 @@
+/*
+ * keep-unit.c: the parts of the C program one at a time, for the checks.
+ *
+ *   keep-unit selftest                          the examples of the standards
+ *   keep-unit hash NAME                         the digest of standard input, in hexadecimal
+ *   keep-unit pbkdf2 NAME KEY SALT ITERATIONS LENGTH    KEY and SALT in hexadecimal
+ *   keep-unit json                              the JSON text of standard input, written anew
+ *   keep-unit luks FILE                         what the LUKS header at the start of FILE says
+ *   keep-unit luks-backup FILE OUT              the copy of that header, as luksHeaderBackup
+ *   keep-unit luks-prove FILE KEYFILE           whether the key of KEYFILE gives its digest
+ *   keep-unit mount-of MOUNTINFO PATH           the mount that holds PATH
+ *   keep-unit in-use SYSFS MOUNTINFO SWAPS MAJOR MINOR    what that block device carries
+ *   keep-unit other-fs MOUNTS                   the file systems that encrypt by themselves
+ *   keep-unit lockdown FILE                     the lockdown mode of that file
+ *   keep-unit secure-boot DIR                   the value of the variable SecureBoot in DIR
+ *   keep-unit os-name FILE FILE                 PRETTY_NAME of the first file that can be read
+ *   keep-unit names NAME                        NAME for the screen and as a file name
+ *   keep-unit dm-list                           the mapped devices, as "dmsetup ls" prints them
+ *   keep-unit dm-table NAME                     the table, as "dmsetup table NAME" prints it,
+ *                                               and for a crypt target the length of its key
+ *                                               and the first 16 digits of the key's SHA-256
+ *
+ * The device-mapper requests need root and change nothing. No key is printed: like dmsetup
+ * without --showkeys, the key of a crypt target is replaced by zeros.
+ * Exit status: 0, 1 when something failed, 2 for a wrong use.
+ */
+#include "../src/dm.h"
+#include "../src/hash.h"
+#include "../src/json.h"
+#include "../src/luks.h"
+#include "../src/sys.h"
+#include "../src/util.h"
+
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+static void print_hex(const uint8_t *p, size_t n)
+{
+    size_t i;
+
+    for (i = 0; i < n; i++)
+        printf("%02x", p[i]);
+    printf("\n");
+}
+
+static int unhex(const char *s, uint8_t **out, size_t *n)
+{
+    size_t len = strlen(s), i;
+    unsigned v;
+
+    *out = NULL;
+    if (len % 2 || !(*out = malloc(len / 2 + 1)))
+        return -1;
+    for (i = 0; i < len / 2; i++) {
+        if (sscanf(s + 2 * i, "%2x", &v) != 1) {
+            free(*out);
+            *out = NULL;
+            return -1;
+        }
+        (*out)[i] = (uint8_t)v;
+    }
+    *n = len / 2;
+    return 0;
+}
+
+static int cmd_hash(const char *name)
+{
+    const struct hash_alg *alg = hash_by_name(name);
+    struct hash_ctx c;
+    uint8_t buf[65536], out[HASH_MAX_DIGEST];
+    size_t n;
+
+    if (!alg) {
+        fprintf(stderr, "keep-unit: no hash function %s\n", name);
+        return 1;
+    }
+    hash_init(&c, alg);
+    while ((n = fread(buf, 1, sizeof buf, stdin)) > 0)
+        hash_update(&c, buf, n);
+    hash_final(&c, out);
+    print_hex(out, hash_len(alg));
+    return 0;
+}
+
+static int cmd_pbkdf2(char **a)
+{
+    const struct hash_alg *alg = hash_by_name(a[0]);
+    uint8_t *key = NULL, *salt = NULL, *out = NULL;
+    size_t keylen, saltlen, outlen = (size_t)atol(a[4]);
+    int r = 1;
+
+    if (!alg || unhex(a[1], &key, &keylen) || unhex(a[2], &salt, &saltlen) || !(out = malloc(outlen + 1))) {
+        fprintf(stderr, "keep-unit: pbkdf2: an argument is not understood\n");
+    } else {
+        pbkdf2(alg, key, keylen, salt, saltlen, (uint32_t)atol(a[3]), out, outlen);
+        print_hex(out, outlen);
+        r = 0;
+    }
+    free(key);
+    free(salt);
+    free(out);
+    return r;
+}
+
+/* The tree as text that Python's json.loads reads: strings and names as \uXXXX escapes of their
+   bytes, numbers as they were written. */
+static void dump_string(const char *s, size_t n)
+{
+    size_t i;
+
+    putchar('"');
+    for (i = 0; i < n; i++)
+        printf("\\u%04x", (unsigned)(unsigned char)s[i]);
+    putchar('"');
+}
+
+static void dump(const struct json *j)
+{
+    const struct json *m;
+
+    switch (j->type) {
+    case JSON_NULL:   printf("null"); break;
+    case JSON_FALSE:  printf("false"); break;
+    case JSON_TRUE:   printf("true"); break;
+    case JSON_NUMBER: printf("%s", j->text); break;
+    case JSON_STRING: dump_string(j->text, j->len); break;
+    case JSON_ARRAY:
+    case JSON_OBJECT:
+        putchar(j->type == JSON_ARRAY ? '[' : '{');
+        for (m = j->first; m; m = m->next) {
+            if (j->type == JSON_OBJECT) {
+                dump_string(m->name, strlen(m->name));
+                putchar(':');
+            }
+            dump(m);
+            if (m->next)
+                putchar(',');
+        }
+        putchar(j->type == JSON_ARRAY ? ']' : '}');
+        break;
+    }
+}
+
+static int cmd_json(void)
+{
+    size_t room = 1 << 16, n = 0, got;
+    char *text = malloc(room);
+    const char *why;
+    struct json *j;
+
+    while (text && (got = fread(text + n, 1, room - n, stdin)) > 0)
+        if ((n += got) == room)
+            text = realloc(text, room *= 2);
+    if (!text)
+        return 1;
+    j = json_parse(text, n, &why);
+    free(text);
+    if (!j) {
+        printf("refused: %s\n", why);
+        return 1;
+    }
+    dump(j);
+    putchar('\n');
+    json_free(j);
+    return 0;
+}
+
+static int open_header(const char *path, struct luks_header *h)
+{
+    char err[LUKS_ERR_LEN];
+    int fd = open(path, O_RDONLY | O_CLOEXEC), r;
+
+    if (fd < 0) {
+        perror(path);
+        return -1;
+    }
+    if ((r = luks_read(fd, h, err))) {
+        printf("%s: %s\n", r > 0 ? "none" : "damaged", err);
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+static int cmd_luks(const char *path)
+{
+    struct luks_header h;
+    size_t i;
+    int fd = open_header(path, &h);
+
+    if (fd < 0)
+        return 1;
+    printf("LUKS%d uuid %s area %llu%s\n", h.version, h.uuid, (unsigned long long)h.area,
+           h.secondary ? " second copy in use" : "");
+    for (i = 0; i < h.ndigests; i++) {
+        printf("digest %s%s iterations %u salt %zu bytes digest ", h.digests[i].hash,
+               h.digests[i].alg ? "" : " (not computed here)", h.digests[i].iterations, h.digests[i].saltlen);
+        print_hex(h.digests[i].digest, h.digests[i].digestlen);
+    }
+    close(fd);
+    return 0;
+}
+
+static int cmd_luks_backup(const char *path, const char *outpath)
+{
+    char err[LUKS_ERR_LEN];
+    struct luks_header h;
+    uint64_t written;
+    int fd = open_header(path, &h), out, r;
+
+    if (fd < 0)
+        return 1;
+    if ((out = open(outpath, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600)) < 0) {
+        perror(outpath);
+        close(fd);
+        return 1;
+    }
+    if ((r = luks_backup(fd, &h, out, &written, err)))
+        printf("failed: %s\n", err);
+    else
+        printf("%llu bytes\n", (unsigned long long)written);
+    close(out);
+    close(fd);
+    return r ? 1 : 0;
+}
+
+static int cmd_luks_prove(const char *path, const char *keypath)
+{
+    struct luks_header h;
+    uint8_t key[1024];
+    const char *hash;
+    FILE *kf;
+    size_t n;
+    int fd = open_header(path, &h), r;
+
+    if (fd < 0)
+        return 1;
+    close(fd);
+    if (!(kf = fopen(keypath, "rb"))) {
+        perror(keypath);
+        return 1;
+    }
+    n = fread(key, 1, sizeof key, kf);
+    fclose(kf);
+    r = luks_proves(&h, key, n, &hash);
+    explicit_bzero(key, sizeof key);
+    printf("%s%s\n", r > 0 ? "proven" : r == 0 ? "not proven" : "no digest that is computed here",
+           r < 0 && hash ? hash : "");
+    return r > 0 ? 0 : 1;
+}
+
+static int cmd_mount_of(const char *mountinfo, const char *path)
+{
+    struct sys_mount m;
+
+    if (sys_mount_of(mountinfo, path, &m)) {
+        printf("none\n");
+        return 1;
+    }
+    printf("%s (%s) mounted at %s%s\n", m.source, m.type, m.point, m.readonly ? ", read-only" : "");
+    sys_mount_free(&m);
+    return 0;
+}
+
+static int cmd_text(char *text)
+{
+    if (!text)
+        return 1;
+    printf("[%s]\n", text);
+    free(text);
+    return 0;
+}
+
+static int cmd_names(const char *name)
+{
+    char shown[256], file[256];
+
+    snprintf(shown, sizeof shown, "%s", name);
+    name_clean(shown);
+    name_file(name, file, sizeof file);
+    printf("[%s] [%s]\n", shown, file);
+    return 0;
+}
+
+static int by_name(const void *a, const void *b)
+{
+    return strcmp(((const struct dm_dev *)a)->name, ((const struct dm_dev *)b)->name);
+}
+
+static int cmd_dm_list(void)
+{
+    char err[DM_ERR_LEN];
+    struct dm_dev *devs;
+    size_t n, i;
+    int fd = dm_open(err);
+
+    if (fd < 0 || dm_list(fd, &devs, &n, err)) {
+        fprintf(stderr, "keep-unit: %s\n", err);
+        return 1;
+    }
+    qsort(devs, n, sizeof *devs, by_name);
+    for (i = 0; i < n; i++)
+        printf("%s\t(%u:%u)\n", devs[i].name, devs[i].major, devs[i].minor);
+    if (!n)
+        printf("No devices found\n");
+    free(devs);
+    close(fd);
+    return 0;
+}
+
+static int cmd_dm_table(const char *name)
+{
+    char err[DM_ERR_LEN];
+    struct dm_table t;
+    size_t i;
+    int fd = dm_open(err);
+
+    if (fd < 0 || dm_table(fd, name, &t, err)) {
+        fprintf(stderr, "keep-unit: %s\n", err);
+        return 1;
+    }
+    fprintf(stderr, "name %s, uuid %s, device %u:%u, %zu target(s)\n", t.name, t.uuid, t.major, t.minor, t.ntargets);
+    for (i = 0; i < t.ntargets; i++) {
+        char *p = t.targets[i].params, *key, *end;
+
+        if (!strcmp(t.targets[i].type, "crypt") && (key = strchr(p, ' ')) && *++key != ':') {
+            uint8_t *raw, digest[32];
+            size_t rawlen;
+            char saved;
+
+            end = key + strcspn(key, " ");
+            saved = *end;
+            *end = 0;
+            if (!unhex(key, &raw, &rawlen)) {
+                sha256(raw, rawlen, digest);
+                fprintf(stderr, "key of %zu bytes, sha256 ", rawlen);
+                explicit_bzero(raw, rawlen);
+                free(raw);
+                for (rawlen = 0; rawlen < 8; rawlen++)
+                    fprintf(stderr, "%02x", digest[rawlen]);
+                fprintf(stderr, "\n");
+            }
+            *end = saved;
+            memset(key, '0', (size_t)(end - key));
+        }
+        printf("%llu %llu %s %s\n", (unsigned long long)t.targets[i].start,
+               (unsigned long long)t.targets[i].length, t.targets[i].type, p);
+    }
+    dm_table_free(&t);
+    close(fd);
+    return 0;
+}
+
+int main(int argc, char **argv)
+{
+    const char *bad;
+
+    if (argc == 2 && !strcmp(argv[1], "selftest")) {
+        if ((bad = hash_selftest())) {
+            fprintf(stderr, "keep-unit: %s does not compute the example of its standard\n", bad);
+            return 1;
+        }
+        printf("the examples of the standards compute\n");
+        return 0;
+    }
+    if (argc == 3 && !strcmp(argv[1], "hash"))
+        return cmd_hash(argv[2]);
+    if (argc == 7 && !strcmp(argv[1], "pbkdf2"))
+        return cmd_pbkdf2(argv + 2);
+    if (argc == 2 && !strcmp(argv[1], "json"))
+        return cmd_json();
+    if (argc == 3 && !strcmp(argv[1], "luks"))
+        return cmd_luks(argv[2]);
+    if (argc == 4 && !strcmp(argv[1], "luks-backup"))
+        return cmd_luks_backup(argv[2], argv[3]);
+    if (argc == 4 && !strcmp(argv[1], "luks-prove"))
+        return cmd_luks_prove(argv[2], argv[3]);
+    if (argc == 4 && !strcmp(argv[1], "mount-of"))
+        return cmd_mount_of(argv[2], argv[3]);
+    if (argc == 7 && !strcmp(argv[1], "in-use"))
+        return cmd_text(sys_in_use(argv[2], argv[3], argv[4], (unsigned)atoi(argv[5]), (unsigned)atoi(argv[6])));
+    if (argc == 3 && !strcmp(argv[1], "other-fs"))
+        return cmd_text(sys_other_filesystems(argv[2]));
+    if (argc == 3 && !strcmp(argv[1], "lockdown")) {
+        char mode[64];
+
+        sys_lockdown(argv[2], mode, sizeof mode);
+        return cmd_text(strdup(mode));
+    }
+    if (argc == 3 && !strcmp(argv[1], "secure-boot")) {
+        char value[16];
+
+        sys_secure_boot(argv[2], value, sizeof value);
+        return cmd_text(strdup(value));
+    }
+    if (argc == 4 && !strcmp(argv[1], "os-name")) {
+        char name[256];
+
+        sys_os_name(argv[2], argv[3], name, sizeof name);
+        return cmd_text(strdup(name));
+    }
+    if (argc == 3 && !strcmp(argv[1], "names"))
+        return cmd_names(argv[2]);
+    if (argc == 2 && !strcmp(argv[1], "dm-list"))
+        return cmd_dm_list();
+    if (argc == 3 && !strcmp(argv[1], "dm-table"))
+        return cmd_dm_table(argv[2]);
+    fprintf(stderr, "usage: keep-unit selftest | hash NAME | pbkdf2 NAME KEY SALT ITERATIONS LENGTH | json | luks FILE | "
+            "luks-backup FILE OUT | luks-prove FILE KEYFILE | mount-of MOUNTINFO PATH | in-use SYSFS MOUNTINFO SWAPS MAJOR MINOR | other-fs MOUNTS | "
+            "lockdown FILE | secure-boot DIR | os-name FILE FILE | names NAME | dm-list | dm-table NAME\n");
+    return 2;
+}

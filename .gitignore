@@ -18,3 +18,7 @@ work/
 kcore-keyscan
 __pycache__/
 *.pyc
+/keep
+/keep-san
+tests/keep-unit
+tests/keep-unit-san

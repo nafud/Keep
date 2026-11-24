@@ -19,6 +19,8 @@ on:
       - keep-menu.sh
       - keep.c
       - kcore-keyscan.c
+      - src/**
+      - Makefile
       - build-toolkit.sh
       - tests/compat-check.sh
       - tests/compat-guest.sh
@@ -58,7 +60,7 @@ jobs:
       - name: Install the parts of the medium and QEMU
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends bash-static busybox-static xorriso qemu-system-x86 qemu-utils
+          sudo apt-get install -y -q --no-install-recommends bash-static busybox-static xorriso musl-tools qemu-system-x86 qemu-utils
       - name: KVM
         run: |
           if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm; ls -l /dev/kvm; else echo "no /dev/kvm, the guest is emulated"; fi
