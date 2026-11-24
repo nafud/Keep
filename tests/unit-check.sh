@@ -13,6 +13,9 @@
 #              and some longer ones
 #   json       texts that RFC 8259 allows and texts that it does not, and a LUKS2 metadata text
 #              with one byte changed at a time, against Python's json module
+#   scanner    the search of memory with the sanitizers, on a fixture with the schedules of
+#              known keys in its four formats, cut short and damaged: the same schedules,
+#              messages and status as the static program gives with "keep scan"
 #   kernel     the two answers of device-mapper, laid out as the kernel lays them out, before
 #              and from Linux 4.13, and then with bytes changed and ends cut off 1600 times:
 #              read or refused, never a fault
@@ -83,6 +86,42 @@ else
 fi
 [ "${#UNITS[@]}" -gt 0 ] || finish
 have python3 || { skip "everything else (python3)"; finish; }
+
+# ---- scanner -------------------------------------------------------------------------------------
+# keep links the search of kcore-keyscan.c. In keep-san it is built without the sanitizers,
+# because that program reads the whole memory of a machine, so the search runs with them here.
+scanner_same() {
+    local f opt a b r=0
+    head -c 64 /dev/urandom > "$T/scan.vk"
+    for f in raw elf lime avml; do
+        python3 -I tests/make-schedule-fixture.py --format "$f" --size 8 "$T/fx.$f" "$T/scan.vk" > /dev/null || return 1
+    done
+    head -c 3000000 "$T/fx.avml" > "$T/fx.cut"
+    cp "$T/fx.avml" "$T/fx.bad" && printf 'XXXX' | dd of="$T/fx.bad" bs=1 seek=100000 conv=notrunc status=none
+    for f in raw elf lime avml cut bad missing; do
+        for opt in "" "-r" "-s 16"; do
+            # shellcheck disable=SC2086
+            a=$(./keep scan $opt "$T/fx.$f" 2> "$T/e1" | sha256sum; echo "status ${PIPESTATUS[0]}")
+            # shellcheck disable=SC2086
+            b=$(tests/keyscan-san $opt "$T/fx.$f" 2> "$T/e2" | sha256sum; echo "status ${PIPESTATUS[0]}")
+            [ "$a" = "$b" ] && diff <(sed 's/[0-9.]* seconds//' "$T/e1") <(sed 's/[0-9.]* seconds//' "$T/e2") > /dev/null ||
+                { echo "$f $opt: keep scan and the scanner with the sanitizers differ"; tail -n 5 "$T/e2"; r=1; }
+        done
+    done
+    # both halves of the key are among the schedules of the image
+    ./keep scan "$T/fx.lime" 2> /dev/null > "$T/scan.txt"
+    for f in 0 32; do
+        grep -q " key $(od -An -v -tx1 -j "$f" -N 32 "$T/scan.vk" | tr -d ' \n')\$" "$T/scan.txt" || { echo "a half of the key is not found"; r=1; }
+    done
+    rm -f "$T/scan.txt" "$T/scan.vk"
+    return $r
+}
+if have make && have musl-gcc && have cc; then
+    check "build: keep, the program, static against musl, and the scanner with the sanitizers" make -s keep tests/keyscan-san
+    check "scanner: keep scan and the scanner with the sanitizers give the same on four formats, a cut and a damaged image" scanner_same
+else
+    skip "scanner: with the sanitizers (make, musl-gcc and cc)"
+fi
 
 # ---- hashes --------------------------------------------------------------------------------------
 cat > "$T/hashes.py" <<'EOF'

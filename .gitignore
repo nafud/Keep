@@ -22,3 +22,5 @@ __pycache__/
 /keep-san
 tests/keep-unit
 tests/keep-unit-san
+tests/keyscan-san
+tests/keyscan-plain.o

@@ -676,7 +676,10 @@ be opened and emulated otherwise, and starts the check over SSH through `sudo`.
   are the same byte for byte, and a manifest that verifies. Before any mapping is made it is
   run once on the system as it is. So every run of `compat` and of `distros.yml` is also a run
   of the C program against the scripts. `compat` also builds it with the address and
-  undefined-behaviour sanitizers and runs that build at the same places.
+  undefined-behaviour sanitizers and runs that build at the same places. In that build the
+  search of memory is compiled without them, because with them it takes eight times as long
+  and the build reads the whole memory of the runner. The scanner alone runs with them in
+  `unit-check.sh`, on the fixture in its four formats and on a cut and a damaged image.
 - A green `compat` job says something about the kernel and the cryptsetup of that runner image
   (rule 9). The output of each run is kept as an artifact for 30 days. One runner image takes
   the memory image in LiME format and the other compressed.

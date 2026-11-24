@@ -3,7 +3,8 @@
 #   make            keep, the program, and tests/keep-unit, the driver of its parts for the
 #                   checks, both static against musl
 #   make san        the same two against the system's C library with the sanitizers of the
-#                   compiler, as keep-san and tests/keep-unit-san
+#                   compiler, as keep-san and tests/keep-unit-san, and the scanner alone with
+#                   them, as tests/keyscan-san
 #   make clean
 #
 # musl-gcc is the package musl-tools of Debian and Ubuntu. A static program against musl needs
@@ -20,13 +21,20 @@ PROGRAM  = src/main.c src/triage.c $(PARTS)
 SCANNER  = -DKEYSCAN_LIBRARY kcore-keyscan.c
 
 all: keep tests/keep-unit
-san: keep-san tests/keep-unit-san
+san: keep-san tests/keep-unit-san tests/keyscan-san
 
 keep: $(PROGRAM) $(HEADERS) kcore-keyscan.c
 	$(CC) -static $(CFLAGS) -o $@ $(PROGRAM) $(SCANNER)
 
+# keep-san is run on the whole memory of a machine, where the search under the sanitizers would
+# take eight times as long. So the search is built without them here, and tests/keyscan-san is
+# the scanner alone with them, which unit-check.sh runs on the fixtures.
 keep-san: $(PROGRAM) $(HEADERS) kcore-keyscan.c
-	$(SANCC) $(CFLAGS) $(SAN) -o $@ $(PROGRAM) $(SCANNER)
+	$(SANCC) $(CFLAGS) -c -o tests/keyscan-plain.o $(SCANNER)
+	$(SANCC) $(CFLAGS) $(SAN) -o $@ $(PROGRAM) tests/keyscan-plain.o
+
+tests/keyscan-san: kcore-keyscan.c src/keyscan.h
+	$(SANCC) $(CFLAGS) $(SAN) -o $@ kcore-keyscan.c
 
 tests/keep-unit: tests/keep-unit.c $(PARTS) $(HEADERS)
 	$(CC) -static $(CFLAGS) -o $@ tests/keep-unit.c $(PARTS)
@@ -35,6 +43,6 @@ tests/keep-unit-san: tests/keep-unit.c $(PARTS) $(HEADERS)
 	$(SANCC) $(CFLAGS) $(SAN) -o $@ tests/keep-unit.c $(PARTS)
 
 clean:
-	rm -f keep keep-san tests/keep-unit tests/keep-unit-san
+	rm -f keep keep-san tests/keep-unit tests/keep-unit-san tests/keyscan-san tests/keyscan-plain.o
 
 .PHONY: all san clean
