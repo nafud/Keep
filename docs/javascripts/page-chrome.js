@@ -1,0 +1,161 @@
+/* Page chrome: the statusline (the position readout on the frame's
+   bottom border) and the header nav's active-item sync. Scrolling and
+   page switching are keyboard-driven — see key-nav.js.
+
+   The statusline is always present: left the page path relative to
+   the site root (~ for the homepage), right the position token — All
+   when the page fits, Top at the start, otherwise the percentage
+   through 100% at the bottom. The document scrollbar is hidden
+   (extra.css), so this is the position indicator. The path's parent
+   segments are links to their directories' landing pages. */
+
+(function () {
+  "use strict";
+
+  /* Cached scroll range for the readout. Reading scrollHeight forces a
+     layout flush, so the per-scroll-event path must never touch it —
+     during wheel autoscroll that flush lands on every frame of a long
+     page. The range is measured on init, resize, and page change,
+     re-measured lazily when the observed offset outruns the cache, and
+     re-synced once per scroll burst (off the hot path). */
+  const scrollRange = { max: 0 };
+
+  function measureScrollRange() {
+    const doc = document.documentElement;
+    scrollRange.max = doc.scrollHeight - doc.clientHeight;
+  }
+
+  /* The ruler token for the current offset: All when the page fits,
+     Top at the start, otherwise the percentage — held to 99% until
+     the bottom is actually reached, so 100% always means the end of
+     the page and never a rounding artifact. */
+  function positionToken(offset, max) {
+    if (max <= 0) return "All";
+    if (offset <= 0) return "Top";
+    if (offset >= max) return "100%";
+    return Math.min(99, Math.max(1, Math.round((offset / max) * 100))) + "%";
+  }
+
+  /* Right-hand statusline segment: the position token alone. Looks
+     its element up fresh per call, since navigation.instant may have
+     replaced it since the listener was registered. */
+  function updatePosition() {
+    const pos = document.querySelector(".keep-status__pos");
+    if (!pos) return;
+
+    if (window.scrollY > scrollRange.max) measureScrollRange();
+    const offset = Math.min(window.scrollY, scrollRange.max);
+    pos.textContent = positionToken(offset, scrollRange.max);
+  }
+
+  /* A parent-directory segment of the statusline path: a link to
+     that directory's landing page (every directory has one, the
+     index.md convention). A real anchor, so navigation.instant stays
+     in charge of the jump like everywhere else. */
+  function crumb(label, href) {
+    const link = document.createElement("a");
+    link.className = "keep-status__crumb";
+    link.href = href;
+    link.textContent = label;
+    return link;
+  }
+
+  /* Left-hand segment: the page path below the site root, ~-prefixed
+     like a shell prompt; the homepage is plain ~. Every parent
+     segment is a crumb link — ~ itself included, the site root —
+     while the last segment is the current location and stays plain
+     text, as does the whole path on the homepage. */
+  function updatePath() {
+    const path = document.querySelector(".keep-status__path");
+    if (!path) return;
+    const base = KeepUtils.siteBase().pathname;
+    let rel = location.pathname.startsWith(base)
+      ? location.pathname.slice(base.length)
+      : location.pathname;
+    rel = decodeURIComponent(rel).replace(/\/+$/, "");
+
+    const parts = rel ? rel.split("/") : [];
+    const frag = document.createDocumentFragment();
+    frag.appendChild(
+      parts.length ? crumb("~", base) : document.createTextNode("~")
+    );
+    parts.forEach(function (part, i) {
+      frag.appendChild(document.createTextNode("/"));
+      frag.appendChild(
+        i < parts.length - 1
+          ? crumb(part, base + parts.slice(0, i + 1).join("/") + "/")
+          : document.createTextNode(part)
+      );
+    });
+    path.replaceChildren(frag);
+  }
+
+  /* Header nav active marker. The header is rendered once per full
+     load and navigation.instant does not re-render it, so the
+     Jinja-stamped active class goes stale on instant page changes;
+     this recomputes it from the current location. A section link
+     (its index page URL) is active for every page under its
+     directory; on the homepage no item is active. */
+  function syncActiveNav() {
+    const links = document.querySelectorAll(".keep-header__nav .keep-header__link");
+    if (!links.length) return;
+    const here = location.pathname.replace(/index\.html$/, "");
+    links.forEach(function (link) {
+      const target = new URL(
+        link.getAttribute("href"),
+        location.href
+      ).pathname.replace(/index\.html$/, "");
+      const dir = target.replace(/[^/]*$/, "");
+      link.classList.toggle("keep-header__link--active", here.startsWith(dir));
+    });
+  }
+
+  /* Re-syncs the cached range once per scroll burst, catching late
+     layout growth (fonts, images) without touching scrollHeight on
+     the hot path. */
+  const settleScrollRange = KeepUtils.debounce(function () {
+    measureScrollRange();
+    updatePosition();
+  }, 250);
+
+  /* Idempotence contract as before: created only if missing, re-run
+     per page change because navigation.instant removes injected DOM. */
+  function initStatusline() {
+    if (!document.querySelector(".keep-status")) {
+      const bar = document.createElement("div");
+      bar.className = "keep-status";
+      const path = document.createElement("span");
+      path.className = "keep-status__path";
+      const pos = document.createElement("span");
+      pos.className = "keep-status__pos";
+      /* Progress isn't meaningful read aloud one mutation at a time;
+         the path stays exposed — its crumbs are real links, and an
+         aria-hidden ancestor would hide focusable content. */
+      pos.setAttribute("aria-hidden", "true");
+      bar.appendChild(path);
+      bar.appendChild(pos);
+      document.body.appendChild(bar);
+    }
+    measureScrollRange();
+    updatePath();
+    updatePosition();
+    syncActiveNav();
+  }
+
+  function onScroll() {
+    updatePosition();
+    settleScrollRange();
+  }
+
+  function onResize() {
+    measureScrollRange(); /* the scroll range depends on the viewport */
+    updatePosition();
+  }
+
+  /* These handlers look their elements up fresh on every call, so they
+     are attached once here rather than re-attached per navigation. */
+  window.addEventListener("scroll", onScroll, { passive: true });
+  window.addEventListener("resize", KeepUtils.debounce(onResize, 100));
+
+  KeepUtils.onPageChange(initStatusline);
+})();

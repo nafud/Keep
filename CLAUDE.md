@@ -37,8 +37,10 @@ README.
 | `tests/selftest.sh` | test, workstation and pipeline | Runs every check that needs neither root nor device-mapper, `keytriage.sh` included on stand-ins for the examined system, and ends with `RESULT: PASS` or `RESULT: FAIL` |
 | `tests/unit-check.sh` | test, workstation and pipeline | Builds the parts of the C program twice, statically and with the sanitizers of the compiler, and checks each against an independent source: `hashlib`, Python's `json`, `cryptsetup` |
 | `tests/keep-unit.c` | test | Runs one part of the C program at a time, for `unit-check.sh` and for a comparison with `dmsetup` on a guest, and counts the pages of a file that lie in the page cache |
-| `docs/` | GitHub Pages | The pages of Keep: the home page `index.html`, the sections `installation/`, `usage/`, `systems/` and `about/`, each an `index.html`, and `assets/` with `keep.css`, `keep.js`, `theme.js` and the fonts |
-| `.github/workflows/` | GitHub | `checks.yml` runs the self-test, builds the medium and runs `compat-check.sh` on two runner images on every push. `distros.yml` runs it in guests of ten distribution releases. `pages.yml` publishes `docs/` from `main` |
+| `docs/`, `overrides/`, `mkdocs.yml` | GitHub Pages | The pages of Keep, built with Material for MkDocs: the home page `index.md` and the sections `installation.md`, `usage.md`, `systems.md` and `about.md`, the stylesheet `stylesheets/extra.css`, the page scripts in `javascripts/`, the fonts in `assets/fonts/`, and the templates in `overrides/` |
+| `requirements.in`, `requirements.txt` | pipeline, workstation | The packages that build the pages: MkDocs and Material, and in the second file every package they bring along, each with its version and its SHA-256 |
+| `tests/pages-check.sh` | test, workstation and pipeline | Builds the pages with `mkdocs build --strict` and reads what was built: the pages, the frame, that nothing is loaded from another host, the version, the references |
+| `.github/workflows/` | GitHub | `checks.yml` runs the self-test, builds and reads the pages, builds the medium and runs `compat-check.sh` on two runner images on every push. `distros.yml` runs it in guests of ten distribution releases. `pages.yml` builds the pages and publishes them from `main` |
 
 The five files at the root must stay siblings. `build-toolkit.sh` takes `keytriage.sh` and
 `kcore-keyscan.c` from its own directory. `offline-keyscan.sh` looks for `vkverify.py` beside
@@ -945,8 +947,11 @@ it lockdown `integrity`. The screen and the report of each run were read:
    system's `dmsetup` and `cryptsetup`, by their full paths.
 5. A file of the examined system is read as text and never executed or sourced. `bash -p` is part
    of this rule, because without it the shell runs the file that `BASH_ENV` names.
-6. Python is standard library only and is run with `-I`.
-7. A downloaded binary is pinned by SHA-256 and refused on a mismatch.
+6. Python is standard library only and is run with `-I`. This is said of the tools of Keep and
+   of its checks. MkDocs, which builds the pages, is no tool of Keep: it runs on a workstation
+   and in the pipeline, from the packages of `requirements.txt`.
+7. A downloaded binary is pinned by SHA-256 and refused on a mismatch. So is every package
+   that builds the pages: `pip install --require-hashes -r requirements.txt`.
 8. A change of behaviour raises the version of the file it is in: `VERSION` in `keytriage.sh`,
    `offline-keyscan.sh`, `vkverify.py` and `kcore-keyscan.c`, and `KEEP_VERSION` in
    `src/triage.h` for the C program.
@@ -980,6 +985,10 @@ shellcheck -S warning *.sh tests/*.sh
 python3 -I -m py_compile vkverify.py tests/make-schedule-fixture.py
 gcc -static -O2 -Wall -o kcore-keyscan kcore-keyscan.c
 ```
+
+`tests/pages-check.sh` builds the pages with MkDocs and ends with `RESULT: PASS` as well. It
+needs the packages of `requirements.txt`, so it is a script of its own and the self-test
+does not run it. What it reads in the built pages is said in "The pipeline and the page".
 
 `tests/unit-check.sh` is the same for the C program and ends with `RESULT: PASS` too. It builds
 `tests/keep-unit` and `keep` statically against musl and once more with the address and
@@ -1138,8 +1147,9 @@ be opened and emulated otherwise, and starts the check over SSH through `sudo`.
 
 ## The pipeline and the page
 
-- `checks.yml` has three jobs on every push and pull request. `selftest` runs
-  `tests/selftest.sh -a` and `tests/unit-check.sh -a`. `medium` runs `build-toolkit.sh`, verifies
+- `checks.yml` has four jobs on every push and pull request. `selftest` runs
+  `tests/selftest.sh -a` and `tests/unit-check.sh -a`. `pages` installs MkDocs by the hashes
+  of `requirements.txt` and runs `tests/pages-check.sh`. `medium` runs `build-toolkit.sh`, verifies
   the manifest and starts the scripts in the medium's own shell. `compat` builds the medium and
   runs `tests/compat-check.sh` with a memory image as root on the runner images `ubuntu-24.04`
   and `ubuntu-22.04`, which offer device-mapper, loop devices, FAT and a readable `/proc/kcore`.
@@ -1170,70 +1180,68 @@ be opened and emulated otherwise, and starts the check over SSH through `sudo`.
   those on needs their source offered with them.
 - Actions are pinned by commit hash with the release in a comment. `dependabot.yml` proposes
   their updates.
-- `pages.yml` publishes `docs/` as it is, with no build step, from `main` only.
-- The pages describe the C program, `keep`, in the version of `KEEP_VERSION`, which the
-  self-test compares with what the pages name. They go live when the branch that holds them
-  is `main`. A sentence on them follows rule 9 like any other: it comes from the source of
-  a version or from a run, and says which.
-- There are five pages, written by hand as HTML with no build step:
-  - The home page: the word Keep, two sentences on what Keep is, and one closing line.
-  - `installation/`: what the build needs, the build, its check and the way to the scene.
-  - `usage/`: the three runs with samples of the screen, the verdicts, the files of a run,
-    the options and the exit status.
-  - `systems/`: one card for each system on which Keep was run, with its kernel, its
+- `pages.yml` builds the pages with `mkdocs build --strict` and publishes `site/`, from `main`
+  only.
+- The pages describe the C program, `keep`, in the version of `KEEP_VERSION`, which
+  `pages-check.sh` compares with what the built pages name and `selftest.sh` with their
+  sources. A sentence on them follows rule 9 like any other: it comes from the source of a
+  version or from a run, and says which.
+- The pages are built with Material for MkDocs, in the setup of the site of Kiln
+  (github.com/nafud/Kiln): its `mkdocs.yml`, its templates in `overrides/`, its stylesheet
+  `docs/stylesheets/extra.css` and its page scripts in `docs/javascripts/`, with `kiln` in
+  their names turned into `keep`. A change of the look or of what the pages do starts from
+  what Kiln does, and is taken over from there.
+  - Left out of Kiln's setup: the jump palette (`quick-jump.js`, its rules in the stylesheet
+    and the bar of the home page), the search plugin with its index, and the content widgets
+    (`widgets.js`). `mkdocs.yml` has `plugins: []`, and the header template renders no search
+    form.
+  - Added to Kiln's stylesheet, in one block before its rules for narrow screens: the tones
+    of a sample of the screen of `keep` (three colours that every theme sets), the cards of
+    the systems, the two sentences of the home page, and the size of a citation.
+  - The themes are Kiln's five in its order: `terminal`, which a reader gets first, `system
+    light`, `system dark`, `phosphor` and `nord`. The key `t` goes to the next.
+  - The keys are Kiln's: `j` and `k` a step, `gg` and `G` the start and the end, `h` and `l`
+    the heading before and after, `0` the home page, `1` to `4` the sections, `t` the theme.
+    The About page lists them for the reader, because the palette that lists them in Kiln is
+    not there.
+  - As in Kiln, a page has no sidebar and no table of contents, the frame has the sections
+    on its upper line and the path of the page and the position in it on its lower line, the
+    first heading shimmers under the pointer, a code block has a copy button and a link to
+    another site opens in a tab of its own.
+- There are five pages, written in Markdown:
+  - `index.md`, the home page: the word Keep, drawn in characters by `ascii-logo.js` from a
+    blackletter typeface whose three glyphs are embedded in that script, two sentences on
+    what Keep is, and one closing line.
+  - `installation.md`: what the build needs, the build, its check and the way to the scene.
+  - `usage.md`: the three runs with samples of the screen, the verdicts, the files of a run,
+    the options and the exit status. A sample of the screen is HTML inside the Markdown, a
+    `div` with the classes `highlight keep-screen`, so that it can carry the tones.
+  - `systems.md`: one card for each system on which Keep was run, with its kernel, its
     cryptsetup, the XTS driver of the latest run and whether a `System.map` is kept there.
     The program and its commands are the same on every distribution, so the distributions
     have cards of what differs and no page of their own in the other sections.
-  - `about/`: what Keep does, the ideas behind it, safeguards, limits, how it is checked,
-    and the references, numbered and cited in the text.
-- A page loads nothing from another host and has no inline script or style, which its
-  Content-Security-Policy enforces. A link to another site is a link for the reader. The
-  fonts are in `docs/assets/fonts/` with their licences.
-- The self-test looks at every page: each link between and inside the pages has its target,
-  each file that a page loads is there and its own, each page has the same sections on its
-  frame with its own marked, and each reference is cited.
-- The pages take their design and what they do from the page of Kiln (github.com/nafud/Kiln,
-  `docs/stylesheets/extra.css` and `docs/javascripts/` there, on Material for MkDocs),
-  written out in `keep.css` and `keep.js` because these pages have no theme beneath them. A
-  change of the look starts from what Kiln does.
-  - Sizes hang on the size of the root, which grows with the window: 20px, 22px from a width
-    of 100em and 24px from 125em. Everything else is in rem: running text 0.78rem at a line
-    height of 1.7, the first heading 1.8rem, the second 1.2rem, the third 0.95rem, code blocks
-    0.72rem, the labels 0.65rem. The text column is 900px wide.
-  - Colours are Kiln's five themes in its order: `terminal`, which a reader gets first,
-    `system light`, `system dark`, `phosphor` and `nord`. Every colour of a page is one of
-    the names that a theme sets: headings in the first colour of the ladder, running text in
-    the second, labels in the muted one, links in the accent without an underline. The key
-    `t` goes to the next theme, and `theme.js`, loaded in the head, puts the reader's choice
-    on the root before the page is drawn.
-  - The window is one pane with a thin frame. On its upper line sit `[keep]`, the link to
-    the home page, the four sections, of which the one on screen stands in the accent with a
-    star before it, and `src`, the link to the repository. On its lower line sit the path of
-    the page (`~`, `~/usage`) and the position in it (`All`, `Top`, a percentage, `100%`),
-    which `keep.js` writes because a page has no scrollbar.
-  - A page of a section is one column of text in the middle of the pane, with its table of
-    contents beside it where the window is wide enough. The entry that belongs to the text
-    on screen has the star as well. Kiln has no table of contents: its palette lists the
-    headings, and these pages have no palette and no search.
-  - A card is Kiln's raised surface: the surface colour, a border of one pixel, corners of
-    4px. A card of facts lies still. A card that is a link would lift under the pointer.
-  - The keys are Kiln's: `j` and `k` a step, `gg` and `G` the start and the end, `h` and `l`
-    the heading before and after, `0` the home page, `1` to `4` the sections, `t` the theme.
-    The first heading of a page shimmers under the pointer, a command has a copy button,
-    and a link to another site opens in a tab of its own.
-  - A sample of the screen of `keep` has the look that a terminal gives it: titles bold,
-    labels in the colour of a label, and the word of a verdict in its tone, each a name of
-    the theme.
-- The word of the home page is drawn by `keep.js` in the manner of Kiln's logo: set in a
-  blackletter typeface and sampled into a grid of ASCII characters in the faint colour, which
-  shimmer while the pointer moves. A cell is 0.5rem as in Kiln's logo and smaller in a
-  narrow window, so that the word keeps about 120 cells across. Without JavaScript the plain
-  word stands in its place, and every page reads the same.
-- Not checked: the pages were looked at in Chromium alone, at widths from 390 to 1920
-  pixels. Of the references, the addresses on ecma-international.org, no-color.org and
-  musl.libc.org could not be fetched from where the pages were written, and the files of
-  the kernel are named by their release and path on GitHub and were not fetched there. The
-  others were fetched and their titles compared.
+  - `about.md`: what Keep does, the ideas behind it, safeguards, limits, how it is checked,
+    the keys of the pages, and the references, numbered and cited in the text.
+- A page loads nothing from another host: the fonts are in `docs/assets/fonts/` with their
+  licences, and `font: false` keeps the theme from loading its own. `pages-check.sh` reads
+  every built page and every stylesheet for it. A link to another site is a link for the
+  reader. The built pages hold inline scripts of the theme, so they have no
+  Content-Security-Policy, which the hand-written page before them had.
+- To see the pages on a workstation:
+  `python3 -m venv ~/keep-pages && ~/keep-pages/bin/pip install --require-hashes -r
+  requirements.txt && ~/keep-pages/bin/mkdocs serve`.
+- `requirements.txt` is written by `pip-compile --generate-hashes` from `requirements.in`
+  (pip-tools 7.7.0, with Python 3.13). The packages were installed from it with Python 3.12
+  and 3.13.
+- Not checked or to know:
+  - The pages were looked at in Chromium alone, at widths from 390 to 1920 pixels.
+  - Of the references, the addresses on ecma-international.org, no-color.org and
+    musl.libc.org could not be fetched from where the pages were written, and the files of
+    the kernel are named by their release and path on GitHub and were not fetched there. The
+    others were fetched and their titles compared.
+  - The build of Material for MkDocs 9.8.1 says of itself that it reaches its end of life
+    on May 5, 2027, with fixes until then, and names Zensical as its successor. Kiln is
+    built with the same release.
 
 ## Systems checked
 

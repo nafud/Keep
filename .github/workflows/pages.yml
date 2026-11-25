@@ -1,8 +1,10 @@
-# Publishes docs/ as the GitHub Pages site of Keep.
+# Builds the pages of Keep with MkDocs and publishes them as its GitHub Pages site.
 #
-# The site is plain files and has no build step. It is published from main only: a manual run
-# from another branch does nothing. The repository setting "Pages, Source: GitHub Actions" has
-# to be chosen once by hand before the first run.
+# The pages are built from mkdocs.yml, docs/ and overrides/ with the packages of
+# requirements.txt, each of which is pinned by its SHA-256 and refused on a mismatch. They are
+# published from main only: a manual run from another branch does nothing. tests/pages-check.sh
+# builds and reads the same pages on every push, in checks.yml. The repository setting "Pages,
+# Source: GitHub Actions" has to be chosen once by hand before the first run.
 name: pages
 
 on:
@@ -10,6 +12,9 @@ on:
     branches: [main]
     paths:
       - docs/**
+      - overrides/**
+      - mkdocs.yml
+      - requirements.txt
       - .github/workflows/pages.yml
   workflow_dispatch:
 
@@ -35,8 +40,18 @@ jobs:
         with:
           persist-credentials: false
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+      - name: Install MkDocs by its pinned hashes
+        run: |
+          python3 --version
+          python3 -m venv "$RUNNER_TEMP/pages"
+          "$RUNNER_TEMP/pages/bin/pip" install --quiet --require-hashes -r requirements.txt
+      - name: Build the pages
+        env:
+          NO_MKDOCS_2_WARNING: "1"
+        run: |
+          "$RUNNER_TEMP/pages/bin/mkdocs" build --strict
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
-          path: docs
+          path: site
       - id: deployment
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

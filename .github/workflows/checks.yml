@@ -5,6 +5,8 @@
 #              for the examined system, the menu through a pipe.
 #              tests/unit-check.sh -a: the parts of the C program, each against an independent
 #              source, in a static build and in one with the sanitizers of the compiler
+#   pages      tests/pages-check.sh: the pages of Keep build with MkDocs from the packages that
+#              requirements.txt pins, and what is built loads nothing from another host
 #   medium     build-toolkit.sh: the scene tool medium builds, its manifest verifies and its own
 #              static shell runs its scripts
 #   compat     tests/compat-check.sh as root on two runner images: keytriage.sh from the medium on
@@ -61,6 +63,21 @@ jobs:
           chmod 755 "$RUNNER_TEMP/avml"
       - name: The parts of the C program
         run: AVML="$RUNNER_TEMP/avml" tests/unit-check.sh -a
+
+  pages:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install MkDocs by its pinned hashes
+        run: |
+          python3 --version
+          python3 -m venv "$RUNNER_TEMP/pages"
+          "$RUNNER_TEMP/pages/bin/pip" install --quiet --require-hashes -r requirements.txt
+      - name: Build the pages and read them
+        run: MKDOCS="$RUNNER_TEMP/pages/bin/mkdocs" tests/pages-check.sh
 
   medium:
     runs-on: ubuntu-24.04

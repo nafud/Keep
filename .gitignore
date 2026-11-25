@@ -25,3 +25,6 @@ tests/keep-unit-san
 tests/keyscan-san
 tests/keyscan-plain.o
 tests/keyscan
+
+# the pages as MkDocs builds them
+site/

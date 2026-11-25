@@ -1,0 +1,43 @@
+{#-
+  Terminal header, taken from the site of Kiln (github.com/nafud/Kiln,
+  overrides/partials/header.html): the labels sitting on the frame's
+  top border line (extra.css draws the frame and masks; each label
+  here carries an opaque bg so the line runs behind it, the tmux
+  pane-title look).
+
+  [keep] is the a.md-logo home link — page-utils.js derives the site
+  base from its href, and the 0 key clicks it, so the class and the
+  href expression must stay; there is no separate "home" nav item.
+  The nav lists the four top-level sections; key-nav.js clicks these
+  for the 1-4 keys. The active item is stamped here for the no-JS
+  render and re-synced by page-chrome.js across navigation.instant
+  page changes, which do not re-render the header; on the homepage no
+  item is active.
+
+  Material's palette radios (the t key advances them) are kept from
+  the stock header. Its search form is not: the site has no search
+  (mkdocs.yml turns the plugin off). The drawer label is dropped — the
+  left sidebar is gone site-wide, navigation lives here.
+-#}
+<header class="md-header keep-header" data-md-component="header">
+  <nav class="md-header__inner keep-header__inner" aria-label="{{ lang.t('header') }}">
+    <a href="{{ config.extra.homepage | d(nav.homepage.url, true) | url }}" title="{{ config.site_name | e }}" class="md-header__button md-logo keep-header__logo" aria-label="{{ config.site_name }}" data-md-component="logo">[keep]</a>
+    <ul class="keep-header__nav">
+      {% for nav_item in nav %}
+        {% set link = nav_item if nav_item.is_page else nav_item.children | first %}
+        <li><a class="keep-header__link{% if nav_item.active %} keep-header__link--active{% endif %}" href="{{ link.url | url }}">{{ nav_item.title | lower }}</a></li>
+      {% endfor %}
+    </ul>
+    {% if config.theme.palette %}
+      {% if not config.theme.palette is mapping %}
+        {% include "partials/palette.html" %}
+      {% endif %}
+    {% endif %}
+    {% if not config.theme.palette is mapping %}
+      {% include "partials/javascripts/palette.html" %}
+    {% endif %}
+    {% if config.repo_url %}
+      <a class="keep-header__src" href="{{ config.repo_url }}" title="{{ config.repo_name }}">src</a>
+    {% endif %}
+  </nav>
+</header>

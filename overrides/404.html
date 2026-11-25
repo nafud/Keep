@@ -1,0 +1,13 @@
+{#-
+  404 page: blank except for a plain "404" (styled by the .keep-404
+  rules in extra.css: JetBrains Mono like everything else, centered in
+  the viewport). Sidebars are already suppressed site-wide by
+  main.html's empty site_nav block; the header stays as the way back
+  in. With site_url set, MkDocs emits absolute asset URLs on this
+  page, so it renders correctly at any missing path depth.
+-#}
+{% extends "main.html" %}
+
+{% block content %}
+<p class="keep-404">404</p>
+{% endblock %}

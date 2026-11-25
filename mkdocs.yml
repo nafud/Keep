@@ -1,0 +1,120 @@
+# The pages of Keep, built with Material for MkDocs from docs/ and
+# overrides/. The setup is that of the site of Kiln
+# (github.com/nafud/Kiln), without its jump palette, its search and
+# its content widgets.
+#
+#   pip install --require-hashes -r requirements.txt
+#   mkdocs serve              # the pages at http://127.0.0.1:8000/Keep/
+#   mkdocs build --strict     # the pages in site/, as the pipeline builds them
+site_name: Keep
+site_description: Decryption-readiness triage for live Linux forensics
+site_url: https://nafud.github.io/Keep/
+repo_url: https://github.com/nafud/Keep
+repo_name: nafud/Keep
+
+# Escalate link problems to warnings so `mkdocs build --strict` fails
+# on them. anchors covers the #fragment of links between the pages, so
+# a renamed heading fails the build instead of silently landing readers
+# at the top of the page. The homepage is intentionally not in nav, so
+# omitted_files stays at info.
+validation:
+  nav:
+    omitted_files: info
+    not_found: warn
+  links:
+    not_found: warn
+    anchors: warn
+    absolute_links: warn
+    unrecognized_links: warn
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+
+theme:
+  name: material
+  custom_dir: overrides
+  favicon: assets/favicon.svg
+  # JetBrains Mono is self-hosted (docs/assets/fonts), so the theme
+  # loads no font from another host.
+  font: false
+  # The site's themes, Kiln's five in Kiln's order, terminal first (the
+  # first entry is what a new visitor gets); no `media:` on any entry,
+  # so nothing follows the OS "auto" preference — the site is
+  # deterministically terminal until the reader picks. The header
+  # toggle button is hidden by extra.css — the t key (key-nav.js)
+  # cycles these radios, so the `toggle:` blocks exist to make Material
+  # render the radio group. A theme's identity is its scheme+primary
+  # pair: the light theme rides `default`, while dark themes ride
+  # `scheme: slate` with a distinct `primary` slug — Material's entire
+  # dark kit (Pygments, admonitions) is scoped to slate in palette.css,
+  # so a custom-named dark scheme would render light code blocks on a
+  # dark ground.
+  palette:
+    - scheme: slate
+      primary: terminal
+      accent: cyan
+      toggle:
+        icon: material/toggle-switch-off
+        name: terminal
+    - scheme: default
+      primary: white
+      accent: blue
+      toggle:
+        icon: material/toggle-switch
+        name: system light
+    - scheme: slate
+      primary: black
+      accent: blue
+      toggle:
+        icon: material/toggle-switch-off
+        name: system dark
+    - scheme: slate
+      primary: phosphor
+      accent: green
+      toggle:
+        icon: material/toggle-switch-off
+        name: phosphor
+    - scheme: slate
+      primary: nord
+      accent: cyan
+      toggle:
+        icon: material/toggle-switch-off
+        name: nord
+  # Only features whose machinery exists here: instant navigation (the
+  # page scripts are built around it) and the code-copy button. The
+  # sidebar/toc-bound features have nothing to act on —
+  # overrides/main.html empties the site_nav block.
+  features:
+    - navigation.instant
+    - content.code.copy
+
+extra_css:
+  - stylesheets/extra.css
+
+# page-utils.js must stay first (the shared KeepUtils global).
+extra_javascript:
+  - javascripts/page-utils.js
+  - javascripts/external-links.js
+  - javascripts/page-chrome.js
+  - javascripts/ascii-logo.js
+  - javascripts/code-copy.js
+  - javascripts/heading-shimmer.js
+  - javascripts/key-nav.js
+
+# No plugin: the default search plugin is off, the site has no search.
+plugins: []
+
+# The homepage, index.md, is not in nav: [keep] on the frame leads to it.
+nav:
+  - Installation: installation.md
+  - Usage: usage.md
+  - Systems: systems.md
+  - About: about.md

@@ -1,0 +1,8 @@
+# What builds the pages of Keep (mkdocs.yml). Nothing of Keep itself needs these: the tools
+# of Keep are C, bash and Python with its standard library alone.
+#
+# requirements.txt is this file with every package it brings along, each pinned by its
+# version and its SHA-256:
+#   pip-compile --generate-hashes --output-file=requirements.txt requirements.in
+mkdocs==1.6.1
+mkdocs-material==9.8.1

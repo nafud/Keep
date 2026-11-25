@@ -22,10 +22,8 @@
 #   triage     keytriage.sh itself on stand-ins for the examined system's dmsetup, cryptsetup
 #              status, /proc/kcore and AVML, with the same headers, the real header backup and proof
 #   usage      -h of every script prints its head comment, and a wrong option is refused
-#   page       the pages in docs/ show the version of the C program, every link between and
-#              inside them has its target, every file they name exists, nothing is loaded from
-#              another host, every page has the same sections on its frame, and every
-#              reference is cited
+#   page       the sources of the pages in docs/ show the version of the C program and no
+#              other. The pages themselves are built and read by tests/pages-check.sh
 #
 # On real device-mapper and a real /proc/kcore keytriage.sh is checked by compat-check.sh.
 #
@@ -681,82 +679,17 @@ usage_text() {
 check "the scripts print their head comment with -h and refuse a wrong option with status 2" usage_text
 
 # ---- page --------------------------------------------------------------------------------------
-if [ -f docs/index.html ]; then
+# The pages are built and read by tests/pages-check.sh, which needs MkDocs. What can be seen
+# without it is seen here, so that a new version of the program without its pages fails early.
+if [ -f docs/installation.md ]; then
     page() {
         local v n; v=$(sed -n 's/^#define KEEP_VERSION "\([^ "]*\).*/\1/p' src/triage.h)
         [ -n "$v" ] || { echo "no KEEP_VERSION in src/triage.h"; return 1; }
-        grep -q ">$v<" docs/installation/index.html || { echo "docs/installation/index.html does not show the version $v"; return 1; }
-        n=$(grep -oh '[0-9]\.[0-9]-pre[0-9]*' docs/*.html docs/*/index.html | grep -vcx "$v")
-        [ "$n" -eq 0 ] || { echo "$n places of the pages name another version than $v"; return 1; }
+        grep -q "^keep $v (" docs/installation.md || { echo "docs/installation.md does not show keep $v"; return 1; }
+        n=$(grep -oh '[0-9]\.[0-9]-pre[0-9]*' docs/*.md | grep -vcx "$v")
+        [ "$n" -eq 0 ] || { echo "$n places of docs/*.md name another version than $v"; return 1; }
     }
-    check "the pages show the version of the C program and no other" page
-    page_links() {
-        python3 -I -c 'import glob, os, re, sys
-pages = sorted(glob.glob("docs/*.html") + glob.glob("docs/*/index.html"))
-text = {p: open(p, encoding="utf-8").read() for p in pages}
-ids = {p: set(re.findall(r"\bid=\"([^\"]+)\"", t)) for p, t in text.items()}
-bad, frames = [], {}
-def local(page, ref, what):
-    path, _, mark = ref.partition("#")
-    target = os.path.normpath(os.path.join(os.path.dirname(page), path)) if path else page
-    if os.path.isdir(target):
-        target = os.path.join(target, "index.html")
-    if ":" in path or path.startswith("/") or not target.startswith("docs" + os.sep):
-        bad.append("%s: another host or a path outside the pages in %s: %s" % (page, what, ref))
-    elif not os.path.isfile(target):
-        bad.append("%s: no such file: %s" % (page, ref))
-    elif mark and mark not in ids.get(target, ()):
-        bad.append("%s: no target for %s" % (page, ref))
-for page, t in text.items():
-    if "Content-Security-Policy" not in t or "default-src \x27none\x27" not in t:
-        bad.append(page + ": no Content-Security-Policy that begins with nothing allowed")
-    if re.search(r"<script(?![^>]*\bsrc=)|<style|\sstyle=|\son[a-z]+=", t):
-        bad.append(page + ": a script or a style inside the page")
-    for tag, ref in re.findall(r"<(a|link|script|img|source)\b[^>]*?\b(?:href|src)=\"([^\"]*)\"", t):
-        if tag == "a" and ref.startswith("https://"):
-            continue                  # a link for the reader, nothing is loaded from it
-        local(page, ref, "<%s>" % tag)
-    # the frame: the same sections in the same order on every page, one of them marked at most
-    depth = "" if os.path.dirname(page) == "docs" else "../"
-    nav = re.search(r"<nav aria-label=\"Sections\">(.*?)</nav>", t, re.S)
-    links = re.findall(r"href=\"([^\"]+)\"", nav.group(1)) if nav else []
-    frames[page] = [l[len(depth):] if l.startswith(depth) else "?" + l for l in links]
-    current = re.findall(r"<a href=\"([^\"]+)\" aria-current=\"page\"", nav.group(1)) if nav else []
-    own = os.path.basename(os.path.dirname(page)) + "/"
-    if depth and current != [depth + own]:
-        bad.append("%s: the section on its frame is %s" % (page, current))
-    if not depth and current:
-        bad.append(page + ": the home page marks a section")
-first = frames[pages[0]] if pages else []
-for page, links in frames.items():
-    if links != first or not links:
-        bad.append("%s: its sections are %s and those of %s are %s" % (page, links, pages[0], first))
-for section in first:
-    if not os.path.isfile(os.path.join("docs", section, "index.html")):
-        bad.append("no page for the section " + section)
-for sheet in glob.glob("docs/assets/*.css"):
-    for ref in re.findall(r"url\(\"([^\"]+)\"\)", open(sheet, encoding="utf-8").read()):
-        if not os.path.isfile(os.path.join("docs/assets", ref)):
-            bad.append("no such file: docs/assets/" + ref)
-sys.exit("\n".join(bad) or 0)'
-    }
-    check "the links and files of the pages are all there, what a page loads is its own, and every page has the same frame" page_links
-    page_refs() {
-        python3 -I -c 'import re, sys
-t = open("docs/about/index.html", encoding="utf-8").read()
-have = [int(n) for n in re.findall(r"<li id=\"ref-(\d+)\">", t)]
-cited = {int(n) for n in re.findall(r"href=\"#ref-(\d+)\"", t)}
-bad = []
-if have != list(range(1, len(have) + 1)):
-    bad.append("the references are not numbered from 1 on: %s" % have)
-if cited != set(have):
-    bad.append("cited and not listed, or listed and not cited: %s" % sorted(cited ^ set(have)))
-for n, shown in re.findall(r"href=\"#ref-(\d+)\">\[(\d+)\]", t):
-    if n != shown:
-        bad.append("the citation [%s] leads to reference %s" % (shown, n))
-sys.exit("\n".join(bad) or 0)'
-    }
-    check "every reference of the page is cited and every citation leads to its reference" page_refs
+    check "the sources of the pages show the version of the C program and no other" page
 fi
 
 finish
