@@ -26,11 +26,8 @@ README.
 | `keytriage.sh` | scene, as root | The triage itself. Enumerates the open dm-crypt volumes, backs up LUKS headers, walks the route ladder, prints one verdict per volume, writes the folder of the run into the destination |
 | `kcore-keyscan.c` | scene and lab | Static C scanner. Finds AES-128 and AES-256 key schedules in `/proc/kcore` or in a memory image |
 | `src/`, `Makefile` | scene, in work | The C program `keep`, which is to take the place of the medium. `make` builds it statically against musl |
-| `keep.c` | scene | The launcher of the medium, a static program. `keep` starts `keep-menu.sh` in the medium's own shell with `-p`, so that Keep is started by one word |
-| `keep-menu.sh` | scene and lab | The dialogue of Keep, in the manner of `ewfacquire`. Asks for each parameter of one run as a plain question and calls `keytriage.sh` or `offline-keyscan.sh` |
 | `vkverify.py` | lab | Verifier. Proves which scanner candidates are the volume key of a LUKS1 or LUKS2 header |
 | `offline-keyscan.sh` | lab | Driver for a dump collected earlier. Runs the scanner on the dump and `vkverify.py` against disk images |
-| `keep-report.py` | lab | Prints the verdict reports as text in the manner of `ewfinfo`, and compares several reports |
 | `build-toolkit.sh` | workstation | Assembles the scene tool medium and writes it as an ISO |
 | `tests/make-schedule-fixture.py` | test | Writes a memory image with the schedules of known keys and five traps, as raw, ELF, LiME or compressed AVML |
 | `tests/compat-check.sh` | test, throwaway guest only | Checks `keytriage.sh` on real device-mapper: containers and mappings of known keys, the null cipher, LVM on LUKS, LUKS2 with integrity, the memory image, and the destination by default and on FAT. Runs the C program beside it, and alone on a volume in re-encryption |
@@ -43,13 +40,10 @@ README.
 | `docs/` | GitHub Pages | The page of Keep: `index.html`, `assets/keep.css`, `assets/keep.js` and the fonts |
 | `.github/workflows/` | GitHub | `checks.yml` runs the self-test, builds the medium and runs `compat-check.sh` on two runner images on every push. `distros.yml` runs it in guests of ten distribution releases. `pages.yml` publishes `docs/` from `main` |
 
-The eight files at the root must stay siblings. `build-toolkit.sh` takes `keytriage.sh`,
-`keep-menu.sh`, `keep.c` and `kcore-keyscan.c` from its own directory. `keep-menu.sh` and
-`offline-keyscan.sh` look for `keytriage.sh`, `offline-keyscan.sh` and `vkverify.py` beside
-themselves. `kcore-keyscan.c` includes `src/keyscan.h`, and the `Makefile` at the root builds
-the C program from `src/` and from `kcore-keyscan.c`. `keep.c` at the root is the launcher of
-the medium, and the program `keep` that `make` builds is the C program: two things of one name
-while both exist.
+The five files at the root must stay siblings. `build-toolkit.sh` takes `keytriage.sh` and
+`kcore-keyscan.c` from its own directory. `offline-keyscan.sh` looks for `vkverify.py` beside
+itself. `kcore-keyscan.c` includes `src/keyscan.h`, and the `Makefile` at the root builds the C
+program `keep` from `src/` and from `kcore-keyscan.c`.
 
 ## How it works
 
@@ -250,64 +244,23 @@ SHA-256.
   in re-encryption: a list with `key_file`, `cipher`, `key_bits`, `key_location`, `route`,
   `verdict`, `key_sha256_16` and `note` for each key after the first. The fields of the volume
   itself are then those of its first key, and its `verdict` is that of the key that is least
-  far. `keep-report.py` prints each as `Key 2` and so on, below the lines of the volume.
-- `keep-report.py` reads only this schema, prints a fixed list of fields and drops the rest. A
-  change of a field name is a change of the schema string and of that script's field lists
-  (`TOP`, `MEMORY`, `VOLUME`, `NUMBERS`).
+  far.
+- No tool of Keep reads the report back. It is for the examiner's own programs and for the
+  checks, and `triage.txt` beside it says the same for a reader. A change of a field name is a
+  change of the schema string.
 
 ## Interaction
 
-Keep has no full-screen interface and opens no window. Every tool writes lines of text and, where
-it asks, reads lines of text. The model is the libewf tools: `keep-menu.sh` behaves like
-`ewfacquire` and `keep-report.py` like `ewfinfo`. On the medium Keep is started by one word,
-`sudo /media/tools/keep`. That launcher runs `keep-menu.sh`, which
-asks for every parameter and shows a default for each, so that Enter at every question searches
-the running system for keys and writes into the directory of the start. `keytriage.sh` takes
-the same parameters as options, for a run without questions.
+Keep has no full-screen interface, opens no window and asks no question. Every tool takes its
+parameters as options and writes lines of text, so it works on a console, over SSH, on a serial
+line and through a pipe. A dialogue (`keep-menu.sh`, with its launcher `keep.c`), a viewer in
+a browser and a printer of the reports (`keep-report.py`) existed and were removed: options
+say the same in one line, and `triage.txt` is the report for a reader.
 
-`keep-menu.sh` runs once per start, in this order.
-
-1. It prints its name and version.
-2. It asks the questions, one per line. A question shows its choices in parentheses and its
-   default in square brackets, as in `Search for keys in (system, dump) [system]: `. Enter takes
-   the default. A value that cannot be used is reported and asked for again.
-3. For the running system it first prints `System information:` with the host, the system, the
-   kernel, the lockdown mode, the memory size and the open dm-crypt volumes.
-4. It prints `The following parameters were provided:` with every value and the exact command.
-5. It asks `Continue with these values (yes, no) [yes]: `. `no` starts the questions again.
-6. It prints the start time, runs the command with its output shown as it runs, prints the end
-   time and ends with `keep-menu.sh: SUCCESS` or `keep-menu.sh: FAILURE (exit status N)`. The
-   script is started in the shell that runs the menu, with `-p`, and not through its `#!` line,
-   which would name the bash of the examined system.
-
-| Search for keys in | Questions | Runs |
-|---|---|---|
-| `system`, the running system | Destination directory, proof attempts per volume, and `Collect a memory dump (no, lime, compressed) [no]` | `bash -p keytriage.sh -d DIR -b N`, with `-m` for `lime` and `-m -c` for `compressed` |
-| `dump`, a memory dump that exists, where `python3` and `vkverify.py` are present | Memory dump, one or more disk images or header backups, destination directory | `offline-keyscan.sh -k KIT DUMP IMAGE...` in the destination directory |
-| `dump`, elsewhere (the tool medium) | Memory dump, destination directory | `kcore-keyscan DUMP` into `DIR/scan_<dump>_<time>/keys/candidates.txt` |
-
-The destination directory is by default the directory in which Keep is started. Keep asks for
-it and does not test where it lies.
-
-The rules of this interface:
-
-- No escape sequence, no cursor movement, no colour, no terminfo and no line editor. The dialogue
-  therefore works on a console, over SSH, on a serial line and through a pipe. Bash's `read -e`
-  is not used, because Readline would read the examined system's `inputrc`.
-- An input that ends before the parameters are complete ends the run with status 1, so a closed
-  pipe cannot loop.
-- Paths are made absolute before they are passed on. A dump or an image must be a readable regular
+- No escape sequence, no cursor movement, no colour, no terminfo and no line editor.
+- A path is made absolute before it is used. A dump or an image must be a readable regular
   file, and a destination directory must exist and be writable.
-- `-n` asks and lists everything and runs nothing. The search on the running system without
-  root is refused, except with `-n`.
-- Exit status: that of the script that was run, 0 after a dry run, 1 when the dialogue ended
-  without a run, 2 for a wrong option.
-
-`keep-report.py` asks nothing. It prints each report as labelled lines, with the class of every
-verdict in brackets (`key held`, `no key needed`, `action needed`, `no key`), and for several
-reports a table of each volume across them. `--brief` prints one line per volume. Control characters in a value are
-replaced by spaces, so a crafted report cannot put an escape sequence on the terminal. Its exit
-status is 1 when a file could not be read as a report.
+- A wrong option ends with status 2 and the usage line.
 
 ## The scene medium
 
@@ -323,11 +276,9 @@ sudo apt install bash-static busybox-static xorriso gcc make musl-tools curl fil
   `bin/kcore-keyscan` is built statically from this repository, and `bin/avml` is the release
   binary of Microsoft AVML v0.21.0, accepted only when its SHA-256 equals the value pinned in the
   script.
-- `keytriage.sh` and `keep-menu.sh` are copied beside `bin/`, and `keep` is built beside them
-  from `keep.c`, statically. It finds its own directory through `/proc/self/exe` and runs
-  `bin/bash -p keep-menu.sh` of that directory with the arguments it was given, so the shell of
-  the examined system takes no part in the start. The medium carries no Python, so
-  `vkverify.py`, `offline-keyscan.sh` and `keep-report.py` are lab tools.
+- `keytriage.sh` is copied beside `bin/` and is started in the shell of the medium,
+  `bin/bash -p keytriage.sh`, so the shell of the examined system takes no part in the start.
+  The medium carries no Python, so `vkverify.py` and `offline-keyscan.sh` are lab tools.
 - The build refuses a binary that is not statically linked, and writes `VERSIONS.txt` and
   `MANIFEST.sha256`.
 - `c/keep` is the C program, built by `make` against musl. It is on the medium only so that
@@ -344,15 +295,13 @@ On scene, with the medium at `/media/tools`, started in the directory that is to
 output:
 
 ```bash
-sudo /media/tools/keep                                               # asks for every parameter, -n is a dry run
-sudo /media/tools/bin/bash -p /media/tools/keytriage.sh              # without questions: keys, into the current directory
+sudo /media/tools/bin/bash -p /media/tools/keytriage.sh              # keys, into the current directory
 sudo /media/tools/bin/bash -p /media/tools/keytriage.sh -d DIR -m    # keys into DIR, then a memory image
 sudo /media/tools/bin/bash -p /media/tools/keytriage.sh -d DIR -m -c # the image compressed
 ```
 
-- `keytriage.sh` and `keep-menu.sh` start only under `bash -p`, and on the medium only in its own
-  `bin/bash`. `keep` is that start as one word. In the lab, where no medium lies beside the
-  scripts, the dialogue is started as `bash -p keep-menu.sh`. Without `-p` bash runs the file that `BASH_ENV` names, takes functions from the
+- `keytriage.sh` starts only under `bash -p`, and on the medium only in its own `bin/bash`.
+  Without `-p` bash runs the file that `BASH_ENV` names, takes functions from the
   environment and obeys `SHELLOPTS`, all before the first line of a script. `sudo` removes these
   variables (`initial_badenv_table` in its `env.c`), a root shell does not.
 - The destination is the directory of `-d`, or the current directory. Where it lies is the
@@ -397,7 +346,6 @@ In the lab:
 ```bash
 ./offline-keyscan.sh [-k KIT] DUMP IMAGE...                # dump collected earlier, headers from disk images
 python3 -I vkverify.py CANDIDATES [HEADER...] [--image DISK]... [--out DIR] [--json FILE]
-python3 -I keep-report.py REPORT.json [REPORT.json ...] [--brief]
 ```
 
 `offline-keyscan.sh` writes `scan_<dump>_<UTC time>/` in the current directory with `triage.txt`,
@@ -639,18 +587,17 @@ among them. The outputs of the guest are not kept.
    that cryptsetup creates in `/run/cryptsetup` while it reads a LUKS2 header (seen with
    cryptsetup 2.7.0), which lies in memory where `/run` is a tmpfs. The inputs of the lab tools
    are only read.
-4. The scene scripts, `keytriage.sh` and `keep-menu.sh`, run in the medium's static bash, started
-   with `-p`, with `PATH` set to the `bin/` of the medium and nothing else. They refuse another
-   shell and a start without `-p`. The launcher `keep` is a static program of the medium that
-   does nothing but this start. The only programs run from outside the medium are the examined
+4. The scene script `keytriage.sh` runs in the medium's static bash, started with `-p`, with
+   `PATH` set to the `bin/` of the medium and nothing else. It refuses another shell and a
+   start without `-p`. The only programs run from outside the medium are the examined
    system's `dmsetup` and `cryptsetup`, by their full paths.
 5. A file of the examined system is read as text and never executed or sourced. `bash -p` is part
    of this rule, because without it the shell runs the file that `BASH_ENV` names.
 6. Python is standard library only and is run with `-I`.
 7. A downloaded binary is pinned by SHA-256 and refused on a mismatch.
 8. A change of behaviour raises the version of the file it is in: `VERSION` in `keytriage.sh`,
-   `keep-menu.sh`, `offline-keyscan.sh`, `vkverify.py`, `keep-report.py`, `kcore-keyscan.c` and
-   `keep.c`, and `KEEP_VERSION` in `src/triage.h` for the C program.
+   `offline-keyscan.sh`, `vkverify.py` and `kcore-keyscan.c`, and `KEEP_VERSION` in
+   `src/triage.h` for the C program.
    The versions of `keytriage.sh` and `vkverify.py` are written into every report, that of the
    scanner into its summary line, and that of `keytriage.sh` stands on the page.
 9. A statement about behaviour on a kernel, a cryptsetup release or a distribution is checked
@@ -678,9 +625,8 @@ pipeline runs it with `-a`, where a check that is skipped for a missing program 
 ```bash
 for f in *.sh tests/*.sh; do bash -n "$f"; done
 shellcheck -S warning *.sh tests/*.sh
-python3 -I -m py_compile keep-report.py vkverify.py tests/make-schedule-fixture.py
+python3 -I -m py_compile vkverify.py tests/make-schedule-fixture.py
 gcc -static -O2 -Wall -o kcore-keyscan kcore-keyscan.c
-gcc -static -O2 -Wall -o keep keep.c
 ```
 
 `tests/unit-check.sh` is the same for the C program and ends with `RESULT: PASS` too. It builds
@@ -751,9 +697,7 @@ the keys with `vkverify.py`, `offline-keyscan.sh` and the on-scene proof command
 headers whose keyslots were erased, and gives the verifier cut and malformed headers. With
 `qemu-img` it writes the disk image in fourteen forms of qcow2, VMDK, VDI, VHD and VHDX, and with
 `ewfacquirestream` as four EnCase images, one of them in segment files. The verifier must read
-from each the disk byte for byte and prove both keys. It drives `keep-menu.sh`
-through a pipe, and starts it through the launcher `keep` from a kit, with `BASH_ENV` and
-`SHELLOPTS` in the environment, which must take no effect.
+from each the disk byte for byte and prove both keys.
 
 `keytriage.sh` itself runs in the self-test without root and without device-mapper. A copy of it
 runs from a kit laid out like the medium, with the busybox applets in `bin/`. Stand-ins play the
@@ -771,8 +715,8 @@ cipher, runs the triage, and passes when the verdicts are right and the captured
 SHA-256 of their key files. With `-m` or `-c` the memory image must be read by the scanner to
 its end and hold the schedules of both volume keys. The main run names no destination and is
 started in a directory on the guest's own disk, which must take the folder of the run. A second
-run is started as an examiner starts Keep, by `keep` and the questions of the dialogue, with a
-FAT file system on a loop device as the destination, which must take every file. It also checks the
+run names with `-d` a FAT file system on a loop device as the destination, which must take every
+file. It also checks the
 layout of an encrypted installation: a LUKS2 volume that carries an LVM volume group, where the
 mapping below the logical volumes must be the one listed and proven, and the logical volumes
 must be named as what that volume carries, one with its mount points and one as swap.
@@ -904,8 +848,6 @@ on, where lockdown is `integrity`, with a version from 1.3 on.
   not tested.
 - The memory image is taken in every run of the pipeline, to the disk of the runner or guest.
   A memory image on a machine with kernel lockdown is not checked with this version.
-- A real capture through the launcher and the dialogue runs in `compat-check.sh`, with the
-  answers given through a pipe. A capture that a person types at a terminal is not yet run.
 - The header search of `--image` is tested on a real LUKS partition image and on a small test disk
   image. Its run time on a whole disk of real size is not measured.
 - Of the compressed memory formats the scanner reads that of AVML. A kdump or makedumpfile
@@ -928,8 +870,8 @@ on, where lockdown is `integrity`, with a version from 1.3 on.
   writes one line that says what failed into a buffer of the caller. What held a key is wiped
   before it is freed.
 - Shell is bash, checked with `shellcheck -S warning`. Each script opens with a comment that
-  states its usage, what it reads and what it writes. `keytriage.sh`, `keep-menu.sh`,
-  `offline-keyscan.sh` and `tests/selftest.sh` print that whole comment with `-h`, read by the
+  states its usage, what it reads and what it writes. `keytriage.sh`, `offline-keyscan.sh`
+  and `tests/selftest.sh` print that whole comment with `-h`, read by the
   shell itself, and end with status 2 for a wrong option.
 - Comments and messages are plain statements. A comment says why, not what the next line does.
 - No personal data, no host names of real cases and no key material in files or commit messages.

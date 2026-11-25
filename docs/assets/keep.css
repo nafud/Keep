@@ -242,7 +242,6 @@ td:first-child { white-space: nowrap; }
 .verdict.none { color: var(--text-2); }
 .verdict.warn { color: var(--warn); }
 .verdict.bad { color: var(--bad); }
-.legend .verdict { margin-right: 1.5ch; }
 
 /* The closing line, as the attribution line of Kiln's home page. */
 .content .colophon { margin: 2.6rem 0 0; color: var(--faint); font-size: 0.7rem; text-align: center; }

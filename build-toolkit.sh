@@ -6,11 +6,11 @@
 #
 # The medium carries: bin/bash (bash-static), bin/busybox with one symlink per applet, bin/avml
 # (Microsoft AVML, release binary pinned by SHA-256), bin/kcore-keyscan (the project scanner, built
-# here statically), keep (the launcher, built here statically from keep.c: it starts the
-# dialogue in the shell of the medium), keytriage.sh, keep-menu.sh (the dialogue), VERSIONS.txt
-# and MANIFEST.sha256. While the C program of Keep is built it rides along as c/keep, static
-# against musl, so that the checks can run it beside keytriage.sh. The ISO is written with Rock
-# Ridge so that symlinks and execute bits survive; attached to a guest it is read-only by nature.
+# here statically), keytriage.sh, VERSIONS.txt and MANIFEST.sha256. keytriage.sh is started in
+# the shell of the medium: bin/bash -p keytriage.sh. While the C program of Keep is built it
+# rides along as c/keep, static against musl, so that the checks can run it beside
+# keytriage.sh. The ISO is written with Rock Ridge so that symlinks and execute bits survive;
+# attached to a guest it is read-only by nature.
 # The download is kept under work/cache/.
 #
 # The suspect's own dmsetup and cryptsetup are used for route R1, so they are not on
@@ -43,10 +43,8 @@ ln -s busybox "$T/bin/sh"
 cp "$C/avml" "$T/bin/avml"
 cp "$C/kcore-keyscan" "$T/bin/kcore-keyscan"
 chmod 755 "$T/bin/bash" "$T/bin/busybox" "$T/bin/avml" "$T/bin/kcore-keyscan"
-cp "$HERE/keytriage.sh" "$HERE/keep-menu.sh" "$T/"
-chmod 755 "$T/keytriage.sh" "$T/keep-menu.sh"
-# the launcher, static like the scanner: "keep" starts keep-menu.sh in the shell of the medium
-gcc -static -O2 -Wall -o "$T/keep" "$HERE/keep.c"
+cp "$HERE/keytriage.sh" "$T/"
+chmod 755 "$T/keytriage.sh"
 
 # the C program, which is to take the place of everything above
 make -s -C "$HERE" keep
@@ -54,7 +52,7 @@ mkdir "$T/c"
 cp "$HERE/keep" "$T/c/keep"
 chmod 755 "$T/c/keep"
 
-for b in bin/bash bin/busybox bin/avml bin/kcore-keyscan keep c/keep; do
+for b in bin/bash bin/busybox bin/avml bin/kcore-keyscan c/keep; do
     file "$T/$b" | grep -q 'statically linked\|static-pie linked' || { echo "$b is not static"; exit 1; }
 done
 {
@@ -63,11 +61,10 @@ done
     echo "busybox:      $("$T/bin/busybox" | head -1)  (package busybox-static $(dpkg-query -W -f='${Version}' busybox-static))"
     echo "avml:         $("$T/bin/avml" --version)  from $AVML_URL"
     echo "kcore-keyscan: built here with $(gcc --version | head -1) from kcore-keyscan.c"
-    echo "keep:         built here with the same compiler from keep.c"
     echo "c/keep:       $("$T/c/keep" -V), built here with $(musl-gcc --version | head -1) against musl $(dpkg-query -W -f='${Version}' musl-dev)"
     echo "keytriage.sh: $(grep -m1 '^VERSION=' "$HERE/keytriage.sh")"
     echo
-    echo "linkage:"; file "$T/bin/bash" "$T/bin/busybox" "$T/bin/avml" "$T/bin/kcore-keyscan" "$T/keep" "$T/c/keep" | sed 's/, BuildID[^,]*//'
+    echo "linkage:"; file "$T/bin/bash" "$T/bin/busybox" "$T/bin/avml" "$T/bin/kcore-keyscan" "$T/c/keep" | sed 's/, BuildID[^,]*//'
 } > "$T/VERSIONS.txt"
 (cd "$T" && find . -type f ! -name MANIFEST.sha256 -print0 | sort -z | xargs -0 sha256sum > MANIFEST.sha256)
 xorriso -as mkisofs -quiet -volid KEEPTOOLS -rational-rock -joliet -o "$OUT/tools.iso" "$T" 2>/dev/null

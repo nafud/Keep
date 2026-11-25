@@ -72,8 +72,6 @@ jobs:
           cd "$RUNNER_TEMP/work/tools"
           sha256sum -c --quiet MANIFEST.sha256
           env -i ./bin/bash -p ./keytriage.sh -h > /dev/null
-          printf 'system\n%s\n\n\nyes\n' "$RUNNER_TEMP" | env -i ./keep -n | tee "$RUNNER_TEMP/menu.txt"
-          grep -q 'dry run, nothing was run' "$RUNNER_TEMP/menu.txt"
           cat VERSIONS.txt
       # The record of what was built. The ISO itself is not uploaded: it carries the bash and
       # busybox binaries, and passing those on needs their source offered with them.

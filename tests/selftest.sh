@@ -13,16 +13,15 @@
 #              four formats, the compressed image of AVML among them, and once with a step of
 #              16. A gzip file is refused, and a cut or damaged image is searched up to the damage
 #   verifier   LUKS2 and LUKS1 headers that cryptsetup makes from the same two keys: vkverify.py
-#              on the headers, offline-keyscan.sh on a disk image that holds both, keep-report.py
-#              on the report, and a candidate list without the keys, which must not prove. The
+#              on the headers, offline-keyscan.sh on a disk image that holds both, with its
+#              report, and a candidate list without the keys, which must not prove. The
 #              same headers with their keyslots erased, cut short, malformed, and under one name.
 #              The disk image again as qemu-img writes it in the formats of virtual machines
 #              and as ewfacquirestream writes it as an EnCase image
 #   proof      the proof command of keytriage.sh on the same headers, with the key and with another
 #   triage     keytriage.sh itself on stand-ins for the examined system's dmsetup, cryptsetup
 #              status, /proc/kcore and AVML, with the same headers, the real header backup and proof
-#   menu       keep-menu.sh through a pipe: a dry run, the format of the memory image, an input
-#              that ends early, and an offline run
+#   usage      -h of every script prints its head comment, and a wrong option is refused
 #   page       docs/index.html shows the version of keytriage.sh, every link inside the page has
 #              its target, every file it names exists and nothing is loaded from another host
 #
@@ -91,17 +90,15 @@ fi
 pysyntax() {
     python3 -I -c 'import sys
 for f in sys.argv[1:]:
-    compile(open(f, encoding="utf-8").read(), f, "exec")' keep-report.py vkverify.py tests/make-schedule-fixture.py
+    compile(open(f, encoding="utf-8").read(), f, "exec")' vkverify.py tests/make-schedule-fixture.py
 }
 check "the Python files compile" pysyntax
 SCAN=$T/kcore-keyscan
 check "kcore-keyscan builds statically without a warning" gcc -static -O2 -Wall -Werror -o "$SCAN" kcore-keyscan.c
 [ -x "$SCAN" ] || finish
-LAUNCH=$T/keep-launcher
-check "keep, the launcher of the medium, builds statically without a warning" gcc -static -O2 -Wall -Werror -o "$LAUNCH" keep.c
 
 # ---- scanner -----------------------------------------------------------------------------------
-mkdir "$T/keys" "$T/evid" "$T/lab" "$T/lab2"
+mkdir "$T/keys" "$T/evid" "$T/lab"
 head -c 64 /dev/urandom > "$T/keys/k256.vk"     # two AES-256 keys
 head -c 32 /dev/urandom > "$T/keys/k128.vk"     # two AES-128 keys
 head -c 64 /dev/urandom > "$T/keys/other.vk"    # a key that is in no header
@@ -219,22 +216,13 @@ if command -v cryptsetup >/dev/null; then
     check "offline-keyscan.sh finds both headers in a disk image and proves both keys" offline
     report() {
         local d; d=$(echo "$T"/lab/scan_*)
-        python3 -I keep-report.py "$d/verdict.json" > "$T/report.txt" || return 1
-        [ "$(python3 -I keep-report.py "$d/verdict.json" --brief | grep -c '^  key held .*: proven$')" -eq 2 ]
+        python3 -I -c 'import hashlib, json, sys
+r = json.load(open(sys.argv[1] + "/verdict.json"))
+got = sorted((v["verdict"], v["key_sha256_16"]) for v in r["volumes"])
+want = sorted(("proven", hashlib.sha256(open(p, "rb").read()).hexdigest()[:16]) for p in sys.argv[2:])
+sys.exit(0 if r["schema"] == "keep-report/1" and got == want else "the report says %r" % got)' "$d" "$T/keys/k256.vk" "$T/keys/k128.vk"
     }
-    check "keep-report.py prints the report with both volumes as key held" report
-    # A volume in re-encryption has two keys, and the C program lists the second in further_keys.
-    report_further() {
-        printf '%s\n' '{"schema": "keep-report/1", "tool": "keep 2.0", "volumes": [{"name": "vol", "type": "LUKS2",' \
-            ' "cipher": "aes-xts-plain64", "key_bits": 512, "key_location": "keyring", "route": "R3 memory",' \
-            ' "verdict": "needs a memory read", "key_sha256_16": "0123456789abcdef", "note": "2 keys",' \
-            ' "further_keys": [{"key_file": null, "cipher": "aes-xts-plain64", "key_bits": 512, "key_location": "keyring",' \
-            ' "route": null, "verdict": "needs a memory read", "key_sha256_16": null, "note": "left\u001b[31mright"}]}]}' > "$T/two.json"
-        python3 -I keep-report.py "$T/two.json" > "$T/two.txt" || return 1
-        grep -q '^        Key 2:  *needs a memory read \[action needed\]$' "$T/two.txt" && grep -q '^        Key 2 size:  *512 bits$' "$T/two.txt" &&
-            grep -q '^        Key 2 note:  *left \[31mright$' "$T/two.txt" || { echo "the second key is not printed:"; cat "$T/two.txt"; return 1; }
-    }
-    check "keep-report.py prints the further keys of a volume that has more than one" report_further
+    check "the report of offline-keyscan.sh names both volumes as proven, each key by the start of its SHA-256" report
 
     # The same disk as the file of a virtual machine. qemu-img writes it in each format, and
     # the verifier must read from each the disk as it is, byte for byte, find both headers at
@@ -381,12 +369,6 @@ open(sys.argv[2], "wb").write(raw)' "$T/l2.img" "$T/list.img" || return 1
     }
     check "the on-scene proof accepts the key of a header and refuses another ($VK)" proof
 
-    menu_offline() {
-        printf 'dump\n%s\n%s\n\n%s\nyes\n' "$T/fx.lime" "$T/disk.dd" "$T/lab2" | KEYSCAN=$SCAN bash -p keep-menu.sh > "$T/menu.txt" 2>&1 || return 1
-        grep -q '^keep-menu.sh: SUCCESS$' "$T/menu.txt" && no_key_in "$KEYS" "$T/menu.txt"
-    }
-    check "keep-menu.sh searches a memory dump and proves the keys, through a pipe" menu_offline
-
     # ---- triage --------------------------------------------------------------------------------
     # keytriage.sh itself, without root and without device-mapper. A copy of it runs from a kit
     # that is laid out like the medium, with the busybox applets in bin/. The examined system is
@@ -529,8 +511,7 @@ for v in json.load(open(sys.argv[1] + "/verdict.json"))["volumes"]:
                 { echo "not both verdicts are captured and proven"; cat "$T/both.txt"; return 1; }
             cmp "$d/keys/t_table.vk" "$T/keys/k128.vk" && cmp "$d/keys/t_keyring.vk" "$T/keys/k256.vk" || return 1
             ( cd "$d" && sha256sum -c --quiet manifest.sha256 ) || return 1
-            no_key_in "$KEYS" "$T/both.txt" "$d/triage.txt" "$d/verdict.json" "$d/manifest.sha256" || return 1
-            [ "$(python3 -I keep-report.py "$d/verdict.json" --brief | grep -c '^  key held .*: captured and proven$')" -eq 2 ]
+            no_key_in "$KEYS" "$T/both.txt" "$d/triage.txt" "$d/verdict.json" "$d/manifest.sha256"
         }
         check "keytriage.sh captures and proves a key from the table and one from memory" triage_both
         cp "$T/sync.log" "$T/both.sync"
@@ -564,7 +545,6 @@ a, b = (json.load(open(p + "/verdict.json"))["memory"] for p in sys.argv[1:3])
 ok = ((a["status"], a["file"], a["format"]) == ("captured", "memory/memory.lime", "lime")
       and (b["status"], b["file"], b["format"]) == ("captured", "memory/memory.avml", "avml compressed"))
 sys.exit(0 if ok else "the reports say %r and %r" % (a, b))' "$d" "$c" || return 1
-            python3 -I keep-report.py "$c/verdict.json" | grep -q 'avml compressed' || { echo "keep-report.py does not print the format"; return 1; }
         }
         check "keytriage.sh -m writes the memory image as LiME, and compressed with -c" triage_memory
         # An image that AVML could not finish, as on a medium that ran full: the part is removed,
@@ -591,31 +571,6 @@ sys.exit(0 if ok else "the reports say %r and %r" % (a, b))' "$d" "$c" || return
             [ $? -eq 1 ] && grep -q 'runs in the shell of the medium' "$T/nop.txt" || { echo "another shell than that of the kit is not refused"; return 1; }
         }
         check "keytriage.sh refuses a start without bash -p and a shell that is not the kit's" triage_shell
-        # The menu in the kit, with a keytriage.sh whose "#!" line names a program that only fails.
-        # The menu must start it in its own shell, with -p, and never through that line.
-        menu_shell() {
-            mkdir -p "$T/kit2" && ln -s "$KIT/bin" "$T/kit2/bin" && cp keep-menu.sh "$T/kit2/" || return 1
-            printf '#!/bin/false\ncase $- in *p*) echo "ran in $BASH with -p" ;; esac\n' > "$T/kit2/keytriage.sh"; chmod 755 "$T/kit2/keytriage.sh"
-            printf 'system\n%s\n\n\nyes\n' "$T/evid" | "$TSH" -p "$T/kit2/keep-menu.sh" > "$T/menu2.txt" 2>&1 || { cat "$T/menu2.txt"; return 1; }
-            grep -q "^ran in $TSH with -p\$" "$T/menu2.txt" || { cat "$T/menu2.txt"; return 1; }
-        }
-        check "keep-menu.sh starts keytriage.sh in the shell of the medium with -p" menu_shell
-        # The launcher beside the same kit: one word starts the dialogue in the shell of the kit
-        # with -p, from any directory, and what a root shell hands down takes no effect.
-        launcher() {
-            cp "$LAUNCH" "$T/kit2/keep" || return 1
-            printf 'echo BASH_ENV >> "%s"\n' "$T/keep-env.log" > "$T/benv2.sh"
-            ( cd "$T/evid" && printf '\n\n\n\n\n' | env "BASH_ENV=$T/benv2.sh" "SHELLOPTS=xtrace" "$T/kit2/keep" ) > "$T/keep.txt" 2>&1 || { cat "$T/keep.txt"; return 1; }
-            grep -q '^ran in .*/kit2/bin/bash with -p$' "$T/keep.txt" || { echo "the dialogue did not start the work in the shell of the kit"; cat "$T/keep.txt"; return 1; }
-            grep -q '^keep-menu.sh: SUCCESS$' "$T/keep.txt" || { cat "$T/keep.txt"; return 1; }
-            [ ! -e "$T/keep-env.log" ] || { echo "the file of BASH_ENV was run"; return 1; }
-            ! grep -q '^+' "$T/keep.txt" || { echo "SHELLOPTS switched on a trace"; return 1; }
-            printf '\n\n\n\n\n' | "$T/kit2/keep" -n | grep -q 'dry run, nothing was run' || { echo "an option does not reach the dialogue"; return 1; }
-            mkdir "$T/alone" && cp "$LAUNCH" "$T/alone/keep" || return 1
-            "$T/alone/keep" > "$T/alone.txt" 2>&1
-            [ $? -eq 1 ] && grep -q 'the shell of the medium is not beside this program' "$T/alone.txt" || { echo "a launcher without a medium beside it does not say so"; return 1; }
-        }
-        check "keep starts the dialogue in the shell of the medium with -p, by one word" launcher
         triage_flush() {
             local f d; d=$(readlink "$T/both.d")
             for f in keys/t_table.vk keys/t_keyring.vk keys/kcore-candidates.txt headers/t_table.hdr headers/t_keyring.hdr manifest.sha256; do
@@ -641,6 +596,7 @@ sys.exit(0 if ok else "the reports say %r and %r" % (a, b))' "$d" "$c" || return
             ( cd "$T/tevid/here" && "$TSH" -p "$KIT/keytriage.sh" -p "/nowhere:$SYS" > "$T/here.txt" 2>&1 ) || { cat "$T/here.txt"; return 1; }
             [ -f "$(echo "$T"/tevid/here/triage_*/verdict.json)" ] || { echo "no folder of the run in the directory of the start"; return 1; }
             grep -q '^destination: .* mounted at ' "$T/here.txt" || { echo "the destination is not named"; return 1; }
+            grep -q '^  "evidence_medium": ".* mounted at ' "$T"/tevid/here/triage_*/verdict.json || { echo "the report does not name the destination"; return 1; }
             ! grep -q -i 'refused\|evidence' "$T/here.txt" || { echo "the run still speaks of an evidence medium"; return 1; }
             "$TSH" -p "$KIT/keytriage.sh" -f -p "$SYS" -d "$T/tevid" > "$T/optf.txt" 2>&1
             [ $? -eq 2 ] || { echo "-f is still an option"; return 1; }
@@ -674,8 +630,6 @@ sys.exit(0 if host == "pc/../../out [2Jside" else "host in the report: %r" % hos
             [ "$(verdict_of "$d" t_null)" = "no key needed" ] && [ ! -e "$d/keys/t_null.vk" ] || { echo "the null cipher: $(verdict_of "$d" t_null)"; return 1; }
             grep -q 'gave no table line' "$T/edge.txt" && [ "$(verdict_of "$d" t_notable)" = "captured and proven" ] || { echo "the mapping without a table line"; return 1; }
             [ "$(verdict_of "$d" t_odd)" = "needs a memory read" ] && [ ! -e "$d/keys/t_odd.vk" ] || { echo "a key field that is no key: $(verdict_of "$d" t_odd)"; return 1; }
-            python3 -I keep-report.py "$d/verdict.json" --brief | grep -q '^  no key needed  *t_null: no key needed$' || { echo "keep-report.py does not class the null cipher"; return 1; }
-            python3 -I keep-report.py "$d/verdict.json" | grep -q '^    Destination: ' || { echo "keep-report.py does not print the destination"; return 1; }
         }
         check "keytriage.sh takes mappings named No and with a space, the null cipher, a missing table and a bad key field" triage_edge
         triage_nohdr() {
@@ -710,36 +664,12 @@ else
     skip "cryptsetup is not installed: the verifier and the proof are not checked"
 fi
 
-# ---- menu --------------------------------------------------------------------------------------
-menu_dry() {
-    printf 'system\n%s\n\n\nyes\n' "$T/evid" | bash -p keep-menu.sh -n > "$T/menu.txt" 2>&1 || return 1
-    grep -q "keytriage.sh -d $T/evid -b 64\$" "$T/menu.txt" && grep -q 'dry run, nothing was run' "$T/menu.txt"
-}
-check "keep-menu.sh asks, lists the command and runs nothing with -n" menu_dry
-# Enter at every question: the keys of this system, into the directory of the start, no dump
-menu_defaults() {
-    local here menu=$PWD/keep-menu.sh
-    here=$(cd "$T/evid" && pwd -P)
-    ( cd "$T/evid" && printf '\n\n\n\n\n' | bash -p "$menu" -n ) > "$T/menu-d.txt" 2>&1 || { cat "$T/menu-d.txt"; return 1; }
-    grep -q "^Destination directory \[$here\]: " "$T/menu-d.txt" || { echo "the default destination is not the directory of the start"; cat "$T/menu-d.txt"; return 1; }
-    grep -q "keytriage.sh -d $here -b 64\$" "$T/menu-d.txt" || { echo "the defaults do not give the plain search for keys"; cat "$T/menu-d.txt"; return 1; }
-}
-check "keep-menu.sh takes the directory it is started in as the destination, and Enter at every question finds keys" menu_defaults
-# the memory dump is an option of the search on a system: "lime" adds -m, "compressed" -m -c
-menu_memory() {
-    printf 'system\n%s\n\ncompressed\nyes\n' "$T/evid" | bash -p keep-menu.sh -n > "$T/menu-m.txt" 2>&1 || return 1
-    grep -q -e ' -m -c$' "$T/menu-m.txt" || { echo "no -m -c in the command"; cat "$T/menu-m.txt"; return 1; }
-    printf 'system\n%s\n\nlime\nyes\n' "$T/evid" | bash -p keep-menu.sh -n > "$T/menu-m.txt" 2>&1 || return 1
-    grep -q -e ' -m$' "$T/menu-m.txt" || { echo "lime does not give -m alone"; cat "$T/menu-m.txt"; return 1; }
-}
-check "keep-menu.sh offers a memory dump of the system, in LiME format or compressed" menu_memory
-menu_eof() { printf 'dump\n' | bash -p keep-menu.sh -n > /dev/null 2>&1; [ $? -eq 1 ]; }
-check "keep-menu.sh ends with status 1 when the input ends early" menu_eof
+# ---- usage -------------------------------------------------------------------------------------
 # -h prints the whole comment at the head of a script, whatever its length, and a wrong option
 # is an error
 usage_text() {
     local f
-    for f in keytriage.sh keep-menu.sh offline-keyscan.sh tests/selftest.sh tests/compat-guest.sh; do
+    for f in keytriage.sh offline-keyscan.sh tests/selftest.sh tests/compat-guest.sh; do
         bash -p "$f" -h > "$T/usage.txt" || return 1
         awk 'NR == 1 { next } !/^#/ { exit } { print }' "$f" | cmp -s - "$T/usage.txt" || { echo "$f -h does not print its head comment"; return 1; }
         [ "$(wc -l < "$T/usage.txt")" -gt 5 ] || return 1
