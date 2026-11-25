@@ -713,6 +713,26 @@ the keys of `dmsetup` 1.02.185 for six mappings, a plain one and one with a spac
 among them. The memory images were first taken there too, with every part of
 `compat-check.sh`. The outputs of the guest are not kept.
 
+On one machine that is no guest the program was run by hand, by its options and without the
+check: Linux Mint 22.3, kernel 6.14.0-37-generic, 16 GiB of memory, Secure Boot on and with
+it lockdown `integrity`. The screen and the report of each run were read:
+
+- The LiME image of its 5 ranges of RAM had 16848920736 bytes and was written in 16 to 19 s,
+  in three runs. `banners.Banners` of Volatility 3 2.28.2 read one of them and named the
+  kernel that ran.
+- A LUKS2 container on a loop device with direct I/O, its key in the keyring, got `captured
+  and proven` on the memory route.
+- AVML 0.21.0 took an image of the machine while the container was open, and that image was
+  searched with no file. The digests of the header lay in it, and the volume key was proven
+  from them at the first attempt: the key that the triage captured afterwards. The object
+  `digests` began 6 bytes before the end of a page and went on in the page behind it. That
+  fits a copy in the memory of a program and not the cache of the device, where the metadata
+  begin with a page.
+- A second digest lay in that image: that of the header of an earlier format of the same
+  container, whose key was never in a mapping. It got `not proven`, after every pair of the
+  90 keys of the image, 5108 attempts in 510 s, and only then was the header behind it
+  looked at.
+
 ### Not handled or not checked
 
 - LUKS2 with integrity is run with `--integrity hmac-sha256`. With a cipher that authenticates
@@ -733,8 +753,9 @@ among them. The memory images were first taken there too, with every part of
   sources from 4.18 on, which is the kernel of RHEL 8, and are not run there.
 - A LUKS2 header whose second copy is the one in use is read in `unit-check.sh` from a file,
   not from a device of a mapping.
-- A memory image under kernel lockdown is not run. In the mode `integrity` the kernel offers
-  `/proc/kcore`, and in the mode `confidentiality` it refuses it, which the run then says.
+- A memory image under lockdown `integrity` is taken by hand on one machine (see above) and
+  not by the check. In the mode `confidentiality` the kernel refuses `/proc/kcore`, which
+  the run then says, and that is not run.
 - RAM that a driver added is a case of `unit-check.sh`. No machine with such RAM was run.
 - An image goes through the page cache of the examined system, like every file of a run, and
   so does that of AVML. The cache of the file takes free memory, and what lay there is
@@ -743,12 +764,19 @@ among them. The memory images were first taken there too, with every part of
 - A destination with FAT32 takes no file of 4 GiB, so an image of a machine with that much
   memory fails there and is removed. A raw image on a file system that keeps no holes, as
   FAT and exFAT, has what lies between the ranges written as zeros. Neither is run.
-- Volatility 3 has not read an image of the C program. The scanner and AVML have.
-- The proof from a dump alone is seen on one guest, with udisks2 2.10.1. Whether a system
+- Of Volatility 3, `banners.Banners` of 2.28.2 has read one LiME image of the C program. No
+  plugin that needs the symbol table was run, and neither the raw nor the compressed image
+  was given to it.
+- The proof from a dump alone is seen on one guest, with udisks2 2.10.1, and on the machine
+  with Linux Mint 22.3, whose udisks2 was not noted, each time for a container on a loop
+  device that was opened by hand. Whether a system
   without udisks2, as a server installation, holds the metadata of a LUKS2 header anywhere is
   not known, and neither is it for a volume that was opened at boot, for other releases of
   udisks2, or for metadata with several keyslots or tokens, where the object `digests` can
   lie across two pages that do not follow each other in memory.
+- A digest that a dump holds and has no key for costs every pair of the keys of the dump,
+  and the headers behind it wait for that: 510 s for 90 keys on the machine above. With n
+  keys of one size these are n * n attempts, each with the iterations of the digest.
 
 ## Rules that every change keeps
 
@@ -1046,9 +1074,10 @@ kept: Ubuntu Server 26.04.1 under kernel lockdown `integrity` (kernel 7.0.0-44-g
 cryptsetup 2.8.4), Ubuntu 22.04.5 with kernel 5.15 and cryptsetup 2.4.3, and Debian 11 with
 kernel 5.10 and cryptsetup 2.3.7.
 
-Linux Mint has no cloud image and is not in the list. openSUSE
-Tumbleweed has no dated build to pin and is not checked. No system is checked with Secure Boot
-on, where lockdown is `integrity`, with a version from 1.3 on.
+Linux Mint has no cloud image and is not in the list: `compat-check.sh` has not run there.
+The C program was run on Linux Mint 22.3 by hand (see "Where it has run"). openSUSE
+Tumbleweed has no dated build to pin and is not checked. `compat-check.sh` has run on no
+system with Secure Boot on, where lockdown is `integrity`, with a version from 1.3 on.
 
 ## Known limits
 
