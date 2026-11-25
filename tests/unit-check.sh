@@ -10,7 +10,8 @@
 #   build      both builds with -Werror
 #   hashes     the examples of the standards, then SHA-1, SHA-224, SHA-256, SHA-384 and SHA-512
 #              and PBKDF2 against Python's hashlib, on messages of every length up to 300 bytes
-#              and some longer ones
+#              and some longer ones: with the SHA instructions of the processor where it has
+#              them, and without them
 #   json       texts that RFC 8259 allows and texts that it does not, and a LUKS2 metadata text
 #              with one byte changed at a time, against Python's json module
 #   scanner    the search of memory with the sanitizers, on a fixture with the schedules of
@@ -253,9 +254,9 @@ fi
 # ---- hashes --------------------------------------------------------------------------------------
 cat > "$T/hashes.py" <<'EOF'
 import hashlib, os, subprocess, sys
-unit, bad = sys.argv[1], 0
+unit, how, bad = sys.argv[1], sys.argv[2:], 0
 def run(*a, data=None):
-    return subprocess.run([unit, *a], input=data, capture_output=True).stdout.decode().strip()
+    return subprocess.run([unit, *how, *a], input=data, capture_output=True).stdout.decode().strip()
 for name in ("sha1", "sha224", "sha256", "sha384", "sha512"):
     for n in list(range(0, 300)) + [1000, 4096, 65535, 65536, 65537, 1 << 20]:
         m = os.urandom(n)
@@ -271,7 +272,8 @@ sys.exit(1 if bad else 0)
 EOF
 for u in "${UNITS[@]}"; do
     check "hashes: ${u##*/} computes the examples of FIPS 180-4, RFC 4231 and RFC 6070" "$u" selftest
-    check "hashes: ${u##*/} equals hashlib for five functions and PBKDF2" python3 -I "$T/hashes.py" "$u"
+    check "hashes: ${u##*/} equals hashlib for five functions and PBKDF2 ($("$u" cpu))" python3 -I "$T/hashes.py" "$u"
+    check "hashes: ${u##*/} equals hashlib for five functions and PBKDF2, computed without the SHA instructions" python3 -I "$T/hashes.py" "$u" plain
 done
 
 # ---- json ----------------------------------------------------------------------------------------

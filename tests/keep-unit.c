@@ -2,6 +2,10 @@
  * keep-unit.c: the parts of the C program one at a time, for the checks.
  *
  *   keep-unit selftest                          the examples of the standards
+ *   keep-unit plain COMMAND...                  a command of this list with every digest
+ *                                               computed without the SHA instructions of the
+ *                                               processor
+ *   keep-unit cpu                               whether those instructions are in use
  *   keep-unit hash NAME                         the digest of standard input, in hexadecimal
  *   keep-unit pbkdf2 NAME KEY SALT ITERATIONS LENGTH    KEY and SALT in hexadecimal
  *   keep-unit json                              the JSON text of standard input, written anew
@@ -618,6 +622,15 @@ int main(int argc, char **argv)
 {
     const char *bad;
 
+    if (argc >= 3 && !strcmp(argv[1], "plain")) {
+        hash_plain(1);
+        argc--;
+        argv++;
+    }
+    if (argc == 2 && !strcmp(argv[1], "cpu")) {
+        printf("%s\n", hash_with_cpu() ? "SHA instructions" : "no SHA instructions");
+        return 0;
+    }
     if (argc == 2 && !strcmp(argv[1], "selftest")) {
         if ((bad = hash_selftest()) || (bad = snappy_selftest())) {
             fprintf(stderr, "keep-unit: %s does not compute the example of its standard\n", bad);
@@ -688,7 +701,7 @@ int main(int argc, char **argv)
         return cmd_dm_list();
     if (argc == 3 && !strcmp(argv[1], "dm-table"))
         return cmd_dm_table(argv[2]);
-    fprintf(stderr, "usage: keep-unit selftest | hash NAME | pbkdf2 NAME KEY SALT ITERATIONS LENGTH | json | luks FILE | "
+    fprintf(stderr, "usage: keep-unit [plain] selftest | cpu | hash NAME | pbkdf2 NAME KEY SALT ITERATIONS LENGTH | json | luks FILE | "
             "luks-backup FILE OUT | luks-prove FILE KEYFILE | mount-of MOUNTINFO PATH | in-use SYSFS MOUNTINFO SWAPS MAJOR MINOR | other-fs MOUNTS | "
             "lockdown FILE | secure-boot DIR | os-name FILE FILE | memory FILE | names NAME | image-source IOMEM CORE | "
             "image IOMEM CORE FORMAT OUT... | snappy | dm-answer list|table FILE | volumes FILE... | "

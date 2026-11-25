@@ -6,10 +6,20 @@
  * and lists the files of a run by theirs. The code is written from the standards, with no
  * library, so that the program is one static file. hash_selftest compares it with the examples
  * of the standards at every start.
+ *
+ * A memory image is as long as the memory of the machine, and its SHA-256 is computed while it
+ * is written. Where the processor has the SHA instructions (CPUID leaf 7, EBX bit 29), a block
+ * of SHA-256 is computed with them, which is several times as fast. The self-test computes its
+ * examples both ways.
  */
 #include "hash.h"
 
 #include <string.h>
+
+#if defined(__x86_64__)
+#include <cpuid.h>
+#include <immintrin.h>
+#endif
 
 /* The round constants of FIPS 180-4, 4.2.2 and 4.2.3: the first 32 and 64 bits of the
    fractional parts of the cube roots of the first 64 and 80 primes. */
@@ -163,6 +173,75 @@ static void sha256_block(uint32_t h[8], const uint8_t *p)
         h[i] += s[i];
 }
 
+#if defined(__x86_64__)
+/*
+ * The same block with the SHA instructions (Intel SDM, volume 2: SHA256RNDS2, SHA256MSG1,
+ * SHA256MSG2). SHA256RNDS2 does two rounds on the state as the two registers ABEF and CDGH,
+ * with two words of the message and their constants. Four words of the schedule are
+ * W[t-16] + s0(W[t-15]), which SHA256MSG1 gives, plus W[t-7], plus s1(W[t-2]), which
+ * SHA256MSG2 adds.
+ */
+__attribute__((target("sha,sse4.1,ssse3")))
+static void sha256_block_cpu(uint32_t h[8], const uint8_t *p)
+{
+    const __m128i swap = _mm_set_epi64x(0x0c0d0e0f08090a0bLL, 0x0405060700010203LL);
+    __m128i m[4], abef, cdgh, abef0, cdgh0, t;
+    int g;
+
+    t = _mm_shuffle_epi32(_mm_loadu_si128((const __m128i *)(const void *)&h[0]), 0xb1);         /* CDAB */
+    cdgh = _mm_shuffle_epi32(_mm_loadu_si128((const __m128i *)(const void *)&h[4]), 0x1b);      /* EFGH */
+    abef = _mm_alignr_epi8(t, cdgh, 8);
+    cdgh = _mm_blend_epi16(cdgh, t, 0xf0);
+    abef0 = abef;
+    cdgh0 = cdgh;
+    for (g = 0; g < 16; g++) {
+        __m128i *w = &m[g & 3];         /* the four words of 16 rounds before, then of these four */
+
+        if (g < 4)
+            *w = _mm_shuffle_epi8(_mm_loadu_si128((const __m128i *)(const void *)(p + 16 * g)), swap);
+        else
+            *w = _mm_sha256msg2_epu32(_mm_add_epi32(_mm_sha256msg1_epu32(*w, m[(g + 1) & 3]),
+                                                    _mm_alignr_epi8(m[(g + 3) & 3], m[(g + 2) & 3], 4)),
+                                      m[(g + 3) & 3]);
+        t = _mm_add_epi32(*w, _mm_loadu_si128((const __m128i *)(const void *)&K256[4 * g]));
+        cdgh = _mm_sha256rnds2_epu32(cdgh, abef, t);
+        abef = _mm_sha256rnds2_epu32(abef, cdgh, _mm_shuffle_epi32(t, 0x0e));
+    }
+    abef = _mm_add_epi32(abef, abef0);
+    cdgh = _mm_add_epi32(cdgh, cdgh0);
+    t = _mm_shuffle_epi32(abef, 0x1b);                                                          /* FEBA */
+    cdgh = _mm_shuffle_epi32(cdgh, 0xb1);                                                       /* DCHG */
+    _mm_storeu_si128((__m128i *)(void *)&h[0], _mm_blend_epi16(t, cdgh, 0xf0));
+    _mm_storeu_si128((__m128i *)(void *)&h[4], _mm_alignr_epi8(cdgh, t, 8));
+}
+
+static int cpu_has_sha(void)
+{
+    unsigned a, b, c, d;
+
+    if (!__get_cpuid(1, &a, &b, &c, &d) || !(c & bit_SSSE3) || !(c & bit_SSE4_1))
+        return 0;
+    return __get_cpuid_count(7, 0, &a, &b, &c, &d) && (b & bit_SHA);
+}
+#else
+static void sha256_block_cpu(uint32_t h[8], const uint8_t *p) { (void)h; (void)p; }
+static int cpu_has_sha(void) { return 0; }
+#endif
+
+static int with_cpu = -1;               /* -1 until the processor is asked */
+
+int hash_with_cpu(void)
+{
+    if (with_cpu < 0)
+        with_cpu = cpu_has_sha();
+    return with_cpu;
+}
+
+void hash_plain(int on)
+{
+    with_cpu = on ? 0 : -1;
+}
+
 /* FIPS 180-4, 6.4.2 */
 static void sha512_block(uint64_t h[8], const uint8_t *p)
 {
@@ -191,7 +270,12 @@ static void block(struct hash_ctx *c, const uint8_t *p)
 {
     switch (c->alg->family) {
     case SHA_1:   sha1_block(c->h.w32, p); break;
-    case SHA_256: sha256_block(c->h.w32, p); break;
+    case SHA_256:
+        if (hash_with_cpu())
+            sha256_block_cpu(c->h.w32, p);
+        else
+            sha256_block(c->h.w32, p);
+        break;
     case SHA_512: sha512_block(c->h.w64, p); break;
     }
 }
@@ -383,20 +467,40 @@ const char *hash_selftest(void)
         0xea, 0x6c, 0x01, 0x4d, 0xc7, 0x2d, 0x6f, 0x8c, 0xcd, 0x1e,
         0xd9, 0x2a, 0xce, 0x1d, 0x41, 0xf0, 0xd8, 0xde, 0x89, 0x57,
     };
+    /* FIPS 180-2, B.2: a message of two blocks */
+    static const char two[] = "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq";
+    static const uint8_t two256[32] = {
+        0x24, 0x8d, 0x6a, 0x61, 0xd2, 0x06, 0x38, 0xb8, 0xe5, 0xc0, 0x26, 0x93, 0x0c, 0x3e, 0x60, 0x39,
+        0xa3, 0x3c, 0xe4, 0x59, 0x64, 0xff, 0x21, 0x67, 0xf6, 0xec, 0xed, 0xd4, 0x19, 0xdb, 0x06, 0xc1,
+    };
     uint8_t out[HASH_MAX_DIGEST];
     struct hash_ctx c;
     size_t i;
+    int plain;
 
-    for (i = 0; i < sizeof abc / sizeof abc[0]; i++) {
-        hash_init(&c, hash_by_name(abc[i].name));
-        hash_update(&c, "abc", 3);
-        hash_final(&c, out);
-        if (memcmp(out, abc[i].first, 8))
+    /* with the instructions of the processor where it has them, and without them */
+    for (plain = 0; plain < 2; plain++) {
+        hash_plain(plain);
+        for (i = 0; i < sizeof abc / sizeof abc[0]; i++) {
+            hash_init(&c, hash_by_name(abc[i].name));
+            hash_update(&c, "abc", 3);
+            hash_final(&c, out);
+            if (memcmp(out, abc[i].first, 8))
+                break;
+        }
+        if (i < sizeof abc / sizeof abc[0]) {
+            hash_plain(0);
             return abc[i].name;
+        }
+        sha256("abc", 3, out);
+        if (!memcmp(out, abc256, 32))
+            sha256(two, sizeof two - 1, out);
+        if (memcmp(out, two256, 32)) {
+            hash_plain(0);
+            return plain ? "sha256" : "sha256 with the instructions of the processor";
+        }
     }
-    sha256("abc", 3, out);
-    if (memcmp(out, abc256, 32))
-        return "sha256";
+    hash_plain(0);
     hmac(hash_by_name("sha256"), (const uint8_t *)"Jefe", 4,
          (const uint8_t *)"what do ya want for nothing?", 28, out);
     if (memcmp(out, rfc4231, 32))

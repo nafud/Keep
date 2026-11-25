@@ -504,7 +504,7 @@ Read in Linux 4.18, 5.10, 6.12 and 6.18, cryptsetup 2.0.6, 2.3.7, 2.7.0 and 2.8.
 | `src/dm.c` | The list of the mapped devices and the table of one, from the kernel |
 | `src/volume.c` | Which mapped devices are a volume, which further devices are part of it, which keys it has and where its header lies, read off the tables |
 | `src/luks.c` | The header of LUKS1 and LUKS2: reading, the copy for the evidence, the proof of a key |
-| `src/hash.c` | SHA-1, SHA-224, SHA-256, SHA-384, SHA-512, HMAC and PBKDF2, with a self-test against the examples of the standards at every start |
+| `src/hash.c` | SHA-1, SHA-224, SHA-256, SHA-384, SHA-512, HMAC and PBKDF2, with a self-test against the examples of the standards at every start. SHA-256 with the SHA instructions of the processor where it has them |
 | `src/json.c` | A reader of JSON as RFC 8259 defines it, for the metadata of LUKS2 |
 | `src/sys.c` | Mounts, what a volume carries, lockdown, Secure Boot, the name of the system, each from a named file |
 | `src/util.c` | Texts that grow, names for the screen and for files, hexadecimal, flushing |
@@ -749,7 +749,7 @@ cannot be read and a file that cannot be written. With `AVML=/path/to/avml` AVML
 converts the compressed image to a LiME image and the LiME image to a raw one, which must be
 the files of Python byte for byte. What cannot be placed is refused: a text without
 addresses, a core of a kernel before 4.12. Cores and texts with changed bytes must give no
-fault, 600 times. The options are given to both
+fault, 600 times. Both ways of computing SHA-256 are compared with `hashlib`. The options are given to both
 builds of the program: what does not go together must end with status 2 and write nothing,
 the search of a dump must write the list of the scanner into `keys/` of its folder with no
 key on the screen, and a cut image must end the run with the status of the search.

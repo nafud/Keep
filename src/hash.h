@@ -38,4 +38,10 @@ void pbkdf2(const struct hash_alg *alg, const uint8_t *key, size_t keylen,
 
 const char *hash_selftest(void);        /* NULL, or the name of what does not compute right */
 
+/* SHA-224 and SHA-256 are computed with the SHA instructions of the processor where it has
+   them. hash_with_cpu says whether they are in use, and hash_plain(1) has every digest computed
+   without them, so that the checks can compare both ways on one machine. */
+int hash_with_cpu(void);
+void hash_plain(int on);
+
 #endif
