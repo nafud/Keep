@@ -110,6 +110,20 @@ void name_clean(char *s)
             *s = ' ';
 }
 
+void size_text(uint64_t bytes, char out[32])
+{
+    uint64_t unit = bytes >= 1ull << 30 ? 1ull << 30 : 1ull << 20, hundredths;
+
+    if (bytes < 1ull << 20) {
+        snprintf(out, 32, "%llu bytes", (unsigned long long)bytes);
+        return;
+    }
+    /* in two steps, so that no size of 64 bits is too large for the product */
+    hundredths = bytes / unit * 100 + (bytes % unit * 100 + unit / 2) / unit;
+    snprintf(out, 32, "%llu.%02llu %s", (unsigned long long)(hundredths / 100), (unsigned long long)(hundredths % 100),
+             unit == 1ull << 30 ? "GiB" : "MiB");
+}
+
 void name_file(const char *name, char *out, size_t outlen)
 {
     size_t i;

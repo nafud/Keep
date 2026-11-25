@@ -24,6 +24,13 @@
 #              no key and ends with the status of the search. Without a header it proves
 #              nothing and keeps the pairs of schedules that lie as the kernel keeps the two
 #              keys of a volume, as candidates
+#   screen     what a run prints: on a pseudo-terminal the titles bold, the labels cyan and
+#              the verdicts in their colours, with no other escape sequence, and a line of
+#              progress that is written over. None of it with -n, without TERM or with
+#              TERM=dumb, and no colour with NO_COLOR. Through a pipe no escape byte and no
+#              carriage return, in triage.txt the lines of the screen, no line of more than 80
+#              columns but for a word that is longer, and a control character in the name of
+#              a file as a space
 #   kernel     the two answers of device-mapper, laid out as the kernel lays them out, before
 #              and from Linux 4.13, and then with bytes changed and ends cut off 1600 times:
 #              read or refused, never a fault. Then the volumes among tables as cryptsetup
@@ -197,11 +204,10 @@ options() {
     refused "-F with -s" -s fx.lime -F
     refused "the command triage of an earlier version" triage
     refused "the command scan of an earlier version" scan fx.lime
-    refused "the option -n of an earlier version" -n
 
     start "$k" -h; rc=$?
     [ "$rc" = 0 ] || { echo "-h: status $rc"; r=1; }
-    for o in '-m ' '-f FORMAT' '-F ' '-s DUMP' '-d DIR' '-b N' '-h ' '-V '; do said "^ *$o" "-h"; done
+    for o in '-m ' '-f FORMAT' '-F ' '-s DUMP' '-d DIR' '-b N' '-n ' '-h ' '-V '; do said "^ *$o" "-h"; done
     said 'No key is printed' "-h"
     start "$k" -V; rc=$?
     [ "$rc" = 0 ] && grep -q '^keep [0-9][^ ]* ([0-9-]*)$' "$T/opt.txt" || { echo "-V: status $rc, $(cat "$T/opt.txt")"; r=1; }
@@ -210,20 +216,25 @@ options() {
     start "$k" -s fx.lime -d out; rc=$?
     d=$(ls -d "$T"/opt/out/scan_fx.lime_* 2>/dev/null | head -n 1)
     [ "$rc" = 0 ] && [ -d "$d" ] || { echo "the search of a dump ended with status $rc"; cat "$T/opt.txt"; return 1; }
-    said "^memory dump: $T/opt/fx.lime\$" "dump"
-    said "^output: $d\$" "dump"
-    said '^kcore-keyscan: AES-128 schedules: 2 ' "dump"
-    said '^[0-9]* schedules in keys/candidates.txt, [0-9]* different keys: [0-9]* of AES-128, [0-9]* of AES-256$' "dump"
-    said '^No file with a LUKS header is given, and the dump itself holds none, so no key can be proven' "dump"
+    said "^  dump         $T/opt/fx.lime\$" "dump"
+    said "^  output       $d\$" "dump"
+    said '^  format       LiME, [0-9]* ranges of memory, [0-9.]* MiB$' "dump"
+    said '^  search       [0-9]* AES schedules, [0-9]* different keys, [0-9]* s$' "dump"
+    said '^  keys         2 of AES-128, [0-9]* of AES-256, in keys/candidates.txt$' "dump"
+    said '^  headers      none: no file with a LUKS header is given and the dump itself' "dump"
     # the fixture has one key with its two schedules as the kernel keeps them, and no header
-    said '^  keys/memory-pair-1.vk, 64 bytes, sha256 [0-9a-f]*, tweak schedule at 0x[0-9a-f]*: found in memory, not proven$' "dump"
+    said '^  pair 1       keys/memory-pair-1.vk, 64 bytes, sha256 [0-9a-f]*$' "dump"
+    said '^  schedules    tweak at 0x[0-9a-f]*, data at 0x[0-9a-f]*$' "dump"
+    said '^  memory-pair-1  found in memory, not proven  [0-9a-f]*$' "dump"
     [ "$(stat -c %s "$d/keys/memory-pair-1.vk" 2> /dev/null)" = 64 ] || { echo "the pair in memory is not kept as a key file of 64 bytes"; r=1; }
     grep -q '"memory_pairs": \[$' "$d/verdict.json" && grep -q '"verdict": "found in memory"' "$d/verdict.json" || { echo "the report does not name the pair in memory"; r=1; }
     ( cd "$d" && sha256sum -c --quiet manifest.sha256 ) > /dev/null 2>&1 || { echo "the manifest of the search does not verify"; r=1; }
     said '^keep: every file of this run is flushed to the destination$' "dump"
     tests/keyscan-san "$T/fx.lime" 2> /dev/null | cmp -s - "$d/keys/candidates.txt" || { echo "the candidate list is not that of the scanner"; r=1; }
-    [ "$(wc -l < "$d/keys/candidates.txt")" = "$(sed -n 's/^\([0-9]*\) schedules in keys.*/\1/p' "$T/opt.txt")" ] || { echo "the number of the schedules is not that of the list"; r=1; }
-    cmp -s <(sed -n '/^kcore-keyscan/p' "$T/opt.txt" | sed 's/[0-9.]* seconds//') <(sed 's/[0-9.]* seconds//' "$d/scan.txt") || { echo "scan.txt is not what the screen shows"; r=1; }
+    [ "$(wc -l < "$d/keys/candidates.txt")" = "$(sed -n 's/^  search  *\([0-9]*\) AES schedules.*/\1/p' "$T/opt.txt")" ] || { echo "the number of the schedules is not that of the list"; r=1; }
+    # what the scanner said is in scan.txt, and the screen says it in its own lines
+    grep -q '^kcore-keyscan [0-9.]*: .*/fx.lime, LiME, 2 segments, ' "$d/scan.txt" && grep -q '^kcore-keyscan: AES-128 schedules: 2 ' "$d/scan.txt" &&
+        ! grep -q 'kcore-keyscan' "$T/opt.txt" || { echo "scan.txt lacks what the scanner said, or the screen has it"; r=1; }
     open=$(find "$d" -perm /077)
     [ -z "$open" ] || { echo "open to the group or to others: $open"; r=1; }
     while read -r key; do
@@ -1434,16 +1445,16 @@ dump_proof() {
     for h in "${HEADERS[@]}"; do
         n=${h%%:*}; key=$T/${h##*:}
         cmp -s "$d/keys/$n.img.vk" "$key" || { echo "$n: the key in keys/ is not the key of the header"; r=1; }
-        grep -q "^  $n.img  *proven\$" "$d/triage.txt" || { echo "$n: not named as proven"; r=1; }
+        grep -q "^  $n.img  *proven  *[0-9a-f]\{16\}\$" "$d/triage.txt" || { echo "$n: not named as proven, with the start of the SHA-256 of its key"; r=1; }
     done
     cmp -s "$d/keys/disk.dd@0x100000.vk" "$T/k64" && cmp -s "$d/keys/disk.dd@0x2400000.vk" "$T/k64" || { echo "the headers inside the image of a disk are not proven at their offsets"; r=1; }
     grep -q '^  ot.img  *not proven$' "$d/triage.txt" && [ ! -e "$d/keys/ot.img.vk" ] || { echo "the header of another key is not named as not proven"; r=1; }
     if [ "${#re[@]}" = 1 ]; then
         cmp -s "$d/keys/re.img.vk" "$T/k64" && cmp -s "$d/keys/re.img-2.vk" "$T/knew" || { echo "a header in re-encryption: not both keys, each for its digest"; r=1; }
-        grep -q '^  2 keys: a volume in re-encryption' "$d/triage.txt" || { echo "a header in re-encryption is not named as one"; r=1; }
+        grep -q '^  keys         2, as a volume in re-encryption has them$' "$d/triage.txt" || { echo "a header in re-encryption is not named as one"; r=1; }
     fi
     # the erased LUKS2 header states no key size
-    grep -A 3 '^==== l2e.img' "$d/triage.txt" | grep -q 'key size not stated, no keyslot is left' || { echo "an erased header is not named as one without a key size"; r=1; }
+    grep -A 3 '^l2e.img$' "$d/triage.txt" | grep -q 'key size not stated, no keyslot is left' || { echo "an erased header is not named as one without a key size"; r=1; }
     ( cd "$d" && sha256sum -c --quiet manifest.sha256 ) > /dev/null 2>&1 || { echo "the manifest does not verify"; r=1; }
     [ -z "$(find "$d" -perm /077)" ] || { echo "a file of the run is open to the group or to others"; r=1; }
     for key in k64 k32 knew other; do
@@ -1465,33 +1476,34 @@ dump_proof() {
     ( cd "$T" && "$k" -s apart.raw -d dp/3 l2.img > "$T/dp3.txt" 2>&1 ); rc=$?
     d=$(ls -d "$T"/dp/3/scan_apart.raw_* 2> /dev/null | head -n 1)
     [ "$rc" = 0 ] && cmp -s "$d/keys/l2.img.vk" "$T/k64" || { echo "two schedules that lie apart: status $rc"; cat "$T/dp3.txt"; r=1; }
-    grep -q '^  proven at attempt [0-9]*: a volume key of 64 bytes' "$T/dp3.txt" && ! grep -q 'tweak schedule lies' "$T/dp3.txt" && ! grep -q 'memory-pair' "$T/dp3.txt" ||
+    grep -q '^  proof        attempt [0-9]*$' "$T/dp3.txt" && grep -q '^  key file     keys/l2.img.vk, 64 bytes, sha256 ' "$T/dp3.txt" &&
+        ! grep -q 'a pair of schedules in place' "$T/dp3.txt" && ! grep -q 'memory-pair' "$T/dp3.txt" ||
         { echo "two schedules that lie apart are named as lying in place"; r=1; }
     # a file without a header, and a header that ends early
     ( cd "$T" && "$k" -s dump.lime -d dp/4 noise.bin magic.bin short.img > "$T/dp4.txt" 2>&1 ); rc=$?
     [ "$rc" = 1 ] || { echo "no header that can be read: status $rc"; r=1; }
-    grep -q 'noise.bin holds no LUKS header$' "$T/dp4.txt" || { echo "a file without a header is not named"; r=1; }
-    grep -q 'magic.bin holds no LUKS header$' "$T/dp4.txt" || { echo "the magic of LUKS in data that is no header is taken for one"; r=1; }
+    grep -q '^  headers      none in .*/noise.bin$' "$T/dp4.txt" || { echo "a file without a header is not named"; r=1; }
+    grep -q '^  headers      none in .*/magic.bin$' "$T/dp4.txt" || { echo "the magic of LUKS in data that is no header is taken for one"; r=1; }
     grep -q '^  short.img  *unreadable header$' "$T/dp4.txt" || { echo "a header that ends early is not named as unreadable"; cat "$T/dp4.txt"; r=1; }
     # A user who is not root may lock little memory. The program then takes no lock, says so, and
     # goes on: with a lock on what it allocates later, the search of the files had no memory.
     if [ "$(id -u)" != 0 ]; then
         mkdir "$T/dp/8"
         ( cd "$T" && ulimit -l 64 && "$k" -s dump.lime -d dp/8 l2.img disk.dd > "$T/dp8.txt" 2>&1 ); rc=$?
-        [ "$rc" = 0 ] && grep -q '^the memory of this program is not locked' "$T/dp8.txt" || { echo "with little memory to lock: status $rc"; cat "$T/dp8.txt"; r=1; }
+        [ "$rc" = 0 ] && grep -q '^  note         the memory of this program is not locked' "$T/dp8.txt" || { echo "with little memory to lock: status $rc"; cat "$T/dp8.txt"; r=1; }
     fi
     # the dump alone: what it holds of the two headers proves their keys, each copy once
     ( cd "$T" && "$k" -s mem.raw -d dp/6 > "$T/dp6.txt" 2>&1 ); rc=$?
     d=$(ls -d "$T"/dp/6/scan_mem.raw_* 2> /dev/null | head -n 1)
     [ "$rc" = 0 ] || { echo "the dump alone: status $rc"; cat "$T/dp6.txt"; r=1; }
-    grep -q '^2 header(s) or digest(s) of a header in the memory of the dump itself$' "$T/dp6.txt" || { echo "the dump alone: not two headers in its memory"; cat "$T/dp6.txt"; r=1; }
+    grep -q '^  headers      2 in the dump itself$' "$T/dp6.txt" || { echo "the dump alone: not two headers in its memory"; cat "$T/dp6.txt"; r=1; }
     cmp -s "$d/keys/memory@0x300000.vk" "$T/k64" || { echo "the LUKS1 header in memory does not prove its key"; r=1; }
     cmp -s "$d/keys/memory@0x1fff0a.vk" "$T/k32" || { echo "the digests of the LUKS2 header in memory do not prove their key"; r=1; }
     [ "$(ls "$d/keys" | wc -l)" = 3 ] || { echo "the dump alone: other files in keys/ than the list and two keys: $(ls "$d/keys" | tr '\n' ' ')"; r=1; }
     grep -q '"in_memory": true' "$d/verdict.json" && ( cd "$d" && sha256sum -c --quiet manifest.sha256 ) > /dev/null 2>&1 || { echo "the dump alone: the report or the manifest"; r=1; }
     # a header that is among the files is not taken from the memory as well
     ( cd "$T" && "$k" -s mem.raw -d dp/7 l1.img > "$T/dp7.txt" 2>&1 ); rc=$?
-    [ "$rc" = 0 ] && grep -q '^==== l1.img$' "$T/dp7.txt" && grep -q '^==== memory@0x1fff0a$' "$T/dp7.txt" && ! grep -q '^==== memory@0x300000$' "$T/dp7.txt" ||
+    [ "$rc" = 0 ] && grep -q '^l1.img$' "$T/dp7.txt" && grep -q '^memory@0x1fff0a$' "$T/dp7.txt" && ! grep -q '^memory@0x300000$' "$T/dp7.txt" ||
         { echo "a header among the files is taken from the memory as well, or status $rc"; r=1; }
     # Two digests in the dump, the first without a key. Every header has the attempts that cost
     # little before any header has every other pair of keys: the key of the second is proven
@@ -1501,19 +1513,22 @@ dump_proof() {
     ( cd "$T" && "$k" -s mem2.raw -d dp/9 > "$T/dp9.txt" 2>&1 ); rc=$?
     d=$(ls -d "$T"/dp/9/scan_mem2.raw_* 2> /dev/null | head -n 1)
     [ "$rc" = 0 ] && cmp -s "$d/keys/memory@$held.vk" "$T/k32" || { echo "two digests, the first without a key: status $rc, or the key of the second is not proven"; cat "$T/dp9.txt"; r=1; }
-    n=$(grep -n "^==== memory@$gone: every other pair of keys\$" "$T/dp9.txt" | cut -d: -f1)
-    want=$(grep -n '^  proven at attempt [0-9]*: a volume key of 32 bytes' "$T/dp9.txt" | cut -d: -f1)
+    n=$(grep -n "^memory@$gone, round 2\$" "$T/dp9.txt" | cut -d: -f1)
+    want=$(grep -n "^  key file     keys/memory@$held.vk, 32 bytes, sha256 " "$T/dp9.txt" | cut -d: -f1)
     [ -n "$n" ] && [ -n "$want" ] && [ "$want" -lt "$n" ] || { echo "the key of the second digest is not proven before every pair is tried for the first"; cat "$T/dp9.txt"; r=1; }
-    grep -q '^  every other pair of keys, [0-9]* of them, is tried when every header has had these attempts$' "$T/dp9.txt" &&
-        grep -q '^  up to [0-9]* pairs, each with the [0-9]* iterations of the digest$' "$T/dp9.txt" ||
+    [ "$(grep -n '^  round 2      [0-9]* other pairs, when every header has had round 1$' "$T/dp9.txt" | cut -d: -f1)" -lt "${n:-0}" ] &&
+        grep -q '^  round 2      [0-9]* of [0-9]* pairs tried, [0-9]* s$' "$T/dp9.txt" ||
         { echo "the pairs that are left are not counted before they are tried"; r=1; }
     grep -q "^  memory@$gone  *not proven\$" "$d/triage.txt" && [ ! -e "$d/keys/memory@$gone.vk" ] || { echo "the digest without a key is not named as not proven"; r=1; }
     # the pairs that are left are every pair of two keys of one size but those that lie in place
     python3 -I -c 'import json, re, sys
 c = json.load(open(sys.argv[1]))["candidates"]; text = open(sys.argv[2]).read()
-left = int(re.search(r"every other pair of keys, (\d+) of them", text).group(1))
-first = int(re.search(r"\n  (\d+) keys tried, the pairs of schedules that lie as the kernel keeps", text).group(1))
-total = int(re.search(r"\n  none of (\d+) candidate keys gives the digest", text).group(1))
+left = int(re.search(r"\n  round 2      (\d+) other pairs", text).group(1))
+first = int(re.search(r"\n  round 1      (\d+) keys?, pairs in place and each key alone", text).group(1))
+tried, of = map(int, re.search(r"\n  round 2      (\d+) of (\d+) pairs tried", text).groups())
+total = int(re.search(r"not proven, none of (\d+) candidate keys gives the digest", text).group(1))
+if (tried, of) != (left, left):
+    sys.exit("the second round: %d of %d pairs tried, and %d were counted before" % (tried, of, left))
 # The first round: each pair in place, and each key alone. The second: of each size every
 # pair of two keys, but those of the first round.
 want = c["aes128"] * (c["aes128"] - 1) + c["aes256"] * (c["aes256"] - 1) - (first - c["keys"])
@@ -1523,9 +1538,140 @@ sys.exit(0 if first > c["keys"] and left == want and total == first + left else 
     [ "$rc" = 1 ] && grep -q 'no-such-file is not a file or a device that can be read$' "$T/dp5.txt" || { echo "a file that does not exist: status $rc"; r=1; }
     return $r
 }
+# ---- screen --------------------------------------------------------------------------------------
+# What a run prints, with the files that the checks of the search have made: dump.lime with the
+# schedules of the key of l2.img and not of that of ot.img, and fx.lime with a pair of
+# schedules that no header proves. The bytes are looked at by Python, which is given a
+# pseudo-terminal by its own module pty.
+screen_look() {
+    local k=$1 r=0
+    case $k in /*) ;; *) k=$R/$k ;; esac
+    rm -rf "$T/scr"; mkdir "$T/scr" "$T"/scr/{1,2,3,4,5,6,7,8,9} || return 1
+    cat > "$T/scr/pty.py" <<'EOF'
+# pty.py OUT COMMAND... : the command with a pseudo-terminal as its screen, what it wrote there to OUT
+import os, pty, sys
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvp(sys.argv[2], sys.argv[2:])
+out = b""
+while True:
+    try:
+        b = os.read(fd, 65536)
+    except OSError:
+        break
+    if not b:
+        break
+    out += b
+os.waitpid(pid, 0)
+open(sys.argv[1], "wb").write(out)
+EOF
+    cat > "$T/scr/look.py" <<'EOF'
+# look.py WHAT FILE... : the bytes of a screen
+import re, sys
+what, files = sys.argv[1], sys.argv[2:]
+E = b"\x1b"
+for f in files:
+    s = open(f, "rb").read()
+    def need(*parts):
+        for p in parts:
+            if p not in s:
+                sys.exit("%s, %s: lacks %r" % (f, what, p))
+    def none(*parts):
+        for p in parts:
+            if p in s:
+                sys.exit("%s, %s: has %r" % (f, what, p))
+    over = re.findall(rb"\r(?!\n)", s)         # a terminal ends a line with both
+    if what in ("colour", "colour-pair"):
+        known = {b"\x1b[1m", b"\x1b[36m", b"\x1b[1;32m", b"\x1b[1;34m", b"\x1b[0m"}
+        if set(re.findall(rb"\x1b\[[0-9;]*m", s)) - known or s.count(E) != len(re.findall(rb"\x1b\[[0-9;]*m", s)):
+            sys.exit("%s: an escape sequence that is none of bold, cyan, green, blue and their end" % f)
+        need(E + b"[1mkeep ", b"\r  " + E + b"[36msearch" + E + b"[0m       reading the dump")
+        if what == "colour":
+            need(b"  " + E + b"[36mverdict" + E + b"[0m      " + E + b"[1;32mproven" + E + b"[0m\r\n",
+                 b"  " + E + b"[36mverdict" + E + b"[0m      " + E + b"[1mnot proven" + E + b"[0m, none of ",
+                 E + b"[1ml2.img" + E + b"[0m\r\n", E + b"[1mresult" + E + b"[0m\r\n")
+            # the rows of the result: a name, the verdict in its colour, the start of the SHA-256 of the key
+            for row in (rb"\n  l2\.img +\x1b\[1;32mproven\x1b\[0m +[0-9a-f]{16}\r\n", rb"\n  ot\.img +\x1b\[1mnot proven\x1b\[0m\r\n"):
+                if not re.search(row, s):
+                    sys.exit("%s: the result lacks a row like %r" % (f, row))
+        else:
+            need(b"  memory-pair-1  " + E + b"[1;34mfound in memory, not proven" + E + b"[0m  ")
+        # the line of progress is taken away: spaces over all of it, and the next line from its start
+        if not re.search(rb"reading the dump[^\r]*\r {60,}\r  ", s):
+            sys.exit("%s: the line of progress is not taken away" % f)
+    elif what == "no-colour":
+        none(E)
+        need(b"\r  search       reading the dump")
+        if not over:
+            sys.exit("%s: no line is written over" % f)
+    elif what == "plain":
+        none(E)
+        if over:
+            sys.exit("%s: a carriage return that ends no line" % f)
+        need(b"  search       reading the dump for AES key schedules and LUKS headers\r\n")
+    elif what == "pipe":
+        none(E, b"\r")
+    elif what == "width":
+        for line in s.decode("utf-8", "replace").split("\n"):
+            if len(line) > 80 and not any(len(w) > 40 for w in line.split()):
+                sys.exit("%s: a line of %d columns with no word that needs them: %s" % (f, len(line), line))
+            if line != line.rstrip():
+                sys.exit("%s: a line that ends with spaces: %r" % (f, line))
+EOF
+    # under OUT [ARGUMENT OF env]... -- COMMAND... : the command on a pseudo-terminal, its screen to scr/OUT
+    under() {
+        local out=$1; shift
+        local -a e=()
+        while [ "$1" != -- ]; do e+=("$1"); shift; done
+        shift
+        ( cd "$T" && env "${e[@]}" python3 -I "$T/scr/pty.py" "$T/scr/$out" "$@" )
+    }
+    look() { python3 -I "$T/scr/look.py" "$@" || r=1; }
+
+    # a terminal: colour and a line of progress that is written over
+    under 1.txt -u NO_COLOR TERM=xterm -- "$k" -s dump.lime -d scr/1 l2.img ot.img
+    look colour "$T/scr/1.txt"
+    under 2.txt -u NO_COLOR TERM=linux -- "$k" -s fx.lime -d scr/2
+    look colour-pair "$T/scr/2.txt"
+    under 3.txt NO_COLOR= TERM=xterm -- "$k" -s fx.lime -d scr/3
+    look colour-pair "$T/scr/3.txt"
+    # NO_COLOR takes the colour and leaves the line that is written over
+    under 4.txt NO_COLOR=1 TERM=xterm -- "$k" -s fx.lime -d scr/4
+    look no-colour "$T/scr/4.txt"
+    # -n, no TERM and TERM=dumb: a terminal gets what a pipe gets
+    under 5.txt -u NO_COLOR TERM=xterm -- "$k" -n -s fx.lime -d scr/5
+    under 6.txt -u NO_COLOR TERM=dumb -- "$k" -s fx.lime -d scr/6
+    under 7.txt -u NO_COLOR -u TERM -- "$k" -s fx.lime -d scr/7
+    look plain "$T/scr/5.txt" "$T/scr/6.txt" "$T/scr/7.txt"
+
+    # a pipe: no escape byte and no carriage return, also with a terminal's variables, and the
+    # report holds the lines of the screen but the line of progress and the last word
+    ( cd "$T" && env -u NO_COLOR TERM=xterm "$k" -s dump.lime -d scr/8 l2.img ot.img > "$T/scr/8.txt" 2>&1 )
+    look pipe "$T/scr/8.txt" "$T"/scr/[1-8]/scan_*/triage.txt
+    cmp -s <(grep -v -e '^  search       reading the dump' -e '^keep: every file of this run is flushed' "$T/scr/8.txt") "$T"/scr/8/scan_*/triage.txt ||
+        { echo "triage.txt does not hold the lines of the screen"; r=1; }
+    grep -q '^  search       reading the dump for AES key schedules and LUKS headers$' "$T/scr/8.txt" &&
+        [ "$(tail -n 1 "$T/scr/8.txt")" = "keep: every file of this run is flushed to the destination" ] || { echo "the screen of a pipe lacks its two lines"; r=1; }
+
+    # a control character in the name of a file is a space on the screen and in the report
+    cp "$T/l2.img" "$T/scr/a"$'\033'"[31mb.img"
+    ( cd "$T" && "$k" -s dump.lime -d scr/9 "scr/a"$'\033'"[31mb.img" > "$T/scr/9.txt" 2>&1 ) || { echo "a file with a control character in its name: not proven"; r=1; }
+    look pipe "$T/scr/9.txt" "$T"/scr/9/scan_*/triage.txt
+    grep -q '^a \[31mb.img$' "$T/scr/9.txt" && cmp -s "$T"/scr/9/scan_*/keys/a__31mb.img.vk "$T/k64" || { echo "the name with a control character, or its key file"; cat "$T/scr/9.txt"; r=1; }
+
+    # no line of more than 80 columns but for a word that is longer, and a long text goes on
+    # below its value
+    look width "$T/scr/8.txt" "$T/scr/9.txt" "$T/dp.txt" "$T/dp4.txt" "$T/dp6.txt" "$T/dp9.txt" "$T"/scr/2/scan_*/triage.txt "$T"/dp/scan_*/triage.txt
+    grep -A 2 '^  headers      none: no file with a LUKS header is given and the dump itself$' "$T"/scr/2/scan_*/triage.txt |
+        grep -c '^               [a-z]' | grep -q -x 2 || { echo "a long line does not go on below its value"; cat "$T"/scr/2/scan_*/triage.txt; r=1; }
+    return $r
+}
 if [ -x keep ] && [ -x keep-san ]; then
     for k in keep keep-san; do
         check "dump: $k proves the keys of an image against header files, a disk image and what the image itself holds of a header, as vkverify.py does, and names what it cannot prove" dump_proof "$k"
+    done
+    for k in keep keep-san; do
+        check "screen: $k gives colour and a line that is written over to a terminal alone, and lines of at most 80 columns that triage.txt holds as they are" screen_look "$k"
     done
 else
     skip "dump: the program (make, musl-gcc and cc)"

@@ -26,6 +26,9 @@ struct memory_result {
 
 /* Take the memory of the machine once and write it in each of the N formats into memory/ of
    the folder of the run, with what the lab needs beside it to name the kernel. */
+/* The tone of the status of an image on the screen. */
+enum run_tone memory_tone(const struct memory_image *m);
+
 void memory_run(struct run *r, const enum image_format *formats, size_t n, struct memory_result *res);
 
 #endif

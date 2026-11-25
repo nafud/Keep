@@ -413,6 +413,14 @@ static const struct { const char *mark; size_t len; const char *name, *advice; }
     {"\x04\x22\x4d\x18", 4, "an lz4 file", "decompress it first"},    /* LZ4 frame format: 0x184D2204 */
 };
 
+static struct keyscan_summary summary;
+static int summarised;
+
+const struct keyscan_summary *keyscan_summary(void)
+{
+    return summarised ? &summary : NULL;
+}
+
 const struct keyscan_hit *keyscan_hits(int *n)
 {
     *n = nhit;
@@ -445,6 +453,7 @@ int keyscan_run(const char *path, int raw, unsigned every, FILE *keys, FILE *msg
 
     keys_out = keys; msg_out = msg; step = every;
     nhit = dropped = 0; nbytes = nfail = nbadcrc = 0; have = 0;
+    summarised = 0;
     *failed = 0;
     init_sbox();
     init_crc();
@@ -538,9 +547,13 @@ int keyscan_run(const char *path, int raw, unsigned every, FILE *keys, FILE *msg
         if (hits[i].nk == 4) { n128++; u128 += j == i; } else { n256++; u256 += j == i; }
     }
     fflush(keys_out);
+    summary.format = format;
+    summary.segments = nseg;
+    summary.bytes = nbytes;
+    summary.seconds = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
+    summarised = 1;
     fprintf(msg_out, "kcore-keyscan %s: %s, %s, %d segment%s, %llu bytes (%.2f GiB), %.1f seconds\n",
-            VERSION, path, format, nseg, nseg == 1 ? "" : "s", nbytes, nbytes / 1073741824.0,
-            (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9);
+            VERSION, path, format, nseg, nseg == 1 ? "" : "s", nbytes, nbytes / 1073741824.0, summary.seconds);
     fprintf(msg_out, "kcore-keyscan: AES-128 schedules: %d (%d different keys), "
             "AES-256 schedules: %d (%d different keys)\n", n128, u128, n256, u256);
     if (nfail)

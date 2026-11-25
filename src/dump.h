@@ -11,6 +11,7 @@ struct dump_options {
     const char *dest;           /* the destination directory */
     char **files;               /* header backups and raw images of disks, to prove the keys against */
     size_t nfiles;
+    int plain;                  /* -n: no colour on the screen and no line that is written over */
 };
 
 /* Returns the exit status: that of the search of the dump, 1 when the run could not start or a

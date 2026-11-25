@@ -37,9 +37,15 @@
 
 static const char CAPTURED[] = "captured", SKIPPED[] = "skipped", FAILED[] = "failed";
 
-static const char *what(enum image_format f)
+enum run_tone memory_tone(const struct memory_image *m)
 {
-    return f == IMAGE_RAW ? "raw format" : f == IMAGE_AVML ? "compressed format of AVML" : "LiME format";
+    return m->status == CAPTURED ? RUN_REACHED : m->status == SKIPPED ? RUN_OPEN : RUN_NOT;
+}
+
+/* An image on the screen is named by its file in memory/, which says its format. */
+static void label_of(const struct memory_image *m, char label[16])
+{
+    snprintf(label, 16, "memory.%s", image_name(m->format));
 }
 
 static void settle(struct run *r, struct memory_image *m, const char *status, const char *fmt, ...)
@@ -47,31 +53,34 @@ static void settle(struct run *r, struct memory_image *m, const char *status, co
 static void settle(struct run *r, struct memory_image *m, const char *status, const char *fmt, ...)
 {
     va_list ap;
+    char label[16];
 
     m->status = status;
     va_start(ap, fmt);
     vsnprintf(m->note, sizeof m->note, fmt, ap);
     va_end(ap);
-    run_say(r, "  memory.%s %s: %s", image_name(m->format), status, m->note);
+    label_of(m, label);
+    run_mark(r, label, memory_tone(m), status, "%s", m->note);
 }
 
 struct progress {
+    struct run *r;
     uint64_t total;
     time_t start, last;
 };
 
-/* A line on the screen every quarter of a minute, so that a long read is seen to go on. */
+/* How far the read is, so that a long one is seen to go on. */
 static void progress(void *arg, uint64_t done)
 {
     struct progress *p = arg;
-    time_t now = time(NULL);
+    char read[32], all[32];
 
-    if (now - p->last < 15 || done >= p->total)
+    if (done >= p->total || !run_due(p->r, &p->last))
         return;
-    p->last = now;
-    printf("  %llu of %llu MiB read, %lld s\n", (unsigned long long)(done / MIB), (unsigned long long)(p->total / MIB),
-           (long long)(now - p->start));
-    fflush(stdout);
+    size_text(done, read);
+    size_text(p->total, all);
+    run_progress(p->r, "reading", "%s of %s, %u %%, %lld s", read, all, (unsigned)(done * 100 / p->total),
+                 (long long)(time(NULL) - p->start));
 }
 
 /* A file of memory/ with the bytes of BUF. */
@@ -137,22 +146,22 @@ static void beside(struct run *r, struct memory_result *res)
         }
         free(text);
     }
+    run_field(r, "beside it", "the kernel banner, the release and os-release");
     if (res->system_map[0])
-        run_say(r, "  kernel banner, release and os-release kept in memory/, System.map from %s", res->system_map);
+        run_field(r, "symbols", "System.map from %s", res->system_map);
     else if (placeholder[0])
-        run_say(r, "  kernel banner, release and os-release kept in memory/, no System.map kept: %s is a placeholder without symbols",
-                placeholder);
+        run_field(r, "symbols", "no System.map kept, %s is a placeholder without symbols", placeholder);
     else
-        run_say(r, "  kernel banner, release and os-release kept in memory/, no System.map found on this system");
+        run_field(r, "symbols", "no System.map found on this system");
 }
 
 void memory_run(struct run *r, const enum image_format *formats, size_t n, struct memory_result *res)
 {
-    char path[PATH_MAX], err[IMAGE_ERR_LEN], *iomem = NULL;
+    char path[PATH_MAX], err[IMAGE_ERR_LEN], size_of[32], label[16], *iomem = NULL;
     struct image_file files[IMAGE_FORMATS];
     struct memory_image *of[IMAGE_FORMATS];
     struct image_source src = { 0 };
-    struct progress pr;
+    struct progress pr = { .r = r };
     struct statvfs vfs;
     uint64_t room = 0, unread = 0;
     size_t i, nfiles = 0;
@@ -164,12 +173,11 @@ void memory_run(struct run *r, const enum image_format *formats, size_t n, struc
         res->images[i].format = formats[i];
         res->images[i].status = FAILED;
     }
-    run_say(r, "==== memory image");
+    run_title(r, "memory image");
     if (pathf(path, "%s/memory", r->out) || mkdir(path, 0700)) {
         r->write_failed = 1;
         for (i = 0; i < res->nimages; i++)
             settle(r, &res->images[i], FAILED, "the folder memory/ cannot be made: %s", strerror(errno));
-        run_say(r, "%s", "");
         return;
     }
 
@@ -188,10 +196,11 @@ void memory_run(struct run *r, const enum image_format *formats, size_t n, struc
             settle(r, &res->images[i], FAILED, "%s", err);
         goto out;
     }
-    run_say(r, "  source /proc/kcore: %zu ranges of RAM, %llu MiB", src.nranges, (unsigned long long)(src.bytes / MIB));
+    size_text(src.bytes, size_of);
+    run_field(r, "source", "/proc/kcore, %zu range%s of RAM, %s", src.nranges, src.nranges == 1 ? "" : "s", size_of);
     if (src.bytes < src.ram)
-        run_say(r, "  %llu bytes of the RAM ranges of /proc/iomem are in no segment of /proc/kcore and in no image",
-                (unsigned long long)(src.ram - src.bytes));
+        run_field(r, "not offered", "%llu bytes of the RAM ranges of /proc/iomem are in no segment of /proc/kcore and in no image",
+                  (unsigned long long)(src.ram - src.bytes));
 
     /* each image has its file, where the destination has room for it */
     if (!statvfs(r->out, &vfs))
@@ -218,8 +227,6 @@ void memory_run(struct run *r, const enum image_format *formats, size_t n, struc
         files[nfiles].format = m->format;
         of[nfiles++] = m;
         room = room > size ? room - size : 0;
-        run_say(r, "  writing %s, %s, %s%llu MiB", m->file, what(m->format), exact ? "" : "at most ",
-                (unsigned long long)(size / MIB));
     }
     if (!nfiles)
         goto out;
@@ -252,16 +259,17 @@ void memory_run(struct run *r, const enum image_format *formats, size_t n, struc
         if (run_add(r, m->file, files[i].sha256))
             r->write_failed = 1;
         res->captured++;
-        run_say(r, "  %s, %llu bytes, %s, written in %u s", m->file, (unsigned long long)m->bytes, what(m->format), res->seconds);
-        run_say(r, "  sha256 %s", m->sha256);
-        run_say(r, "  %s", m->direct ? "written with direct writes (O_DIRECT), and its pages let go from the page cache"
-                                     : "written through the page cache, and its pages let go from it: the file system of "
-                                       "the destination takes no direct writes");
+        label_of(m, label);
+        run_mark(r, label, RUN_REACHED, CAPTURED, "%llu bytes, %u s", (unsigned long long)m->bytes, res->seconds);
+        run_field(r, "sha256", "%s", m->sha256);
+        run_field(r, "written", "%s", m->direct ? "direct (O_DIRECT), pages released from the page cache"
+                                                : "through the page cache, pages released from it: the file system of the "
+                                                  "destination takes no direct writes");
     }
     if (failed && res->captured)
-        run_say(r, "  %s", err);
+        run_field(r, "warning", "%s", err);
     if (unread && res->captured) {
-        run_say(r, "  %llu bytes could not be read from /proc/kcore and are zeros in the image", (unsigned long long)unread);
+        run_field(r, "warning", "%llu bytes could not be read from /proc/kcore and are zeros in the image", (unsigned long long)unread);
         for (i = 0; i < nfiles; i++)
             if (of[i]->status == CAPTURED)
                 snprintf(of[i]->note, sizeof of[i]->note, "%llu bytes could not be read and are zeros", (unsigned long long)unread);
@@ -271,5 +279,4 @@ out:
         close(core);
     image_source_free(&src);
     beside(r, res);
-    run_say(r, "%s", "");
 }

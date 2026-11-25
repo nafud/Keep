@@ -8,6 +8,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <sys/types.h>
+#include <time.h>
 
 struct run_file {
     char *name;                         /* relative to the folder of the run */
@@ -17,6 +18,11 @@ struct run_file {
 struct run {
     char out[PATH_MAX];                 /* the folder of this run */
     FILE *report;                       /* triage.txt, which takes every line of the screen */
+    int colour;                         /* the screen is a terminal that is given colour */
+    int in_place;                       /* the screen is a terminal, where a line of progress is written over */
+    size_t progress;                    /* the length of such a line that stands on the screen */
+    int begun;                          /* a line was printed */
+    time_t started;
     int write_failed;                   /* a write or a flush failed: the run ends with status 1 */
     struct run_file *files;             /* every file of the run, for the manifest */
     size_t nfiles;
@@ -28,8 +34,56 @@ struct run {
     char scan_error[256];
 };
 
-/* One line to the screen and to the report. */
+/*
+ * The screen of a run. Every line goes to the screen and to the report, the same text in both:
+ * a title of a block, and below it one fact in a line, as a label of at most 11 characters and
+ * a value that begins in column 16. A line of more than 80 columns is continued in the next
+ * below its value, at a space: a word that is longer than that, as a path can be, stays whole.
+ * A control character in a text becomes a space before it is printed.
+ *
+ * On a terminal the titles are bold, the labels cyan and the word that says how far a key or
+ * an image is has the colour of its tone. Only bold and the eight colours that every terminal
+ * has are used, so that its own settings decide the shade. The report holds no escape
+ * sequence, and neither does the screen where it is no terminal.
+ */
+enum run_tone {
+    RUN_PLAIN,                          /* nothing to reach: the mapping has no key */
+    RUN_REACHED,                        /* green: captured and proven, proven, an image captured */
+    RUN_OPEN,                           /* blue: captured and not proven here, or to be had from a memory image */
+    RUN_NOT                             /* bold: not reached, or a write that failed */
+};
+
+/* Before the first line: whether the screen is a terminal that is given colour and lines that
+   are written over. PLAIN is the option -n. */
+void run_screen(struct run *r, int plain);
+
+/* One line as it is. */
 void run_say(struct run *r, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+/* The title of a block, with an empty line before it unless it is the first line. */
+void run_title(struct run *r, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+/* A label and its value. */
+void run_field(struct run *r, const char *label, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
+/* A label, a word in the colour of TONE, and after a comma what is to say about it, which can
+   be empty. */
+void run_mark(struct run *r, const char *label, enum run_tone tone, const char *word, const char *fmt, ...)
+    __attribute__((format(printf, 5, 6)));
+/* A row of the result: a name in NAME_WIDTH columns, a word in the colour of TONE in
+   WORD_WIDTH columns, and what is to say about it, which can be empty. */
+void run_row(struct run *r, const char *name, int name_width, enum run_tone tone, const char *word, int word_width,
+             const char *fmt, ...) __attribute__((format(printf, 7, 8)));
+
+/*
+ * How far a long step is, for the screen alone. On a terminal the line is written over by the
+ * next one and taken away by the next line of the run. Elsewhere each is a line of its own.
+ * run_due says whether the next is due, a second after the last on a terminal and a quarter of
+ * a minute elsewhere, and then notes the time in *last.
+ */
+int run_due(const struct run *r, time_t *last);
+void run_progress(struct run *r, const char *label, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
+/* One line to the screen alone, as the last word of a run when its report is closed. */
+void run_tell(struct run *r, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+/* The seconds since run_screen. */
+unsigned run_seconds(const struct run *r);
 
 /* A new file of the run, opened with FLAGS. It must not exist, so nothing of an earlier run is
    written over. Returns the descriptor, or -1 with errno. */

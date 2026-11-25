@@ -416,13 +416,12 @@ static int attempt(struct effort *e, const uint8_t *key, size_t len, const struc
     int which;
 
     t->attempts++;
-    if (now - e->said >= 15) {
-        e->said = now;
+    if (run_due(e->r, &e->said)) {
         if (e->of)
-            printf("  %u of %zu pairs tried, %lld s\n", t->attempts - e->before, e->of, (long long)(now - e->start));
+            run_progress(e->r, "round 2", "%u of %zu pairs tried, %lld s", t->attempts - e->before, e->of,
+                         (long long)(now - e->start));
         else
-            printf("  %u keys tried, %lld s\n", t->attempts, (long long)(now - e->start));
-        fflush(stdout);
+            run_progress(e->r, "round 1", "%u keys tried, %lld s", t->attempts, (long long)(now - e->start));
     }
     if ((which = luks_proves(&t->h, key, len, t->taken, &hash)) < 0) {
         t->uncomputed = hash ? hash : "no known function";
@@ -439,19 +438,19 @@ static int attempt(struct effort *e, const uint8_t *key, size_t len, const struc
     if (which > 1)
         run_stem(e->r, p->stem, sizeof p->stem);
     p->attempt = t->attempts;
-    if (run_keep_key(e->r, p->stem, key, len, p->hash)) {
-        run_say(e->r, "  a key gives the digest, and could not be written to the destination");
-        p->hash[0] = 0;
-    } else {
-        p->bytes = len;
-        run_say(e->r, "  proven at attempt %u: a volume key of %zu bytes, sha256 %s, in keys/%s.vk", t->attempts, len,
-                p->hash, p->stem);
-    }
+    run_field(e->r, "proof", "attempt %u%s", t->attempts, tweak ? ", a pair of schedules in place" : "");
     if (tweak) {
         p->has_places = 1;
         p->tweak_at = tweak->phys;
-        run_say(e->r, "  its tweak schedule lies at 0x%016llx and its data schedule 496 bytes after it",
-                (unsigned long long)tweak->phys);
+        run_field(e->r, "schedules", "tweak at 0x%llx, data at 0x%llx", (unsigned long long)tweak->phys,
+                  (unsigned long long)tweak->phys + XTS_DISTANCE);
+    }
+    if (run_keep_key(e->r, p->stem, key, len, p->hash)) {
+        run_mark(e->r, "key file", RUN_NOT, "FAILED", "the key could not be written to the destination");
+        p->hash[0] = 0;
+    } else {
+        p->bytes = len;
+        run_field(e->r, "key file", "keys/%s.vk, %zu bytes, sha256 %s", p->stem, len, p->hash);
     }
     return all_proven(t);
 }
@@ -550,12 +549,17 @@ static void conclude(struct target *t)
     }
 }
 
+/* How far a header is, as the tone of its verdict on the screen. What the dump itself holds
+   of a header can be of a volume that was closed, so such a header without a key is open and
+   not a header that the run was given and could not prove. */
+static enum run_tone tone_of(const struct target *t)
+{
+    return t->verdict == PROVEN ? RUN_REACHED : t->verdict == NOT_PROVEN && t->in_memory ? RUN_OPEN : RUN_NOT;
+}
+
 static void verdict(struct run *r, struct target *t)
 {
-    if (t->verdict != PROVEN)
-        run_say(r, "  %s", t->note);
-    run_say(r, "  VERDICT: %s", t->verdict);
-    run_say(r, "%s", "");
+    run_mark(r, "verdict", tone_of(t), t->verdict, "%s", t->verdict == PROVEN ? "" : t->note);
 }
 
 /* A header on the screen, and its first round. */
@@ -563,54 +567,59 @@ static void one_target(struct run *r, struct target *t, const struct keys *k)
 {
     const struct luks_digest *d = &t->h.digests[0];
 
-    run_say(r, "==== %s", t->name);
+    run_title(r, "%s", t->name);
     if (t->in_memory)
-        run_say(r, "  from the dump itself, at the address 0x%llx: %s", (unsigned long long)t->offset,
-                t->h.version == 1 ? "a LUKS1 header, as the kernel keeps what was read of a device"
-                                  : "the digests of a LUKS2 header, as a program that read the header keeps them");
+        run_field(r, "found", "in the dump at 0x%llx, %s", (unsigned long long)t->offset,
+                  t->h.version == 1 ? "a LUKS1 header" : "the digests of a LUKS2 header");
     else if (t->offset)
-        run_say(r, "  from %s, at offset 0x%llx", t->file, (unsigned long long)t->offset);
+        run_field(r, "file", "%s, at offset 0x%llx", t->file, (unsigned long long)t->offset);
     else
-        run_say(r, "  from %s", t->file);
+        run_field(r, "file", "%s", t->file);
     if (!t->readable) {
         verdict(r, t);
         return;
     }
     if (!t->h.ndigests) {
-        run_say(r, "  LUKS%d, UUID %s, with no digest of a volume key", t->h.version, t->h.uuid);
+        run_field(r, "header", "LUKS%d, with no digest of a volume key", t->h.version);
+        run_field(r, "uuid", "%s", t->h.uuid);
         snprintf(t->note, sizeof t->note, "the header has no digest of a volume key");
         verdict(r, t);
         return;
     }
-    if (t->in_memory && t->h.version == 2)
-        run_say(r, "  LUKS2, digest pbkdf2-%s with %u iterations. The cipher and the size of the key stand in other parts of "
-                "the metadata, so keys of every size are tried", d->hash, d->iterations);
-    else if (d->key_bytes)
-        run_say(r, "  LUKS%d, cipher %s, key of %zu bits, UUID %s, digest pbkdf2-%s with %u iterations", t->h.version,
-                d->cipher[0] ? d->cipher : "unknown", d->key_bytes * 8, t->h.uuid, d->hash, d->iterations);
-    else
-        run_say(r, "  LUKS%d, cipher %s, key size not stated, no keyslot is left, UUID %s, digest pbkdf2-%s with %u iterations",
-                t->h.version, d->cipher[0] ? d->cipher : "unknown", t->h.uuid, d->hash, d->iterations);
+    if (t->in_memory && t->h.version == 2) {
+        /* the cipher and the size of the key stand in other parts of the metadata */
+        run_field(r, "digest", "pbkdf2-%s, %u iterations, key size not stated", d->hash, d->iterations);
+    } else {
+        if (d->key_bytes)
+            run_field(r, "header", "LUKS%d, %s, %zu-bit key", t->h.version, d->cipher[0] ? d->cipher : "cipher unknown",
+                      d->key_bytes * 8);
+        else
+            run_field(r, "header", "LUKS%d, %s, key size not stated, no keyslot is left", t->h.version,
+                      d->cipher[0] ? d->cipher : "cipher unknown");
+        run_field(r, "uuid", "%s", t->h.uuid);
+        run_field(r, "digest", "pbkdf2-%s, %u iterations", d->hash, d->iterations);
+    }
     if (t->h.ndigests > 1)
-        run_say(r, "  %zu keys: a volume in re-encryption has one for the part that is done and one for the rest",
-                t->h.ndigests);
+        run_field(r, "keys", "%zu, as a volume in re-encryption has them", t->h.ndigests);
     if (first_round(r, t, k)) {
         conclude(t);
         verdict(r, t);
         return;
     }
-    run_say(r, "  %u keys tried, the pairs of schedules that lie as the kernel keeps the two keys of a volume and each key "
-            "alone:%s", t->attempts, t->taken ? " not every key of the header is among them" : " none gives the digest");
-    run_say(r, "  every other pair of keys, %zu of them, is tried when every header has had these attempts", t->far);
-    run_say(r, "%s", "");
+    run_field(r, "round 1", "%u key%s, pairs in place and each key alone: %s", t->attempts, t->attempts == 1 ? "" : "s",
+              t->taken ? "not every key of the header is among them" : "none gives the digest");
+    run_field(r, "round 2", "%zu other pairs, when every header has had round 1", t->far);
 }
 
 /* The second round of a header on the screen. */
 static void one_more(struct run *r, struct target *t, const struct keys *k)
 {
-    run_say(r, "==== %s: every other pair of keys", t->name);
-    run_say(r, "  up to %zu pairs, each with the %u iterations of the digest", t->far, t->h.digests[0].iterations);
+    unsigned before = t->attempts;
+    time_t start = time(NULL);
+
+    run_title(r, "%s, round 2", t->name);
     second_round(r, t, k);
+    run_field(r, "round 2", "%u of %zu pairs tried, %lld s", t->attempts - before, t->far, (long long)(time(NULL) - start));
     conclude(t);
     verdict(r, t);
 }
@@ -640,6 +649,7 @@ static void memory_pairs(struct run *r, const struct keys *k, const struct targe
 {
     uint8_t key[64], digest[32];
     char hash[17];
+    char label[32];
     size_t i, len;
     int a, b;
 
@@ -671,17 +681,17 @@ static void memory_pairs(struct run *r, const struct keys *k, const struct targe
     explicit_bzero(key, sizeof key);
     if (!*npairs)
         return;
-    run_say(r, "==== pairs in memory that no header proves");
-    run_say(r, "  %zu pair(s) of schedules lie as the XTS code of the kernel keeps the two keys of a volume: the tweak",
-            *npairs + *further);
-    run_say(r, "  schedule first and the data schedule 496 bytes after it. Such a pair can be the key of a volume");
-    run_say(r, "  whose header is not at hand. It is a candidate until a header accepts it.");
-    for (i = 0; i < *npairs; i++)
-        run_say(r, "  keys/%s.vk, %zu bytes, sha256 %s, tweak schedule at 0x%016llx: %s, not proven", pairs[i].stem,
-                pairs[i].bytes, pairs[i].hash, (unsigned long long)pairs[i].tweak_at, IN_MEMORY);
+    /* Two schedules that lie as the XTS code of the kernel keeps the two keys of a volume can
+       be the key of a volume whose header is not at hand: a candidate until a header accepts it. */
+    run_title(r, "pairs of schedules in place that no header proves");
+    for (i = 0; i < *npairs; i++) {
+        snprintf(label, sizeof label, "pair %zu", i + 1);
+        run_field(r, label, "keys/%s.vk, %zu bytes, sha256 %s", pairs[i].stem, pairs[i].bytes, pairs[i].hash);
+        run_field(r, "schedules", "tweak at 0x%llx, data at 0x%llx", (unsigned long long)pairs[i].tweak_at,
+                  (unsigned long long)pairs[i].tweak_at + XTS_DISTANCE);
+    }
     if (*further)
-        run_say(r, "  %zu further pairs are not written as files. Their keys are in keys/candidates.txt.", *further);
-    run_say(r, "%s", "");
+        run_field(r, "further", "%zu pairs are not written as files, their keys are in keys/candidates.txt", *further);
 }
 
 /* ---- the run ---------------------------------------------------------------------------------- */
@@ -716,7 +726,9 @@ static void json_proof(FILE *f, const struct target *t, size_t i)
 int dump_run(const struct dump_options *o)
 {
     char dump[PATH_MAX], dest[PATH_MAX], path[PATH_MAX], name[NAME_MAX + 1], stamp[32], started[32], finished[32];
-    char real[PATH_MAX], *said, *line, *next;
+    char real[PATH_MAX], size_of[32], label[32], *said, *line, *next;
+    const struct keyscan_summary *sum;
+    struct str headers = { 0 };
     struct run run = { 0 }, *r = &run;
     struct target *targets = NULL;
     struct keys keys = { 0 };
@@ -727,12 +739,13 @@ int dump_run(const struct dump_options *o)
     struct stat st;
     size_t ntargets = 0, nfiles_targets, npairs = 0, further = 0, i, k, proven = 0, in_memory = 0, more_in_memory;
     char unlocked[160] = "";
-    int kfd, mfd, fd, failed = 0, status, found = 0;
+    int kfd, mfd, fd, failed = 0, status, found = 0, names = 0, words = 0, nline = 0;
 
     /* Keys pass through the memory of this process. Locked memory is not written to the swap
        space, and the files of the run are for their owner alone. */
     run_lock_memory(unlocked);
     umask(077);
+    run_screen(r, o->plain);
     if ((bad = hash_selftest()))
         return run_die("%s does not compute the example of its standard, so a proof would not be reliable", bad);
     if (!realpath(o->dump, dump))
@@ -760,12 +773,13 @@ int dump_run(const struct dump_options *o)
     if ((fd = run_create(r, "triage.txt", O_WRONLY, 0600)) < 0 || !(r->report = fdopen(fd, "w")))
         return run_die("cannot create %s/triage.txt: %s", r->out, strerror(errno));
 
-    run_say(r, "keep %s", KEEP_VERSION);
-    run_say(r, "memory dump: %s", dump);
-    run_say(r, "output: %s", r->out);
-    if (unlocked[0])
-        run_say(r, "%s", unlocked);
+    run_title(r, "keep %s", KEEP_VERSION);
     run_say(r, "%s", "");
+    run_field(r, "dump", "%s", dump);
+    run_field(r, "started", "%s", started);
+    run_field(r, "output", "%s", r->out);
+    if (unlocked[0])
+        run_field(r, "note", "%s", unlocked);
 
     /* the schedules of the dump: the list is key material, what the search says is not */
     kfd = run_create(r, "keys/candidates.txt", O_WRONLY, 0600);
@@ -773,7 +787,7 @@ int dump_run(const struct dump_options *o)
     list = kfd < 0 ? NULL : fdopen(kfd, "w");
     msg = mfd < 0 ? NULL : fdopen(mfd, "w");
     if (!list || !msg) {
-        run_say(r, "the list of the schedules cannot be written: %s", strerror(errno));
+        run_mark(r, "search", RUN_NOT, "FAILED", "the list of the schedules cannot be written: %s", strerror(errno));
         fclose(r->report);
         return 1;
     }
@@ -786,6 +800,7 @@ int dump_run(const struct dump_options *o)
         return run_die("no memory");
     }
     keyscan_watch(watch, w);
+    run_progress(r, "search", "reading the dump for AES key schedules and LUKS headers");
     status = keyscan_run(dump, 0, 1, list, msg, &failed);
     keyscan_watch(NULL, NULL);
     look(w, 1);
@@ -793,24 +808,39 @@ int dump_run(const struct dump_options *o)
         r->write_failed = 1;
     fclose(list);
     fclose(msg);
-    if (!pathf(path, "%s/scan.txt", r->out) && (said = read_text(path, 1 << 20, NULL))) {
-        for (line = said; *line; line = next) {
-            next = line + strcspn(line, "\n");
-            if (*next)
-                *next++ = 0;
-            run_say(r, "%s", line);
-        }
-        free(said);
-    }
     keys.hits = keyscan_hits(&keys.nhits);
     if (distinct(&keys) || places(&keys)) {
         keyscan_wipe();
         keys_free(&keys);
         return run_die("no memory");
     }
-    run_say(r, "%d schedules in keys/candidates.txt, %d different keys: %d of AES-128, %d of AES-256", keys.nhits,
-            keys.nfirst, keys.aes128, keys.aes256);
-    run_say(r, "%s", "");
+    /* What the search read, from its own count. Its first two messages say the same and stay
+       in scan.txt. What it says beyond them is said here as well: bytes that could not be
+       read, an image that ends early, a file that it refuses. */
+    if ((sum = keyscan_summary())) {
+        size_text(sum->bytes, size_of);
+        run_field(r, "format", "%s, %d range%s of memory, %s", sum->format, sum->segments, sum->segments == 1 ? "" : "s",
+                  size_of);
+        run_field(r, "search", "%d AES schedules, %d different keys, %u s", keys.nhits, keys.nfirst,
+                  (unsigned)(sum->seconds + 0.5));
+        run_field(r, "keys", "%d of AES-128, %d of AES-256, in keys/candidates.txt", keys.aes128, keys.aes256);
+    }
+    if (!pathf(path, "%s/scan.txt", r->out) && (said = read_text(path, 1 << 20, NULL))) {
+        static const char prefix[] = "kcore-keyscan: ";
+
+        for (line = said; *line; line = next, nline++) {
+            next = line + strcspn(line, "\n");
+            if (*next)
+                *next++ = 0;
+            if (!strncmp(line, prefix, sizeof prefix - 1))
+                line += sizeof prefix - 1;
+            if (!sum)
+                run_mark(r, "search", RUN_NOT, "FAILED", "%s", line);
+            else if (nline >= 2)
+                run_field(r, "warning", "%s", line);
+        }
+        free(said);
+    }
 
     /* the headers of the files, and the proof against each */
     for (i = 0; i < o->nfiles && found >= 0; i++) {
@@ -821,7 +851,7 @@ int dump_run(const struct dump_options *o)
         if ((n = locate(r, real, &targets, &ntargets)) < 0)
             found = -1;
         else if (!n)
-            run_say(r, "%s holds no LUKS header", real);
+            run_field(r, "headers", "none in %s", real);
         else
             found += n;
     }
@@ -854,14 +884,17 @@ int dump_run(const struct dump_options *o)
         return run_die("no memory");
     }
     if (o->nfiles && nfiles_targets)
-        run_say(r, "%zu LUKS header(s) in %zu file(s)", nfiles_targets, o->nfiles);
+        str_addf(&headers, "%zu in %zu file%s", nfiles_targets, o->nfiles, o->nfiles == 1 ? "" : "s");
     if (in_memory)
-        run_say(r, "%zu header(s) or digest(s) of a header in the memory of the dump itself%s", in_memory,
-                more_in_memory ? ", and further ones that are not looked at" : "");
+        str_addf(&headers, "%s%zu in the dump itself%s", headers.len ? ", " : "", in_memory,
+                 more_in_memory ? ", and further ones there that are not looked at" : "");
+    if (headers.len)
+        run_field(r, "headers", "%s", str_text(&headers));
     else if (!o->nfiles)
-        run_say(r, "No file with a LUKS header is given, and the dump itself holds none, so no key can be proven. A header\n"
-                "backup or the image of the disk as a further argument gives the proof: keep -s DUMP FILE...");
-    run_say(r, "%s", "");
+        run_field(r, "headers", "none: no file with a LUKS header is given and the dump itself holds none, so no key can "
+                  "be proven. A header backup or the image of the disk as a further argument gives the proof: "
+                  "keep -s DUMP FILE...");
+    str_free(&headers);
     /* Every header has the attempts that cost little before any header has the others: a
        digest that the dump has no key for, as that of a volume that was closed, costs every
        pair of keys, and no header with a key waits for that. */
@@ -876,22 +909,40 @@ int dump_run(const struct dump_options *o)
     keyscan_wipe();
     keys_free(&keys);
 
-    run_say(r, "==== verdicts");
+    /* Every verdict once more: a header, how far it is and the start of the SHA-256 of its
+       key. A header with several keys has a row for each below it, and a pair that no header
+       proves a row with its file. */
+    run_title(r, "result");
     for (i = 0; i < ntargets; i++) {
-        run_say(r, "  %-24s  %s", targets[i].name, targets[i].verdict);
-        for (k = 0; k < targets[i].h.ndigests; k++)
-            if (targets[i].proofs[k].bytes)
-                run_say(r, "  %-24s  keys/%s.vk, %zu bytes, sha256 %s", "", targets[i].proofs[k].stem,
-                        targets[i].proofs[k].bytes, targets[i].proofs[k].hash);
+        if ((int)strlen(targets[i].name) > names)
+            names = (int)strlen(targets[i].name);
+        if ((int)strlen(targets[i].verdict) > words)
+            words = (int)strlen(targets[i].verdict);
     }
-    for (i = 0; i < npairs; i++)
-        run_say(r, "  %-24s  %s, not proven: keys/%s.vk, %zu bytes, sha256 %s", "a pair in memory", IN_MEMORY, pairs[i].stem,
-                pairs[i].bytes, pairs[i].hash);
+    for (i = 0; i < npairs; i++) {
+        if ((int)strlen(pairs[i].stem) > names)
+            names = (int)strlen(pairs[i].stem);
+        words = (int)sizeof "found in memory, not proven" - 1;
+    }
+    for (i = 0; i < ntargets; i++) {
+        const struct target *t = &targets[i];
+
+        run_row(r, t->name, names, tone_of(t), t->verdict, words, "%s", t->h.ndigests == 1 ? t->proofs[0].hash : "");
+        for (k = 0; t->readable && t->h.ndigests > 1 && k < t->h.ndigests; k++) {
+            snprintf(label, sizeof label, "  key %zu", k + 1);
+            run_row(r, label, names, t->proofs[k].bytes ? RUN_REACHED : tone_of(t), t->proofs[k].bytes ? PROVEN : NOT_PROVEN,
+                    words, "%s", t->proofs[k].hash);
+        }
+    }
+    for (i = 0; i < npairs; i++) {
+        snprintf(real, sizeof real, "%s, not proven", IN_MEMORY);
+        run_row(r, pairs[i].stem, names, RUN_OPEN, real, words, "%s", pairs[i].hash);
+    }
     if (!ntargets && !npairs)
         run_say(r, "  no header and no pair of schedules: the schedules are listed in keys/candidates.txt");
     run_say(r, "%s", "");
     run_utc(finished, 0);
-    run_say(r, "finished %s", finished);
+    run_say(r, "finished %s, %u s", finished, run_seconds(r));
     if (fflush(r->report) || fsync(fileno(r->report)))
         r->write_failed = 1;
     fclose(r->report);
@@ -962,7 +1013,7 @@ int dump_run(const struct dump_options *o)
         fprintf(stderr, "keep: a write or a flush to the destination FAILED, the folder is not complete\n");
         return status ? status : 1;
     }
-    printf("keep: every file of this run is flushed to the destination\n");
+    run_tell(r, "keep: every file of this run is flushed to the destination");
     /* with files to prove against, the run is in order where every header of them has its
        keys. What the dump itself holds of a header can be that of a volume that was closed. */
     if (status)

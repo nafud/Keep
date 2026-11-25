@@ -4,7 +4,7 @@
 #ifndef KEEP_TRIAGE_H
 #define KEEP_TRIAGE_H
 
-#define KEEP_VERSION "2.0-pre8 (2026-11)"
+#define KEEP_VERSION "2.0-pre9 (2026-11)"
 #include "image.h"
 
 #include <stddef.h>
@@ -14,6 +14,7 @@ struct triage_options {
     unsigned budget;            /* proof attempts per key on the memory route */
     enum image_format formats[IMAGE_FORMATS];   /* of the memory images to take after the keys */
     size_t nformats;
+    int plain;                  /* -n: no colour on the screen and no line that is written over */
 };
 
 /* Returns the exit status: 0 when the run completed and was flushed, 1 when it could not start,

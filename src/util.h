@@ -34,6 +34,9 @@ void name_file(const char *name, char *out, size_t outlen);
 /* \ooo in a field of /proc/self/mountinfo, /proc/mounts or /proc/swaps, in place. */
 void unescape_octal(char *s);
 
+/* A size for a reader: in GiB or MiB with two decimals, rounded, and below a MiB in bytes. */
+void size_text(uint64_t bytes, char out[32]);
+
 int hex_decode(const char *hex, size_t digits, uint8_t *out);  /* 0, or -1 for another character */
 void hex_encode(const uint8_t *p, size_t n, char *out);        /* 2 * n digits and a zero byte */
 

@@ -1,8 +1,8 @@
 /*
  * keep: finds the keys of the encrypted volumes of an unlocked Linux system, as one static program.
  *
- *   sudo ./keep [-d DIR] [-b N] [-m [-f FORMAT | -F]]
- *   ./keep -s DUMP [-d DIR] [FILE...]
+ *   sudo ./keep [-n] [-d DIR] [-b N] [-m [-f FORMAT | -F]]
+ *   ./keep -s DUMP [-n] [-d DIR] [FILE...]
  *   ./keep -h | -V
  *
  * Without -s   For every open dm-crypt volume of the running system, decide whether its volume
@@ -28,7 +28,15 @@
  *              directory)
  * -b N         stop after N proof attempts per key in the search of memory (default 64). Only
  *              for the running system.
+ * -n           a plain screen: no colour, and no line of progress that is written over. A
+ *              screen that is no terminal, as a pipe or a file, is plain without it, and so is
+ *              one whose TERM is not set or is "dumb". NO_COLOR with a value takes the colour
+ *              alone.
  * -h, -V       the help, the version
+ *
+ * The screen is one fact in a line, a label and its value, in at most 80 columns where no
+ * name of the examined system is longer, and the report triage.txt holds the same lines. On a
+ * terminal the labels and the verdicts have colour, which says nothing that the words do not.
  *
  * The program asks no question: what a run does is said by its options. It starts no other
  * program and reads no file of the examined system as anything but text. It asks the kernel for
@@ -52,21 +60,21 @@
 #include <unistd.h>
 
 static const char usage[] =
-    "usage: keep [-d DIR] [-b N] [-m [-f FORMAT | -F]]\n"
-    "       keep -s DUMP [-d DIR] [FILE...]\n"
+    "usage: keep [-n] [-d DIR] [-b N] [-m [-f FORMAT | -F]]\n"
+    "       keep -s DUMP [-n] [-d DIR] [FILE...]\n"
     "       keep -h | -V\n";
 
 static const char help[] =
     "keep " KEEP_VERSION ": finds the keys of the encrypted volumes of an unlocked Linux system\n"
     "\n"
-    "  sudo ./keep [-d DIR] [-b N] [-m [-f FORMAT | -F]]\n"
+    "  sudo ./keep [-n] [-d DIR] [-b N] [-m [-f FORMAT | -F]]\n"
     "      For every open dm-crypt volume of this system, decide whether its volume key can\n"
     "      be kept as evidence and proven now. The characteristics of the system and one\n"
     "      verdict per volume are printed. The keys, the header backups and the report go\n"
     "      into a folder triage_<host>_<time>/ of the destination. With -m the memory of\n"
     "      the machine is taken after the keys, into memory/ of that folder.\n"
     "\n"
-    "  ./keep -s DUMP [-d DIR] [FILE...]\n"
+    "  ./keep -s DUMP [-n] [-d DIR] [FILE...]\n"
     "      Search a memory dump that exists (raw, LiME, compressed AVML or ELF core) for AES\n"
     "      key schedules, and prove which of them is the volume key of each LUKS header in\n"
     "      the FILEs: header backups, raw images of disks or partitions, or devices. The\n"
@@ -84,6 +92,9 @@ static const char help[] =
     "  -s DUMP    search this memory dump, not the running system\n"
     "  -d DIR     the destination directory (default: the current directory)\n"
     "  -b N       proof attempts per key in the search of memory (default 64)\n"
+    "  -n         a plain screen: no colour, and no line of progress that is written\n"
+    "             over. A pipe or a file gets a plain screen without it, and NO_COLOR\n"
+    "             with a value takes the colour alone\n"
     "  -h         this help\n"
     "  -V         the version\n"
     "\n"
@@ -119,13 +130,13 @@ int main(int argc, char **argv)
     const char *dest = ".", *dump = NULL;
     enum image_format format = IMAGE_LIME;
     unsigned budget = 64;
-    int c, has_budget = 0, memory = 0, has_format = 0, every = 0;
+    int c, has_budget = 0, memory = 0, has_format = 0, every = 0, plain = 0;
 
     /* A process that is not dumpable leaves no core file, which would hold keys and would be
        written to the examined system (do_coredump in fs/coredump.c), and no other user's
        process can read its memory. */
     prctl(PR_SET_DUMPABLE, 0);
-    while ((c = getopt(argc, argv, "+d:b:s:mf:FhV")) != -1) {
+    while ((c = getopt(argc, argv, "+d:b:s:mf:FnhV")) != -1) {
         switch (c) {
         case 'd':
             dest = optarg;
@@ -149,6 +160,9 @@ int main(int argc, char **argv)
         case 'F':
             every = 1;
             break;
+        case 'n':
+            plain = 1;
+            break;
         case 'h':
             fputs(help, stdout);
             return 0;
@@ -170,11 +184,12 @@ int main(int argc, char **argv)
     if (has_format && every)
         return wrong("-f names one format and -F all of them");
     if (dump) {
-        struct dump_options o = { .dump = dump, .dest = dest, .files = argv + optind, .nfiles = (size_t)(argc - optind) };
+        struct dump_options o = { .dump = dump, .dest = dest, .files = argv + optind, .nfiles = (size_t)(argc - optind),
+                                  .plain = plain };
 
         return dump_run(&o);
     } else {
-        struct triage_options o = { .dest = dest, .budget = budget };
+        struct triage_options o = { .dest = dest, .budget = budget, .plain = plain };
 
         if (memory && every)
             for (c = 0; c < IMAGE_FORMATS; c++)

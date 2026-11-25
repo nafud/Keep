@@ -268,7 +268,11 @@ line and through a pipe. A dialogue (`keep-menu.sh`, with its launcher `keep.c`)
 a browser and a printer of the reports (`keep-report.py`) existed and were removed: options
 say the same in one line, and `triage.txt` is the report for a reader.
 
-- No escape sequence, no cursor movement, no colour, no terminfo and no line editor.
+- No cursor movement, no terminfo and no line editor. The scripts and the lab tools write no
+  escape sequence. The C program gives a terminal colour, with the SGR sequences for bold and
+  for the eight basic colours and with no other sequence, and one line of progress that it
+  writes over with a carriage return (see "The C program"). Through a pipe and in a file of
+  a run it writes neither.
 - A path is made absolute before it is used. A dump or an image must be a readable regular
   file, and a destination directory must exist and be writable.
 - A wrong option ends with status 2 and the usage line.
@@ -383,16 +387,44 @@ stay in Python.
 ```bash
 sudo apt install make musl-tools
 make                                    # keep and tests/keep-unit, static against musl
-sudo ./keep [-d DIR] [-b N]             # the keys of the running system: the work of keytriage.sh
+sudo ./keep [-n] [-d DIR] [-b N]        # the keys of the running system: the work of keytriage.sh
 sudo ./keep -m [-f FORMAT | -F]         # the keys, then a memory image: lime (default), raw or avml, -F all three
-./keep -s DUMP [-d DIR] [FILE...]       # the keys of a memory dump that exists, proven against the headers in the FILEs
+./keep -s DUMP [-n] [-d DIR] [FILE...]  # the keys of a memory dump that exists, proven against the headers in the FILEs
 ./keep -h                               # the help, -V the version
 ```
 
 - Without `-s` the program prints the characteristics of the system (host, system, kernel,
-  lockdown, Secure Boot, memory, destination) and one verdict per open volume, and under the
-  verdicts each key it holds by its file in `keys/`, its length and the first 16 digits of
-  its SHA-256.
+  lockdown, Secure Boot, memory, destination), a block for each open volume that ends with
+  its verdict, and each key it holds by its file in `keys/`, its length and the first 16
+  digits of its SHA-256.
+- The screen of a run is a card of facts, as the fetch tools print one: the title of a block
+  (the program, a volume, the memory image, the result) and below it one fact in a line, a
+  label of at most 11 characters and its value from column 16. A line that the program puts
+  together has at most 80 columns: a longer text goes on in the next line below its value,
+  and only a word that is longer, as a path or a name of the examined system can be, makes
+  a line longer. A block is printed while its work is done, so its last line is the verdict,
+  and the block `result` at the end names every verdict once more, with the first 16 digits
+  of the SHA-256 of each key that is held. `triage.txt` holds the same lines.
+- On a terminal the titles are bold, the labels cyan, and the word that says how far a key
+  or an image is has the look of its tone:
+  - green for what is reached: `captured and proven`, `proven`, an image `captured`;
+  - blue for what is held or can still be had and is not proven here: `captured, in use`,
+    `captured, not proven`, `needs a memory read`, `found in memory, not proven`, `not
+    proven` for a digest that only the dump holds, an image `skipped`;
+  - bold without a colour for what was not reached: `live copy only`, `not proven` for a
+    header of a file, `unreadable header`, an image `failed`, a write that `FAILED`;
+  - nothing for `no key needed`.
+  The look says nothing that the word does not. Red and yellow are not used.
+- Colour is given where standard output is a terminal, `TERM` is set and not `dumb`, and
+  `NO_COLOR` is not set to a value. On such a terminal a step that takes long (the search of
+  memory, the read of an image, the attempts on a header) shows one line that is written
+  over and taken away when the step is done. Through a pipe or into a file the screen has no
+  escape sequence and no carriage return, and such a step prints a line every quarter of a
+  minute. `-n` gives a terminal what a pipe gets. `triage.txt` never holds an escape
+  sequence or a line of progress, and the last line of the screen, which says that every
+  file is flushed, is written when the report is closed.
+- A control character in a text of the examined system, as in the name of a mapping or of a
+  file, is printed as a space.
 - `-m` takes a memory image after the keys, into `memory/` of the folder of the run, as
   `memory.lime`. `-f` names another format: `raw`, where each byte lies at the file offset
   that is its physical address, or `avml`, the compressed format of AVML. `-F` writes all
@@ -426,8 +458,9 @@ sudo ./keep -m [-f FORMAT | -F]         # the keys, then a memory image: lime (d
   accepts it. Sixteen are written and further ones counted.
 - With `-s` the status is that of the search of the dump, and with `FILE`s also 1 where they
   hold no header or a header has a key that is not proven.
-- `-d DIR` is the destination of either run, by default the directory of the start. `-b N`
-  is for the running system only, and so are `-m`, `-f` and `-F`.
+- `-d DIR` is the destination of either run, by default the directory of the start, and `-n`
+  the plain screen of either. `-b N` is for the running system only, and so are `-m`, `-f`
+  and `-F`.
 - A wrong option, an option without its value, an argument that belongs to no option and
   options that do not go together end with status 2 and the usage. The commands `triage` and
   `scan` and the dialogue of the versions before 2.0-pre4 are gone.
@@ -550,6 +583,19 @@ Read in Linux 4.18, 5.10, 6.12 and 6.18, cryptsetup 2.0.6, 2.3.7, 2.7.0 and 2.8.
     has taken `O_DIRECT` off the descriptor (`iwrite` in `dd.c`), and names the file to the
     kernel as one whose pages are not needed once it is flushed (`POSIX_FADV_DONTNEED` in
     `invalidate_cache`). The program does both.
+- Colour on a terminal is the SGR sequences of ECMA-48. Read in Linux 4.18 and 6.12, git
+  2.43.0, sudo 1.9.15p5 and the text of no-color.org:
+  - The console of Linux takes 1 for bold, 30 to 37 for the eight colours and 0 for the end
+    of both (`csi_m` in `drivers/tty/vt/vt.c`), and shows a bold colour as the bright one.
+    Its blue is `0000aa` and its bright blue `5555ff` (`default_red`, `default_grn`,
+    `default_blu`), so the program writes blue bold only. A carriage return puts the cursor
+    to the start of the line (`cr`).
+  - git gives colour where the output is a terminal and `TERM` is set and not `dumb`
+    (`check_auto_color` in `color.c`, `is_terminal_dumb` in `editor.c`).
+  - `NO_COLOR`, set and not empty, asks a program for no colour.
+  - sudo hands `NO_COLOR` on to no program unless it is configured to
+    (`initial_keepenv_table` in `plugins/sudoers/env.c`), which is why there is an option
+    as well.
 - Nothing in the kernel keeps a LUKS header: dm-crypt is given the key and the cipher, and
   cryptsetup reads the header past the page cache where it can (`O_DIRECT`). What a machine
   holds of a header is what else read it. This is not from a source but from runs on a guest
@@ -574,7 +620,7 @@ Read in Linux 4.18, 5.10, 6.12 and 6.18, cryptsetup 2.0.6, 2.3.7, 2.7.0 and 2.8.
 |---|---|
 | `src/main.c` | The options. Makes the process not dumpable |
 | `src/dump.c` | The search of a memory dump that exists: its schedules, the LUKS headers of the files that are given, the proof of the keys against them, and the pairs that no header proves |
-| `src/run.c` | The folder of a run: its report, its files, their flushing and the manifest |
+| `src/run.c` | The folder of a run: its screen and its report, which hold the same lines, its files, their flushing and the manifest |
 | `src/memory.c` | The memory image of a run: the room it needs, its files, and what the lab needs beside it to name the kernel |
 | `src/image.c` | What an image holds, from `/proc/iomem` and `/proc/kcore`, and the three formats. The memory is read once for all files, and written with direct writes |
 | `src/snappy.c` | The framed Snappy format, written, with CRC-32C |
@@ -586,11 +632,17 @@ Read in Linux 4.18, 5.10, 6.12 and 6.18, cryptsetup 2.0.6, 2.3.7, 2.7.0 and 2.8.
 | `src/json.c` | A reader of JSON as RFC 8259 defines it, for the metadata of LUKS2 |
 | `src/sys.c` | Mounts, what a volume carries, lockdown, Secure Boot, the name of the system, each from a named file |
 | `src/util.c` | Texts that grow, names for the screen and for files, hexadecimal, flushing |
-| `kcore-keyscan.c` | The scanner. `-DKEYSCAN_LIBRARY` leaves out its `main`, and `src/keyscan.h` declares what remains. It hands the memory it reads to the program, which searches it for headers |
+| `kcore-keyscan.c` | The scanner. `-DKEYSCAN_LIBRARY` leaves out its `main`, and `src/keyscan.h` declares what remains. It hands the memory it reads to the program, which searches it for headers, and says what its search read |
 | `tests/keep-unit.c` | Runs one part at a time, for `tests/unit-check.sh` |
 
 ### Where it differs from `keytriage.sh`
 
+- The screen is another one. `keytriage.sh` prints sentences, the routes as `R1 table` and `R3
+  memory` and a line `VERDICT:`. The C program prints the facts of a volume as labels and
+  values (see above). The names of the routes stand in `verdict.json` alone. The keyring
+  reference of a volume stands in `log/NAME.table.txt` and not on the screen. What the
+  scanner said stands in `log/kcore-keyscan.txt` or, for a dump, in `scan.txt`: the screen
+  gives the counts in lines of its own, and of a dump also what the scanner warns of.
 - A name is shown as the kernel holds it. libdevmapper writes a character outside its list as
   `\xNN` into the name of a mapping, so a mapping that `dmsetup` shows as `name with space` is
   `name\x20with\x20space` in the kernel, in `/dev/mapper` and in `/sys`, and in the report.
@@ -846,6 +898,13 @@ it lockdown `integrity`. The screen and the report of each run were read:
   not known, and neither is it for a volume that was opened at boot, for other releases of
   udisks2, or for metadata with several keyslots or tokens, where the object `digests` can
   lie across two pages that do not follow each other in memory.
+- The colours and the line that is written over are checked on a pseudo-terminal, with the
+  search of a dump, by the bytes that the program writes there. How they look was seen on no
+  terminal: not on the console of Linux, not on a serial line and not in a terminal
+  emulator. The screen of the key run is made by the same functions and is checked through
+  a pipe only.
+- A line is measured in bytes. A name with characters of several bytes is taken as wider
+  than it is and broken earlier.
 - A digest that a dump holds and has no key for costs every pair of the keys of the dump:
   510 s for 90 keys on the machine above. With n keys of one size these are n * n attempts,
   each with the iterations of the digest. They come after every header has had the attempts
@@ -973,6 +1032,14 @@ The options are given to both
 builds of the program: what does not go together must end with status 2 and write nothing,
 the search of a dump must write the list of the scanner into `keys/` of its folder with no
 key on the screen, and a cut image must end the run with the status of the search.
+The screen is looked at byte by byte. On a pseudo-terminal, which Python's `pty` gives, it
+must have the titles bold, the labels cyan and the verdicts in their colours, no escape
+sequence but those five, and a line of progress that is written over and taken away. With
+`NO_COLOR` it must have no colour and still that line, and with `-n`, without `TERM` and
+with `TERM=dumb` what a pipe gets. Through a pipe it must hold no escape byte and no
+carriage return, `triage.txt` must be the lines of the screen, no line may have more than
+80 columns without a word that needs them, a long text must go on below its value, and a
+control character in the name of a file must be a space on the screen and in the report.
 The parts that read the system
 are given mount tables, a tree like `/sys` with logical volumes on a volume, a lockdown file, a
 SecureBoot variable and an os-release written there.
@@ -1007,7 +1074,10 @@ from memory. The volume is then opened with `--disable-keyring`, where `dmsetup 
 --showkeys` shows the two keys with their targets, and the keys from memory must be those,
 each for its part, and the key of the part not yet done the key the volume was made from. The
 re-encryption is resumed and paused in a step with `SIGSTOP`, and the program must list the
-volume once, name the two helper devices and give the same two keys.
+volume once, name the two helper devices and give the same two keys. At the end every screen
+and every report that the C program wrote in the check is looked at: none may hold an escape
+byte or a carriage return, and none a line of more than 80 columns without a word that needs
+them.
 
 The scanner and the verifier are then run on a fixture. `make-schedule-fixture.py` expands keys
 with its own code written from FIPS-197, so it and the scanner check each other. Its five traps are

@@ -22,4 +22,15 @@ const struct keyscan_hit *keyscan_hits(int *n);         /* in the order they wer
 void keyscan_watch(void (*fn)(void *arg, const uint8_t *p, size_t n, uint64_t phys), void *arg);
 void keyscan_wipe(void);
 
+/* What the last search read, as its message says it: the format it took the file for, the
+   segments or ranges of memory, their bytes and the time. NULL for a search that read no
+   memory: a file that could not be opened or was refused. */
+struct keyscan_summary {
+    const char *format;
+    int segments;
+    unsigned long long bytes;
+    double seconds;
+};
+const struct keyscan_summary *keyscan_summary(void);
+
 #endif

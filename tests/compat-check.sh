@@ -39,7 +39,9 @@
 #             KEEP_IMAGES (default "lime raw avml all"), while the two containers are open.
 #             A word is a format, or "all" for every format from one read (-F). An image
 #             is written with direct writes and its pages are let go from the page cache:
-#             after the run c/keep-unit may count one page of its file there at most. The
+#             after the run c/keep-unit may count one page of its file there at most. No
+#             screen and no report of it may hold an escape byte, or a line of more than
+#             80 columns without a word that needs them. The
 #             report
 #             must name each file with its size and its SHA-256, the scanner must read
 #             each image to its end, and the schedule of each half of both volume keys
@@ -295,7 +297,7 @@ cimage() {
         *) echo "memory.$f after the run: $n" >> "$d/why.txt" ;;
         esac
     done
-    [ "$(grep -c '^  written with direct writes (O_DIRECT), and its pages let go from the page cache$' "$d/screen.txt")" = "$(set -- $formats; echo $#)" ] ||
+    [ "$(grep -c '^  written      direct (O_DIRECT), pages released from the page cache$' "$d/screen.txt")" = "$(set -- $formats; echo $#)" ] ||
         echo "not every image is named as written with direct writes" >> "$d/why.txt"
     (cd "$c" 2>/dev/null && sha256sum -c --quiet manifest.sha256 > "$d/manifest.txt" 2>&1) || echo "the manifest does not verify" >> "$d/why.txt"
     for f in $formats; do
@@ -330,7 +332,7 @@ cimage() {
                 mkdir "$d/alone"
                 "$k" -s "$img" -d "$d/alone" > "$d/screen-alone.txt" 2>&1
                 sa=$(ls -d "$d"/alone/scan_* 2>/dev/null | tail -n 1)
-                alone="$(grep -c '^==== memory@' "$d/screen-alone.txt") header(s) or digest(s) of a header in its memory"
+                alone="$(grep -c '^memory@0x[0-9a-f]*$' "$d/screen-alone.txt") header(s) or digest(s) of a header in its memory"
                 for n in kc_l2 kc_l1; do
                     for key in "$sa"/keys/memory@*.vk; do
                         if cmp -s "$key" "$n.vk"; then alone="$alone, the key of $n proven from one"; break; fi
@@ -348,8 +350,8 @@ cimage() {
     done
     if [ ! -s "$d/why.txt" ]; then
         echo "PASS   the memory image of the C program, $label:${said#,}, $(sed -n 's/^kcore-keyscan [^,]*, [^,]*, [0-9]* segments*, \([0-9]* bytes\).*/\1 of memory/p' "$d/scan-${formats%% *}.txt"), read in $(sed -n 's/.*"seconds": \([0-9]*\),.*/\1/p' "$c/verdict.json") s. The report names each size and SHA-256, the scanner reads each to its end, and the schedules of both containers lie where they lie in the image of AVML. \"keep -s\" proves the keys of both containers from memory.${formats%% *} against their images$(case " $formats " in *" avml "*) echo ". AVML converts the compressed image to the same memory" ;; esac)"
-        echo "       $(grep -m 1 'source /proc/kcore' "$d/screen.txt" | sed 's/^ *//')"
-        echo "       $(grep -m 1 'System.map' "$d/screen.txt" | sed 's/^ *//')"
+        echo "       $(grep -m 1 '^  source ' "$d/screen.txt" | sed 's/^ *source  */source: /')"
+        echo "       $(grep -m 1 '^  symbols ' "$d/screen.txt" | sed 's/^ *symbols  */symbols: /')"
         echo "       pages in the page cache after the run:${cached#,}"
         [ -z "$alone" ] || echo "       \"keep -s\" with memory.${formats%% *} and no file: $alone"
     else
@@ -387,11 +389,14 @@ if command -v mkfs.vfat >/dev/null && mkfs.vfat fat.img >/dev/null 2>&1 && mount
     "$KIT/c/keep" -d "$W/fat/c" > "$W/screen-cfat.txt" 2>&1; rcm=$?
     M=$(ls -d "$W"/fat/c/triage_* 2>/dev/null | tail -n 1)
     ok=1
-    [ "$rcm" = 0 ] && grep -q '^destination: .* (vfat) mounted at ' "$W/screen-cfat.txt" && grep -q '^memory: [0-9]* MiB$' "$W/screen-cfat.txt" || ok=0
-    grep -q '^[0-9]* open dm-crypt volume(s): .*kc_l1.*kc_l2' "$W/screen-cfat.txt" || ok=0
+    [ "$rcm" = 0 ] && grep -q '^  destination  .*, vfat, mounted at .*, [0-9.]* [GMiBbytes]* free$' "$W/screen-cfat.txt" &&
+        grep -q '^  memory       [0-9.]* [GM]iB$' "$W/screen-cfat.txt" && grep -q '^  kernel       [^ ]' "$W/screen-cfat.txt" || ok=0
+    grep -q '^  volumes      [0-9]* open dm-crypt volumes: .*kc_l1.*kc_l2' "$W/screen-cfat.txt" || ok=0
     for n in kc_l2 kc_l1 No; do
         cmp -s "$M/keys/$n.vk" "$n.vk" || ok=0
-        grep -q "^  *keys/$n.vk, $(stat -c%s "$n.vk") bytes, sha256 $(sha256sum < "$n.vk" | cut -c1-16)\$" "$W/screen-cfat.txt" || ok=0
+        grep -q "^  key file     keys/$n.vk, $(stat -c%s "$n.vk") bytes, sha256 $(sha256sum < "$n.vk" | cut -c1-16)\$" "$W/screen-cfat.txt" || ok=0
+        # and once more in the result, by the start of its SHA-256
+        grep -q "^  $n  *captured[a-z, ]*  $(sha256sum < "$n.vk" | cut -c1-16)\$" "$W/screen-cfat.txt" || ok=0
     done
     (cd "$M" 2>/dev/null && sha256sum -c --quiet manifest.sha256 >/dev/null 2>&1) || ok=0
     if [ "$ok" = 1 ]; then
@@ -558,7 +563,8 @@ re_part() {
         { echo "paused, but the crypt targets are not in kc_re-overlay"; dmsetup table kc_re; return 1; }
     ctriage paused || { echo "the C program on the paused re-encryption:"; cat "$W/re/paused/screen.txt"; return 1; }
     [ "$(grep -c '"name": "kc_re' "$C/verdict.json")" = 1 ] || { echo "the volume is not listed once and its helper devices not at all"; return 1; }
-    grep -q '^  in re-encryption: cryptsetup works on it with the helper devices kc_re-overlay, kc_re-hotzone-forward$' "$W/re/paused/screen.txt" || { echo "the helper devices are not named"; return 1; }
+    grep -q '^  re-encrypt   in work, with the helper devices of cryptsetup$' "$W/re/paused/screen.txt" &&
+        grep -q '^  helpers      kc_re-overlay, kc_re-hotzone-forward$' "$W/re/paused/screen.txt" || { echo "the helper devices are not named"; return 1; }
     [ "$(cfield "$C" kc_re verdict)" = "captured and proven" ] && [ "$(sha "$C/keys/kc_re.vk")" = "$t1" ] && [ "$(sha "$C/keys/kc_re-2.vk")" = "$t2" ] ||
         { echo "paused: not both keys proven, or not each with its part"; cat "$W/re/paused/screen.txt"; return 1; }
     kill -CONT "$RP"; kill -INT "$RP"; wait "$RP"; RP=""
@@ -568,6 +574,28 @@ if re_part > "$W/re-out.txt" 2>&1; then
     echo "PASS   a volume in re-encryption, the C program: interrupted, both keys from memory and proven, each with its part as the table shows them with --disable-keyring, the header backup that of luksHeaderBackup; resumed and paused, the volume listed once with both keys from the helper devices${KEEP_SAN:+, also with the sanitizers}"
 else
     echo "FAIL   a volume in re-encryption, the C program"; sed 's/^/       /' "$W/re-out.txt"; PASS=0
+fi
+
+# Every screen of the C program in this check went to a file, as through a pipe, and every
+# report of it holds the lines of its screen: none may hold an escape byte or a carriage
+# return, and none a line of more than 80 columns that has no word which needs them.
+screens() {
+    local f bad=0 n=0
+    while read -r f; do
+        [ "$(sed -n '1s/^\(keep \).*/\1/p' "$f")" = "keep " ] || continue       # not one of keytriage.sh
+        n=$((n + 1))
+        if grep -q "$(printf '[\033\r]')" "$f"; then echo "an escape byte or a carriage return: $f"; bad=1; fi
+        awk 'length($0) > 80 { w = 0; for (i = 1; i <= NF; i++) if (length($i) > 40) w = 1
+                               if (!w) { print FILENAME ": " $0; bad = 1 } }
+             END { exit bad }' "$f" || bad=1
+    done < <(find "$W" \( -name 'screen*.txt' -o -name triage.txt \) -type f | sort)
+    echo "$n"
+    return $bad
+}
+if screens > "$W/screens.txt" 2>&1; then
+    echo "PASS   the screens and reports of the C program, $(tail -n 1 "$W/screens.txt") files: no escape byte through a pipe and in a report, no line of more than 80 columns but for a word that is longer"
+else
+    echo "FAIL   the screens and reports of the C program"; sed 's/^/       /' "$W/screens.txt"; PASS=0
 fi
 echo
 if [ "$PASS" = 1 ]; then echo "RESULT: PASS"; else echo "RESULT: FAIL"; echo; echo "---- screen output of the tool"; cat "$W/screen.txt"; fi
