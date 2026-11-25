@@ -5,4 +5,4 @@
 # version and its SHA-256:
 #   pip-compile --generate-hashes --output-file=requirements.txt requirements.in
 mkdocs==1.6.1
-mkdocs-material==9.8.1
+mkdocs-material==9.8.2
