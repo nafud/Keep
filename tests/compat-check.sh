@@ -351,7 +351,10 @@ cimage() {
     if [ ! -s "$d/why.txt" ]; then
         echo "PASS   the memory image of the C program, $label:${said#,}, $(sed -n 's/^kcore-keyscan [^,]*, [^,]*, [0-9]* segments*, \([0-9]* bytes\).*/\1 of memory/p' "$d/scan-${formats%% *}.txt"), read in $(sed -n 's/.*"seconds": \([0-9]*\),.*/\1/p' "$c/verdict.json") s. The report names each size and SHA-256, the scanner reads each to its end, and the schedules of both containers lie where they lie in the image of AVML. \"keep -s\" proves the keys of both containers from memory.${formats%% *} against their images$(case " $formats " in *" avml "*) echo ". AVML converts the compressed image to the same memory" ;; esac)"
         echo "       $(grep -m 1 '^  source ' "$d/screen.txt" | sed 's/^ *source  */source: /')"
-        echo "       $(grep -m 1 '^  symbols ' "$d/screen.txt" | sed 's/^ *symbols  */symbols: /')"
+        # with what a long line goes on with below its value
+        echo "       $(awk '/^  symbols / { on = 1; sub(/^ *symbols */, "symbols: "); printf "%s", $0; next }
+                            on && /^               [^ ]/ { sub(/^ */, " "); printf "%s", $0; next }
+                            on { exit }' "$d/screen.txt")"
         echo "       pages in the page cache after the run:${cached#,}"
         [ -z "$alone" ] || echo "       \"keep -s\" with memory.${formats%% *} and no file: $alone"
     else

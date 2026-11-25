@@ -209,6 +209,8 @@ options() {
     [ "$rc" = 0 ] || { echo "-h: status $rc"; r=1; }
     for o in '-m ' '-f FORMAT' '-F ' '-s DUMP' '-d DIR' '-b N' '-n ' '-h ' '-V '; do said "^ *$o" "-h"; done
     said 'No key is printed' "-h"
+    [ -z "$(awk 'length($0) > 80' "$T/opt.txt")" ] || { echo "-h: a line of more than 80 columns"; r=1; }
+    for o in 'captured and proven' 'captured, in use' 'captured, not proven' 'needs a memory read' 'live copy only' 'no key needed'; do said "^    $o  " "-h"; done
     start "$k" -V; rc=$?
     [ "$rc" = 0 ] && grep -q '^keep [0-9][^ ]* ([0-9-]*)$' "$T/opt.txt" || { echo "-V: status $rc, $(cat "$T/opt.txt")"; r=1; }
 
