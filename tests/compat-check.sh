@@ -32,8 +32,9 @@
 #             backups that are the files of "cryptsetup luksHeaderBackup" byte for byte, and
 #             the same keys. Before any mapping is made it is run once on the guest as it
 #             is, which on a guest without encrypted volumes is the run with none. It is
-#             also started once without a command, as an examiner starts it, with the
-#             questions of its dialogue answered through a pipe.
+#             also run once with -d and the FAT file system as the destination, where its
+#             screen must name each key that it holds by its file, its length and the start
+#             of its SHA-256.
 #             With KEEP_SAN=/path/to/keep-san in the environment, that build of the program
 #             with the sanitizers of the compiler is run at the same places as well and must
 #             end with status 0, which it does not where a sanitizer finds a fault
@@ -109,13 +110,13 @@ chmod 700 "$W"; cd "$W" && W=$(pwd -P) || exit 1
 # The C program on the guest as it is, before a mapping is made: on a guest without encrypted
 # volumes this is the run with none, which must end in order like any other.
 mkdir "$W/empty"
-( cd "$W/empty" && "$KIT/c/keep" triage ) > "$W/empty/screen.txt" 2>&1; RCE=$?
+( cd "$W/empty" && "$KIT/c/keep" ) > "$W/empty/screen.txt" 2>&1; RCE=$?
 E=$(ls -d "$W"/empty/triage_* 2>/dev/null | tail -n 1)
 EMPTY=FAIL
 [ "$RCE" = 0 ] && grep -q '"volumes": \[' "$E/verdict.json" 2>/dev/null && (cd "$E" && sha256sum -c --quiet manifest.sha256 >/dev/null 2>&1) && EMPTY=PASS
 if [ -n "${KEEP_SAN:-}" ]; then
     mkdir "$W/empty-san"
-    "$KEEP_SAN" triage -d "$W/empty-san" > "$W/empty-san/screen.txt" 2>&1 || { EMPTY=FAIL; cat "$W/empty-san/screen.txt" >> "$W/empty/screen.txt"; }
+    "$KEEP_SAN" -d "$W/empty-san" > "$W/empty-san/screen.txt" 2>&1 || { EMPTY=FAIL; cat "$W/empty-san/screen.txt" >> "$W/empty/screen.txt"; }
 fi
 
 # the key file option was renamed in cryptsetup 2.5.0, as in keytriage.sh
@@ -222,7 +223,7 @@ fi
 # a rule of sed for the lines of the C program, for a field that the two name differently.
 beside() {
     local sh=$1 dest=$2 label=$3 rule=${4:-} c rc ok=1 f
-    ( cd "$dest" && "$KIT/c/keep" triage ) > "$dest/screen-c.txt" 2>&1; rc=$?
+    ( cd "$dest" && "$KIT/c/keep" ) > "$dest/screen-c.txt" 2>&1; rc=$?
     c=$(ls -d "$dest"/triage_* 2>/dev/null | tail -n 1)
     [ "$rc" = 0 ] && [ -f "$c/verdict.json" ] || ok=0
     # a volume is a line with a name and a type, which the two lines of "binaries" lack
@@ -237,7 +238,7 @@ beside() {
     (cd "$c" 2>/dev/null && sha256sum -c --quiet manifest.sha256 >/dev/null 2>&1) || { ok=0; echo "the manifest does not verify" >> "$dest/diff.txt"; }
     if [ -n "${KEEP_SAN:-}" ]; then
         mkdir "$dest/san"
-        "$KEEP_SAN" triage -d "$dest/san" > "$dest/san/screen.txt" 2>&1 || { ok=0; echo "the build with the sanitizers:" >> "$dest/diff.txt"; cat "$dest/san/screen.txt" >> "$dest/diff.txt"; }
+        "$KEEP_SAN" -d "$dest/san" > "$dest/san/screen.txt" 2>&1 || { ok=0; echo "the build with the sanitizers:" >> "$dest/diff.txt"; cat "$dest/san/screen.txt" >> "$dest/diff.txt"; }
     fi
     if [ "$ok" = 1 ]; then
         echo "PASS   $(sed -n '1p' "$dest/screen-c.txt"), $label: $(grep -c '^    {"name": .*, "type": ' "$c/verdict.json") volumes as keytriage.sh gave them in every field, $(ls "$sh"/headers/*.hdr 2>/dev/null | wc -l) header backups and $(ls "$sh"/keys/*.vk 2>/dev/null | wc -l) keys byte for byte the same, manifest${KEEP_SAN:+, also with the sanitizers}"
@@ -260,24 +261,26 @@ if command -v mkfs.vfat >/dev/null && mkfs.vfat fat.img >/dev/null 2>&1 && mount
     else
         echo "FAIL   a destination on FAT, named with -d, status $rcf"; sed 's/^/       /' "$W/screen-fat.txt"; PASS=0
     fi
+    # the C program with the same destination: -d, the names on FAT, and what its screen says
+    # about the system and about the keys it holds
+    mkdir "$W/fat/c"
+    "$KIT/c/keep" -d "$W/fat/c" > "$W/screen-cfat.txt" 2>&1; rcm=$?
+    M=$(ls -d "$W"/fat/c/triage_* 2>/dev/null | tail -n 1)
+    ok=1
+    [ "$rcm" = 0 ] && grep -q '^destination: .* (vfat) mounted at ' "$W/screen-cfat.txt" && grep -q '^memory: [0-9]* MiB$' "$W/screen-cfat.txt" || ok=0
+    grep -q '^[0-9]* open dm-crypt volume(s): .*kc_l1.*kc_l2' "$W/screen-cfat.txt" || ok=0
+    for n in kc_l2 kc_l1 No; do
+        cmp -s "$M/keys/$n.vk" "$n.vk" || ok=0
+        grep -q "^  *keys/$n.vk, $(stat -c%s "$n.vk") bytes, sha256 $(sha256sum < "$n.vk" | cut -c1-16)\$" "$W/screen-cfat.txt" || ok=0
+    done
+    (cd "$M" 2>/dev/null && sha256sum -c --quiet manifest.sha256 >/dev/null 2>&1) || ok=0
+    if [ "$ok" = 1 ]; then
+        echo "PASS   the C program with -d and a destination on FAT: the system and the open volumes are named, three keys equal the ground truth and are named by file, length and SHA-256, manifest"
+    else
+        echo "FAIL   the C program with -d and a destination on FAT, status $rcm"; sed 's/^/       /' "$W/screen-cfat.txt"; PASS=0
+    fi
 else
     echo "SKIP   no mkfs.vfat or no FAT in this kernel, the destination with FAT is not run"
-fi
-# The C program started as an examiner starts it, without a command: its questions are answered
-# through a pipe, and the run is made by the dialogue.
-mkdir "$W/cmenu"
-printf 'system\n%s\n\nyes\n' "$W/cmenu" | "$KIT/c/keep" > "$W/screen-cmenu.txt" 2>&1; rcm=$?
-M=$(ls -d "$W"/cmenu/triage_* 2>/dev/null | tail -n 1)
-ok=1
-[ "$rcm" = 0 ] && grep -q '^Triage started at: ' "$W/screen-cmenu.txt" && grep -q '^keep: SUCCESS$' "$W/screen-cmenu.txt" || ok=0
-vols=$(grep '^    Open dm-crypt volumes: ' "$W/screen-cmenu.txt")
-for n in No kc_l1 kc_l2 kc_null; do case $vols in *"($n "*|*" $n "*|*" $n)") ;; *) ok=0 ;; esac; done
-for n in kc_l2 kc_l1 No; do cmp -s "$M/keys/$n.vk" "$n.vk" || ok=0; done
-(cd "$M" 2>/dev/null && sha256sum -c --quiet manifest.sha256 >/dev/null 2>&1) || ok=0
-if [ "$ok" = 1 ]; then
-    echo "PASS   the C program started without a command, through its questions: the open volumes are named before the run, three keys equal the ground truth, manifest"
-else
-    echo "FAIL   the C program started without a command, through its questions, status $rcm"; sed 's/^/       /' "$W/screen-cmenu.txt"; PASS=0
 fi
 # LVM on LUKS: the stack of an encrypted installation
 mkdir "$W/lvm"
@@ -366,12 +369,12 @@ fi
 ctriage() {
     local d=$W/re/$1 rc
     mkdir "$d"
-    ( cd "$d" && "$KIT/c/keep" triage ) > "$d/screen.txt" 2>&1; rc=$?
+    ( cd "$d" && "$KIT/c/keep" ) > "$d/screen.txt" 2>&1; rc=$?
     C=$(ls -d "$d"/triage_* 2>/dev/null | tail -n 1)
     [ "$rc" = 0 ] && (cd "$C" 2>/dev/null && sha256sum -c --quiet manifest.sha256 >/dev/null 2>&1) || return 1
     if [ -n "${KEEP_SAN:-}" ]; then
         mkdir "$d/san"
-        "$KEEP_SAN" triage -d "$d/san" > "$d/san/screen.txt" 2>&1 || { cat "$d/san/screen.txt" >> "$d/screen.txt"; return 1; }
+        "$KEEP_SAN" -d "$d/san" > "$d/san/screen.txt" 2>&1 || { cat "$d/san/screen.txt" >> "$d/screen.txt"; return 1; }
     fi
 }
 # reencrypt OPTION... : cryptsetup re-encrypts kc_re in the background, in steps of 1 MiB, each

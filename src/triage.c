@@ -57,6 +57,7 @@ struct key_result {                     /* one key of a volume, and what became 
     const char *location, *route, *verdict;
     unsigned bits;
     int has_bits;
+    size_t bytes;                       /* of the key in its file, 0 while no file is written */
 };
 
 struct volume {
@@ -219,6 +220,7 @@ static int keep_key(struct run *r, struct key_result *k, const uint8_t *key, siz
         return -1;
     }
     key_name(key, n, k->hash);
+    k->bytes = n;
     return 0;
 }
 
@@ -872,39 +874,6 @@ static void free_tables(struct dm_table *tabs, size_t ntabs)
     free(tabs);
 }
 
-int triage_volume_names(char **names, char err[TRIAGE_ERR_LEN])
-{
-    char why[DM_ERR_LEN > VOL_ERR_LEN ? DM_ERR_LEN : VOL_ERR_LEN];
-    struct dm_table *tabs;
-    struct vol *found = NULL;
-    struct str text = { 0 };
-    size_t ntabs, nvols = 0, i;
-    int present, r;
-
-    *names = NULL;
-    if (load_tables(&tabs, &ntabs, &present, why)) {
-        snprintf(err, TRIAGE_ERR_LEN, "%s", why);
-        return -1;
-    }
-    r = vol_find(tabs, ntabs, &found, &nvols, why);
-    for (i = 0; !r && i < nvols; i++) {
-        char shown[DM_NAME_LEN];
-
-        memcpy(shown, found[i].top->name, DM_NAME_LEN);
-        name_clean(shown);
-        str_addf(&text, "%s%s", i ? " " : "", shown);
-    }
-    vol_free(found, nvols);
-    free_tables(tabs, ntabs);
-    if (r || text.failed) {
-        snprintf(err, TRIAGE_ERR_LEN, "%s", r ? why : "no memory");
-        str_free(&text);
-        return -1;
-    }
-    *names = text.s;
-    return (int)nvols;
-}
-
 static int die(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 static int die(const char *fmt, ...)
 {
@@ -922,6 +891,7 @@ int triage_run(const struct triage_options *o)
 {
     char dest[PATH_MAX], path[PATH_MAX], host[256], hostfile[256], started[32], finished[32], stamp[32];
     char secure_boot[16], os[256], err[DM_ERR_LEN], *other;
+    unsigned long long kib;
     struct run run = { .budget = o->budget }, *r = &run;
     struct volume *vols = NULL;
     struct dm_table *tabs = NULL;
@@ -985,6 +955,10 @@ int triage_run(const struct triage_options *o)
         say(r, "secure boot: %s (1 enabled)", secure_boot);
     else
         say(r, "secure boot: no SecureBoot variable");
+    if (sys_memory("/proc/meminfo", &kib))
+        say(r, "memory: unknown");
+    else
+        say(r, "memory: %llu MiB", kib / 1024);
     say(r, "output: %s", r->out);
     if (statvfs(r->out, &vfs))
         say(r, "destination: %s", medium.s);
@@ -1060,8 +1034,14 @@ int triage_run(const struct triage_options *o)
     keyscan_wipe();
 
     say(r, "==== verdicts");
-    for (i = 0; i < nvols; i++)
+    for (i = 0; i < nvols; i++) {
         say(r, "  %-16s  %s", vols[i].shown, vols[i].verdict ? vols[i].verdict : "unknown");
+        /* the keys that are held, each by its file, its length and the start of its SHA-256 */
+        for (k = 0; k < vols[i].nkeys; k++)
+            if (vols[i].keys[k].bytes)
+                say(r, "  %-16s  keys/%s.vk, %zu bytes, sha256 %s", "", vols[i].keys[k].file, vols[i].keys[k].bytes,
+                    vols[i].keys[k].hash);
+    }
     say(r, "%s", "");
     utc(finished, 0);
     say(r, "finished %s", finished);

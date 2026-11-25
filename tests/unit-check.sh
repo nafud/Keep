@@ -15,12 +15,12 @@
 #              with one byte changed at a time, against Python's json module
 #   scanner    the search of memory with the sanitizers, on a fixture with the schedules of
 #              known keys in its four formats, cut short and damaged: the same schedules,
-#              messages and status as the static program gives with "keep scan"
-#   dialogue   "keep" without a command, its questions answered through a pipe, with both builds
-#              of the program: a value that cannot be used is asked for again, the values are
-#              listed, a dry run runs nothing, the search of a dump writes the list of
-#              "keep scan" into keys/ of its folder and shows no key, and the run ends with
-#              the status of the scanner
+#              messages and status as the scanner gives that is built as the program links it
+#   options    the command line of "keep", with both builds of the program: a wrong option, an
+#              option without its value, a command of an earlier version and options that do
+#              not go together end with status 2 and the usage, -h names every option, and
+#              "keep -s DUMP" writes the list of the scanner into keys/ of its folder, shows
+#              no key and ends with the status of the search
 #   kernel     the two answers of device-mapper, laid out as the kernel lays them out, before
 #              and from Linux 4.13, and then with bytes changed and ends cut off 1600 times:
 #              read or refused, never a fault. Then the volumes among tables as cryptsetup
@@ -98,7 +98,8 @@ have python3 || { skip "everything else (python3)"; finish; }
 
 # ---- scanner -------------------------------------------------------------------------------------
 # keep links the search of kcore-keyscan.c. In keep-san it is built without the sanitizers,
-# because that program reads the whole memory of a machine, so the search runs with them here.
+# because that program reads the whole memory of a machine, so the search runs with them here,
+# beside tests/keyscan, which is the scanner as keep links it: static, against musl.
 scanner_same() {
     local f opt a b r=0
     head -c 64 /dev/urandom > "$T/scan.vk"
@@ -110,103 +111,118 @@ scanner_same() {
     for f in raw elf lime avml cut bad missing; do
         for opt in "" "-r" "-s 16"; do
             # shellcheck disable=SC2086
-            a=$(./keep scan $opt "$T/fx.$f" 2> "$T/e1" | sha256sum; echo "status ${PIPESTATUS[0]}")
+            a=$(tests/keyscan $opt "$T/fx.$f" 2> "$T/e1" | sha256sum; echo "status ${PIPESTATUS[0]}")
             # shellcheck disable=SC2086
             b=$(tests/keyscan-san $opt "$T/fx.$f" 2> "$T/e2" | sha256sum; echo "status ${PIPESTATUS[0]}")
             [ "$a" = "$b" ] && diff <(sed 's/[0-9.]* seconds//' "$T/e1") <(sed 's/[0-9.]* seconds//' "$T/e2") > /dev/null ||
-                { echo "$f $opt: keep scan and the scanner with the sanitizers differ"; tail -n 5 "$T/e2"; r=1; }
+                { echo "$f $opt: the scanner and the scanner with the sanitizers differ"; tail -n 5 "$T/e2"; r=1; }
         done
     done
     # both halves of the key are among the schedules of the image
-    ./keep scan "$T/fx.lime" 2> /dev/null > "$T/scan.txt"
+    tests/keyscan "$T/fx.lime" 2> /dev/null > "$T/scan.txt"
     for f in 0 32; do
         grep -q " key $(od -An -v -tx1 -j "$f" -N 32 "$T/scan.vk" | tr -d ' \n')\$" "$T/scan.txt" || { echo "a half of the key is not found"; r=1; }
     done
     rm -f "$T/scan.txt" "$T/scan.vk"
     return $r
 }
-# ---- dialogue ------------------------------------------------------------------------------------
-# "keep" without a command asks its questions. They are answered here through a pipe, as
-# selftest.sh answers those of keep-menu.sh. The search of a dump needs no root, and the triage
-# is asked for in a dry run. dialogue PROGRAM ANSWERS [OPTION] : one start in $T/menu, with the
-# umask of an ordinary shell, the screen to $T/menu.txt.
-dialogue() {
-    local k=$1 answers=$2; shift 2
-    ( cd "$T/menu" && umask 022 && printf '%b' "$answers" | "$k" "$@" > "$T/menu.txt" 2>&1 )
-}
-dialogue_parts() {
-    local k=$1 r=0 rc d open key
-    case $k in /*) ;; *) k=$R/$k ;; esac
-    rm -rf "$T/menu"; mkdir "$T/menu" "$T/menu/out" && cp "$T/fx.lime" "$T/fx.cut" "$T/menu/" || return 1
-    # through a pipe no answer is echoed, so what follows a question stands on its line
-    said() { grep -q -- "$1" "$T/menu.txt" || { echo "$2: the screen lacks: $1"; r=1; }; }
 
-    # a dry run of the triage: every value asked for, listed and nothing run. An answer that
-    # cannot be used is asked for again, and "no" starts the questions again.
-    dialogue "$k" 'neither\nsystem\n/no/such/dir\nout\nmany\n0\n12\nno\nsystem\n\n\nyes\n' -n; rc=$?
-    [ "$rc" = 0 ] || { echo "the dry run ended with status $rc"; r=1; }
-    said '^Dry run: the command is shown and not run.$' "dry run"
-    said ': Unsupported value, try again' "dry run"
-    said ': /no/such/dir is not a directory, try again' "dry run"
-    [ "$(grep -o 'A whole number from 1 is needed' "$T/menu.txt" | wc -l)" = 2 ] || { echo "dry run: the two bad numbers are not asked for again"; r=1; }
-    said '^    Kernel:  *[^ ]' "dry run"
-    said '^    Memory:  *[0-9][0-9]* MiB$' "dry run"
-    said "^Destination directory:  *$T/menu/out ([0-9]* MiB free)\$" "dry run"
-    said "^Command:  *keep triage -d $T/menu/out -b 12\$" "dry run"
-    said "^Command:  *keep triage -d $T/menu -b 64\$" "dry run"
-    said '^keep: dry run, nothing was run$' "dry run"
-    [ "$(grep -c '^Parameters required' "$T/menu.txt")" = 2 ] || { echo "dry run: \"no\" does not start the questions again"; r=1; }
-    [ -z "$(ls "$T/menu/out")" ] && ! ls -d "$T"/menu/triage_* "$T"/menu/scan_* > /dev/null 2>&1 || { echo "the dry run wrote something"; r=1; }
+# ---- options -------------------------------------------------------------------------------------
+# "keep" takes what a run does as options and asks nothing. The search of a dump needs no root.
+# start PROGRAM [ARGUMENT...] : one start in $T/opt, with the umask of an ordinary shell and no
+# input, the screen to $T/opt.txt.
+start() {
+    local k=$1; shift
+    ( cd "$T/opt" && umask 022 && "$k" "$@" > "$T/opt.txt" 2>&1 < /dev/null )
+}
+options() {
+    local k=$1 r=0 rc d open key o
+    case $k in /*) ;; *) k=$R/$k ;; esac
+    rm -rf "$T/opt"; mkdir "$T/opt" "$T/opt/out" && cp "$T/fx.lime" "$T/fx.cut" "$T/opt/" || return 1
+    said() { grep -q -- "$1" "$T/opt.txt" || { echo "$2: the screen lacks: $1"; r=1; }; }
+    refused() {  # refused WHAT ARGUMENT... : status 2, the usage, and nothing written
+        local what=$1; shift
+        start "$k" "$@"; rc=$?
+        [ "$rc" = 2 ] || { echo "$what: status $rc, expected 2"; r=1; }
+        said '^usage: keep ' "$what"
+        [ -z "$(ls "$T/opt/out")" ] && ! ls -d "$T"/opt/triage_* "$T"/opt/scan_* > /dev/null 2>&1 || { echo "$what: something was written"; r=1; }
+    }
+    refused "an option that does not exist" -x
+    refused "an argument without an option" fx.lime
+    refused "-s without a dump" -s
+    refused "-d without a directory" -s fx.lime -d
+    refused "-b without a number" -b
+    refused "-b that is no number" -b many
+    refused "-b 0" -b 0
+    refused "-b with -s" -s fx.lime -b 3
+    refused "the command triage of an earlier version" triage
+    refused "the command scan of an earlier version" scan fx.lime
+    refused "the option -n of an earlier version" -n
+
+    start "$k" -h; rc=$?
+    [ "$rc" = 0 ] || { echo "-h: status $rc"; r=1; }
+    for o in '-s DUMP' '-d DIR' '-b N' '-h ' '-V '; do said "^ *$o" "-h"; done
+    said 'No key is printed' "-h"
+    start "$k" -V; rc=$?
+    [ "$rc" = 0 ] && grep -q '^keep [0-9][^ ]* ([0-9-]*)$' "$T/opt.txt" || { echo "-V: status $rc, $(cat "$T/opt.txt")"; r=1; }
 
     # the search of a dump: the list in keys/, what the scanner said on the screen, no key there
-    dialogue "$k" 'dump\nno-such-file\nfx.lime\nout\n\n'; rc=$?
-    d=$(ls -d "$T"/menu/out/scan_fx.lime_* 2>/dev/null | head -n 1)
-    [ "$rc" = 0 ] && [ -d "$d" ] || { echo "the search of a dump ended with status $rc"; cat "$T/menu.txt"; return 1; }
-    said ': Not a readable file, try again' "dump"
-    said "^Memory dump:  *$T/menu/fx.lime\$" "dump"
-    said '^Scan started at: 20[0-9-]*T[0-9:]*Z$' "dump"
+    start "$k" -s fx.lime -d out; rc=$?
+    d=$(ls -d "$T"/opt/out/scan_fx.lime_* 2>/dev/null | head -n 1)
+    [ "$rc" = 0 ] && [ -d "$d" ] || { echo "the search of a dump ended with status $rc"; cat "$T/opt.txt"; return 1; }
+    said "^memory dump: $T/opt/fx.lime\$" "dump"
+    said "^output: $d\$" "dump"
     said '^kcore-keyscan: AES-128 schedules: 2 ' "dump"
-    said "^In the lab: python3 -I vkverify.py $d/keys/candidates.txt --image DISK\$" "dump"
-    said '^keep: SUCCESS$' "dump"
-    "$R/keep" scan "$T/fx.lime" 2> /dev/null | cmp -s - "$d/keys/candidates.txt" || { echo "the candidate list is not that of keep scan"; r=1; }
-    cmp -s <(sed -n '/^kcore-keyscan/p' "$T/menu.txt" | sed 's/[0-9.]* seconds//') <(sed 's/[0-9.]* seconds//' "$d/scan.txt") || { echo "scan.txt is not what the screen shows"; r=1; }
+    said '^[0-9]* schedules are listed in keys/candidates.txt' "dump"
+    said '^keep: every file of this run is flushed to the destination$' "dump"
+    tests/keyscan-san "$T/fx.lime" 2> /dev/null | cmp -s - "$d/keys/candidates.txt" || { echo "the candidate list is not that of the scanner"; r=1; }
+    [ "$(wc -l < "$d/keys/candidates.txt")" = "$(sed -n 's/^\([0-9]*\) schedules are listed.*/\1/p' "$T/opt.txt")" ] || { echo "the number of the schedules is not that of the list"; r=1; }
+    cmp -s <(sed -n '/^kcore-keyscan/p' "$T/opt.txt" | sed 's/[0-9.]* seconds//') <(sed 's/[0-9.]* seconds//' "$d/scan.txt") || { echo "scan.txt is not what the screen shows"; r=1; }
     open=$(find "$d" -perm /077)
     [ -z "$open" ] || { echo "open to the group or to others: $open"; r=1; }
     while read -r key; do
-        ! grep -q "$key" "$T/menu.txt" || { echo "a key is on the screen"; r=1; }
+        ! grep -q "$key" "$T/opt.txt" || { echo "a key is on the screen"; r=1; }
     done < <(sed 's/.* key //' "$d/keys/candidates.txt")
 
-    # an image that is cut: what was found is kept, and the run ends with the status of the scanner
-    dialogue "$k" 'dump\nfx.cut\n\nyes\n'; rc=$?
-    d=$(ls -d "$T"/menu/scan_fx.cut_* 2>/dev/null | head -n 1)
+    # without -d the folder is made in the directory of the start. An image that is cut: what
+    # was found is kept, and the run ends with the status of the scanner.
+    start "$k" -s fx.cut; rc=$?
+    d=$(ls -d "$T"/opt/scan_fx.cut_* 2>/dev/null | head -n 1)
     [ "$rc" = 1 ] && [ -s "$d/keys/candidates.txt" ] || { echo "a cut image: status $rc, expected 1 and a list"; r=1; }
-    said '^keep: FAILURE (exit status 1)$' "a cut image"
 
-    # an input that ends, a wrong option, and the triage without root
-    dialogue "$k" 'dump\n'; rc=$?
-    [ "$rc" = 1 ] || { echo "an input that ends: status $rc"; r=1; }
-    said '^keep: the input ended before the parameters were complete$' "an input that ends"
-    dialogue "$k" '' -x; rc=$?
-    [ "$rc" = 2 ] || { echo "a wrong option: status $rc"; r=1; }
+    # what cannot start writes nothing and ends with status 1
+    start "$k" -s no-such-file -d out; rc=$?
+    [ "$rc" = 1 ] || { echo "a dump that does not exist: status $rc"; r=1; }
+    said '^keep: the memory dump no-such-file: ' "a dump that does not exist"
+    start "$k" -s out -d out; rc=$?
+    [ "$rc" = 1 ] || { echo "a directory as the dump: status $rc"; r=1; }
+    said ' is not a file that can be read$' "a directory as the dump"
+    start "$k" -s fx.lime -d no-such-dir; rc=$?
+    [ "$rc" = 1 ] || { echo "a destination that does not exist: status $rc"; r=1; }
+    start "$k" -s fx.lime -d fx.cut; rc=$?
+    [ "$rc" = 1 ] || { echo "a file as the destination: status $rc"; r=1; }
+    said ' is not a directory$' "a file as the destination"
+    [ "$(ls "$T/opt/out" | wc -l)" = 1 ] || { echo "a run that could not start wrote something"; r=1; }
     if [ "$(id -u)" != 0 ]; then
-        dialogue "$k" 'system\n'; rc=$?
-        [ "$rc" = 1 ] || { echo "the triage without root: status $rc"; r=1; }
-        said '^keep: the keys of a running system need root' "the triage without root"
-        chmod 500 "$T/menu/out"
-        dialogue "$k" 'dump\nfx.lime\nout\n\n\n'; rc=$?
-        chmod 700 "$T/menu/out"
-        said ': out is not writable, try again' "a destination that cannot be written to"
+        start "$k"; rc=$?
+        [ "$rc" = 1 ] || { echo "the running system without root: status $rc"; r=1; }
+        said '^keep: must run as root (sudo)$' "the running system without root"
+        chmod 500 "$T/opt/out"
+        start "$k" -s fx.lime -d out; rc=$?
+        chmod 700 "$T/opt/out"
+        [ "$rc" = 1 ] || { echo "a destination that cannot be written to: status $rc"; r=1; }
+        said "^keep: $T/opt/out is not writable\$" "a destination that cannot be written to"
     fi
     return $r
 }
 if have make && have musl-gcc && have cc; then
-    check "build: keep, the program, static against musl, the same with the sanitizers, and the scanner with them" make -s keep keep-san tests/keyscan-san
-    check "scanner: keep scan and the scanner with the sanitizers give the same on four formats, a cut and a damaged image" scanner_same
+    check "build: keep, the program, static against musl, the same with the sanitizers, and the scanner alone both ways" make -s keep keep-san tests/keyscan tests/keyscan-san
+    check "scanner: static and with the sanitizers it gives the same on four formats, a cut and a damaged image" scanner_same
     for k in keep keep-san; do
-        check "dialogue: $k asks again for a value it cannot use, lists the values, runs nothing in a dry run, searches a dump into keys/ and ends with the status of the run" dialogue_parts "$k"
+        check "options: $k refuses what does not go together, names its options with -h, searches a dump into keys/ and ends with the status of the search" options "$k"
     done
 else
-    skip "scanner and dialogue: with the sanitizers (make, musl-gcc and cc)"
+    skip "scanner and options: with the sanitizers (make, musl-gcc and cc)"
 fi
 
 # ---- hashes --------------------------------------------------------------------------------------

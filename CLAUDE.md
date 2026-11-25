@@ -359,9 +359,10 @@ machine or an EnCase image.
 ## The C program
 
 The scene side of Keep is being written anew as one static C program, `keep`, built from `src/`.
-It is to take the place of the tool medium: of `keytriage.sh`, `keep-menu.sh`, the launcher, the
-bash and busybox of the medium, the examined system's `dmsetup` and `cryptsetup`, and AVML. An
-examiner then copies one file to the system and starts it. The program starts no other program.
+It is to take the place of the tool medium: of `keytriage.sh`, the bash and busybox of the
+medium, the examined system's `dmsetup` and `cryptsetup`, and AVML. An examiner then copies one
+file to the system and starts it. The program starts no other program and asks no question:
+what a run does is said by its options.
 
 Until it gives what `keytriage.sh` gives on every system of the list below, `keytriage.sh` on the
 medium is Keep, and everything in this file outside this section describes it. The lab tools
@@ -370,10 +371,22 @@ stay in Python.
 ```bash
 sudo apt install make musl-tools
 make                                    # keep and tests/keep-unit, static against musl
-sudo ./keep [-n]                        # the dialogue, the work of keep-menu.sh. -n is a dry run
-sudo ./keep triage [-d DIR] [-b N]      # the work of keytriage.sh, without -m
-./keep scan [-s STEP] [-r] [FILE]       # the work of kcore-keyscan
+sudo ./keep [-d DIR] [-b N]             # the keys of the running system: the work of keytriage.sh, without -m
+./keep -s DUMP [-d DIR]                 # the key schedules of a memory dump that exists
+./keep -h                               # the help, -V the version
 ```
+
+- Without `-s` the program prints the characteristics of the system (host, system, kernel,
+  lockdown, Secure Boot, memory, destination) and one verdict per open volume, and under the
+  verdicts each key it holds by its file in `keys/`, its length and the first 16 digits of
+  its SHA-256.
+- `-s DUMP` searches a dump as `kcore-keyscan` does and writes `scan_<dump>_<time>/` into the
+  destination, with `keys/candidates.txt` and `scan.txt`. It makes no proof yet.
+- `-d DIR` is the destination of either run, by default the directory of the start. `-b N`
+  is for the running system only.
+- A wrong option, an option without its value, an argument that belongs to no option and
+  options that do not go together end with status 2 and the usage. The commands `triage` and
+  `scan` and the dialogue of the versions before 2.0-pre4 are gone.
 
 ### What stands in whose place
 
@@ -385,7 +398,6 @@ sudo ./keep triage [-d DIR] [-b N]      # the work of keytriage.sh, without -m
 | `cryptsetup open --test-passphrase` | `src/luks.c` and `src/hash.c`: PBKDF2 of the key against the digest of the header backup | `cryptsetup` 2.7.0 on the same headers and keys, and Python's `hashlib` |
 | `kcore-keyscan` | `kcore-keyscan.c` linked in without its `main` | the scanner before the change: the same output, messages and status on every format |
 | bash and the applets of busybox | C, with the standard library only | `tests/unit-check.sh` |
-| `keep-menu.sh` and the launcher | `src/menu.c`: `keep` without a command asks the questions and makes the run in its own process | `tests/unit-check.sh` and `compat-check.sh`, with the answers through a pipe |
 | AVML | not written yet | |
 
 ### What the sources say
@@ -444,8 +456,8 @@ Read in Linux 4.18, 5.10, 6.12 and 6.18, cryptsetup 2.0.6, 2.3.7, 2.7.0 and 2.8.
 
 | File | What it does |
 |---|---|
-| `src/main.c` | The command line. Makes the process not dumpable |
-| `src/menu.c` | The dialogue: the questions, the list of the values, and the run of the triage or of the search of a dump |
+| `src/main.c` | The options. Makes the process not dumpable |
+| `src/dump.c` | The search of a memory dump that exists, into a folder of the destination |
 | `src/triage.c` | The run: destination, system, volumes, the ladder for each key, verdicts, `triage.txt`, `verdict.json`, `manifest.sha256`. Locks the memory of the process |
 | `src/dm.c` | The list of the mapped devices and the table of one, from the kernel |
 | `src/volume.c` | Which mapped devices are a volume, which further devices are part of it, which keys it has and where its header lies, read off the tables |
@@ -492,10 +504,9 @@ Read in Linux 4.18, 5.10, 6.12 and 6.18, cryptsetup 2.0.6, 2.3.7, 2.7.0 and 2.8.
 - It asks cryptsetup nothing and takes none of its locks. `cryptsetup status` waited without
   end on a volume whose re-encryption was paused in a step, and the C program read the same
   volume. A header that cryptsetup writes at that moment is read from the copy that holds.
-- The dialogue asks what `keep-menu.sh` asks, without the question for a memory dump. The
-  search of a dump is made in its own process and flushed to the destination, with no proof:
-  the medium has no Python, and the proof against a disk image is the work of `vkverify.py`.
-- It takes no memory image and does not search a dump with a proof yet.
+- The search of a dump is made in its own process and flushed to the destination, with no
+  proof yet: the proof against a disk image is the work of `vkverify.py`.
+- It takes no memory image yet.
 
 ### What the checks have found
 
@@ -513,8 +524,8 @@ with integrity. It is corrected in 1.5.1, with its check in `selftest.sh`.
 
 ### Where it has run
 
-`keep` 2.0-pre3 is run beside `keytriage.sh` 1.5.1 by `compat-check.sh`: before any mapping is
-made, on the four mappings of the main run, started through its dialogue, on LVM on LUKS and on
+`keep` 2.0-pre4 is run beside `keytriage.sh` 1.5.1 by `compat-check.sh`: before any mapping is
+made, on the four mappings of the main run, with `-d` and a destination on FAT, on LVM on LUKS and on
 LUKS2 with integrity, and alone on a volume in re-encryption. Beside `keytriage.sh` it gave the
 same line of `verdict.json` for every volume, on the table route, the memory route, a mapping
 without a type and the null cipher, and header backups and keys that are the same byte for
@@ -651,10 +662,10 @@ of two keys, one that is encrypted in part, helpers of another volume, and then 
 bytes changed. A header in re-encryption, which `cryptsetup reencrypt --init-only` makes there
 from two known keys, must be copied as `luksHeaderBackup` copies it, and each key must give
 its own digest, the old one the first and the new one the second, as `hashlib` computes them:
-cryptsetup accepts neither key alone for such a header. The dialogue is driven through a
-pipe: a value that cannot be used must be asked for again, a dry run must write nothing, the
-search of a dump must write the list of `keep scan` into `keys/` of its folder with no key on
-the screen, and a cut image must end the run with the status of the scanner.
+cryptsetup accepts neither key alone for such a header. The options are given to both
+builds of the program: what does not go together must end with status 2 and write nothing,
+the search of a dump must write the list of the scanner into `keys/` of its folder with no
+key on the screen, and a cut image must end the run with the status of the search.
 The parts that read the system
 are given mount tables, a tree like `/sys` with logical volumes on a volume, a lockdown file, a
 SecureBoot variable and an os-release written there.
@@ -664,8 +675,9 @@ The whole program is checked on real device-mapper by `tests/compat-check.sh`, b
 keep-san`), that build is run at the same places and must end with status 0.
 
 Three parts of `compat-check.sh` are there for what the C program does beyond the four
-mappings. It is started once without a command, with the questions of its dialogue answered
-through a pipe. Before the two parts that follow, the two volumes with their keys in the
+mappings. It is run once with `-d` and the FAT file system as the destination, where its
+screen must name the system, the open volumes and each key it holds by its file, its length
+and the start of its SHA-256. Before the two parts that follow, the two volumes with their keys in the
 keyring are closed, because every run with one of them open searches the whole memory once
 more. Two LUKS2 containers with integrity are made, one opened with
 `--disable-keyring`: both tools must give `captured and proven` with the key of 96 bytes it

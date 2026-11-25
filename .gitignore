@@ -24,3 +24,4 @@ tests/keep-unit
 tests/keep-unit-san
 tests/keyscan-san
 tests/keyscan-plain.o
+tests/keyscan
