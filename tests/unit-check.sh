@@ -21,7 +21,9 @@
 #              option without its value, a command of an earlier version and options that do
 #              not go together end with status 2 and the usage, -h names every option, and
 #              "keep -s DUMP" writes the list of the scanner into keys/ of its folder, shows
-#              no key and ends with the status of the search
+#              no key and ends with the status of the search. Without a header it proves
+#              nothing and keeps the pairs of schedules that lie as the kernel keeps the two
+#              keys of a volume, as candidates
 #   kernel     the two answers of device-mapper, laid out as the kernel lays them out, before
 #              and from Linux 4.13, and then with bytes changed and ends cut off 1600 times:
 #              read or refused, never a fault. Then the volumes among tables as cryptsetup
@@ -53,6 +55,17 @@
 #              with a damaged first copy, which must be read from the second and left as it
 #              is, with files that end early, and with a header in re-encryption, whose two
 #              keys must each give their own digest, as hashlib computes it
+#   dump       "keep -s DUMP FILE..." on an image with the schedules of the keys of those
+#              headers: each key must be proven and written as it is, also for a header with
+#              erased keyslots, for one in re-encryption with its two keys, for a cipher with
+#              one key, for headers inside the image of a disk, and for two schedules that do
+#              not lie as the kernel keeps them. A header of another key, a file without a
+#              header and a damaged header must be named as such. The verdicts and the names
+#              of the keys must be those of vkverify.py on the same schedules and headers.
+#              A dump that holds a LUKS1 header at the start of a page and the digests of a
+#              LUKS2 header inside other bytes, as the memory of a machine can, must give
+#              both keys with no file at all, each copy once, and not for a header that is
+#              among the files
 #
 # It needs neither root nor device-mapper, and writes only below a temporary directory, which
 # is removed at the end. The test keys are drawn from /dev/urandom there and are never printed.
@@ -196,16 +209,23 @@ options() {
     said "^memory dump: $T/opt/fx.lime\$" "dump"
     said "^output: $d\$" "dump"
     said '^kcore-keyscan: AES-128 schedules: 2 ' "dump"
-    said '^[0-9]* schedules are listed in keys/candidates.txt' "dump"
+    said '^[0-9]* schedules in keys/candidates.txt, [0-9]* different keys: [0-9]* of AES-128, [0-9]* of AES-256$' "dump"
+    said '^No file with a LUKS header is given, and the dump itself holds none, so no key can be proven' "dump"
+    # the fixture has one key with its two schedules as the kernel keeps them, and no header
+    said '^  keys/memory-pair-1.vk, 64 bytes, sha256 [0-9a-f]*, tweak schedule at 0x[0-9a-f]*: found in memory, not proven$' "dump"
+    [ "$(stat -c %s "$d/keys/memory-pair-1.vk" 2> /dev/null)" = 64 ] || { echo "the pair in memory is not kept as a key file of 64 bytes"; r=1; }
+    grep -q '"memory_pairs": \[$' "$d/verdict.json" && grep -q '"verdict": "found in memory"' "$d/verdict.json" || { echo "the report does not name the pair in memory"; r=1; }
+    ( cd "$d" && sha256sum -c --quiet manifest.sha256 ) > /dev/null 2>&1 || { echo "the manifest of the search does not verify"; r=1; }
     said '^keep: every file of this run is flushed to the destination$' "dump"
     tests/keyscan-san "$T/fx.lime" 2> /dev/null | cmp -s - "$d/keys/candidates.txt" || { echo "the candidate list is not that of the scanner"; r=1; }
-    [ "$(wc -l < "$d/keys/candidates.txt")" = "$(sed -n 's/^\([0-9]*\) schedules are listed.*/\1/p' "$T/opt.txt")" ] || { echo "the number of the schedules is not that of the list"; r=1; }
+    [ "$(wc -l < "$d/keys/candidates.txt")" = "$(sed -n 's/^\([0-9]*\) schedules in keys.*/\1/p' "$T/opt.txt")" ] || { echo "the number of the schedules is not that of the list"; r=1; }
     cmp -s <(sed -n '/^kcore-keyscan/p' "$T/opt.txt" | sed 's/[0-9.]* seconds//') <(sed 's/[0-9.]* seconds//' "$d/scan.txt") || { echo "scan.txt is not what the screen shows"; r=1; }
     open=$(find "$d" -perm /077)
     [ -z "$open" ] || { echo "open to the group or to others: $open"; r=1; }
     while read -r key; do
         ! grep -q "$key" "$T/opt.txt" || { echo "a key is on the screen"; r=1; }
     done < <(sed 's/.* key //' "$d/keys/candidates.txt")
+    ! grep -q -f <(sed 's/.* key //' "$d/keys/candidates.txt") "$d/triage.txt" "$d/verdict.json" "$d/scan.txt" "$d/manifest.sha256" || { echo "a key is in a file outside keys/"; r=1; }
 
     # without -d the folder is made in the directory of the start. An image that is cut: what
     # was found is kept, and the run ends with the status of the scanner.
@@ -1235,5 +1255,142 @@ if cp "$T/l2.img" "$T/re.img" && cryptsetup reencrypt --init-only -q --key-file 
     done
 else
     skip "headers: a header in re-encryption (this cryptsetup starts none on a file: $(head -n 1 "$T/re.err"))"
+fi
+# ---- dump ----------------------------------------------------------------------------------------
+# The search of a dump with the proof. The image holds the schedules of the keys of the headers
+# above, as the kernel keeps the two keys of an XTS volume: k64, k32 as two keys of AES-128,
+# knew, and k32 once more as one key of AES-256, which is the key of the header with CBC.
+cat "$T/k32" /dev/urandom | head -c 64 > "$T/kcbc"
+python3 -I tests/make-schedule-fixture.py --format lime --size 8 "$T/dump.lime" "$T/k64" "$T/k32" "$T/knew" "$T/kcbc" > /dev/null
+truncate -s 80M "$T/disk.dd"
+dd if="$T/l2.img" of="$T/disk.dd" bs=1M seek=1 conv=notrunc status=none
+dd if="$T/l1.img" of="$T/disk.dd" bs=1M seek=36 conv=notrunc status=none
+container ot other --type luks2 --cipher aes-xts-plain64 --key-size 512 --pbkdf pbkdf2 2> /dev/null
+head -c 4096 /dev/urandom > "$T/noise.bin"
+# random bytes with the magic of LUKS at the start of some sectors, as in data that is no header
+head -c 1048576 /dev/urandom > "$T/magic.bin"
+for at in 3 10 700 2047; do
+    printf 'LUKS\272\276\000\00%d' $(( at % 2 + 1 )) | dd of="$T/magic.bin" bs=512 seek="$at" conv=notrunc status=none
+done
+head -c 3000 "$T/l2.img" > "$T/short.img"
+# two schedules of the key k64 that lie apart, as another XTS code than that of AES-NI keeps them
+python3 -I - "$T/k64" "$T/apart.raw" <<'EOF'
+import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("fixture", "tests/make-schedule-fixture.py")
+fixture = importlib.util.module_from_spec(spec); spec.loader.exec_module(fixture)
+key = open(sys.argv[1], "rb").read()
+img = bytearray(os.urandom(1 << 20))
+img[0x40000:0x40000 + 240] = fixture.expand(key[:32])       # the data key
+img[0x90000:0x90000 + 240] = fixture.expand(key[32:])       # the tweak key
+open(sys.argv[2], "wb").write(img)
+EOF
+# A dump with what the memory of a machine can hold of two headers: the first page of the device
+# of the LUKS1 header, the metadata of the LUKS2 header with the key of 32 bytes inside other
+# bytes, its digests once more across the place where the search of the memory takes its next
+# stretch, and text that begins like the digests and is none.
+python3 -I tests/make-schedule-fixture.py --format raw --size 8 "$T/mem.raw" "$T/k64" "$T/k32" > /dev/null
+python3 -I - "$T" <<'EOF'
+import sys
+t = sys.argv[1]
+img = bytearray(open(t + "/mem.raw", "rb").read())
+meta = open(t + "/l2k256.img", "rb").read(32768)[4096:].split(b"\0", 1)[0]
+at = meta.index(b'"digests":{')
+img[0x300000:0x301000] = open(t + "/l1.img", "rb").read(4096)
+img[0x41f123:0x41f123 + len(meta)] = meta
+img[0x1fff00:0x1fff00 + len(meta) - at] = meta[at:]
+img[0x500010:0x500010 + 30] = b'"digests":{"0":{"type":"pbkdf2'
+img[0x600000:0x600008] = b"LUKS\xba\xbe\x00\x01"
+open(t + "/mem.raw", "wb").write(img)
+EOF
+# verdicts REPORT : "name verdict key..." for each header of a report, by name
+verdicts() {
+    python3 -I -c 'import json, sys
+for v in sorted(json.load(open(sys.argv[1]))["volumes"], key=lambda v: v["name"]):
+    print(v["name"], v["verdict"].replace(" ", "-"), v["key_sha256_16"], *[k["key_sha256_16"] for k in v.get("further_keys", [])])' "$1"
+}
+key16() { sha256sum < "$1" | cut -c1-16; }
+dump_proof() {
+    local k=$R/$1 r=0 rc d h n key want got
+    local -a re=()
+    rm -rf "$T/dp"; mkdir "$T/dp" "$T/dp/2" "$T/dp/3" "$T/dp/4" "$T/dp/5" "$T/dp/6" "$T/dp/7"
+    # the header in re-encryption, where this cryptsetup made one
+    [ -s "$T/re.img" ] && [ ! -s "$T/re.err" ] && re=(re.img)
+    # every header, the image of a disk with two of them, one of another key
+    ( cd "$T" && umask 022 && "$k" -s dump.lime -d dp l1.img l1sha1.img l1s512.img l2.img l2s512.img l2k256.img l2big.img l1e.img l2e.img \
+        "${re[@]}" disk.dd ot.img > "$T/dp.txt" 2>&1 ); rc=$?
+    d=$(ls -d "$T"/dp/scan_dump.lime_* 2> /dev/null | head -n 1)
+    [ "$rc" = 1 ] && [ -f "$d/verdict.json" ] || { echo "status $rc, expected 1 for the header of another key"; cat "$T/dp.txt"; return 1; }
+    for h in "${HEADERS[@]}"; do
+        n=${h%%:*}; key=$T/${h##*:}
+        cmp -s "$d/keys/$n.img.vk" "$key" || { echo "$n: the key in keys/ is not the key of the header"; r=1; }
+        grep -q "^  $n.img  *proven\$" "$d/triage.txt" || { echo "$n: not named as proven"; r=1; }
+    done
+    cmp -s "$d/keys/disk.dd@0x100000.vk" "$T/k64" && cmp -s "$d/keys/disk.dd@0x2400000.vk" "$T/k64" || { echo "the headers inside the image of a disk are not proven at their offsets"; r=1; }
+    grep -q '^  ot.img  *not proven$' "$d/triage.txt" && [ ! -e "$d/keys/ot.img.vk" ] || { echo "the header of another key is not named as not proven"; r=1; }
+    if [ "${#re[@]}" = 1 ]; then
+        cmp -s "$d/keys/re.img.vk" "$T/k64" && cmp -s "$d/keys/re.img-2.vk" "$T/knew" || { echo "a header in re-encryption: not both keys, each for its digest"; r=1; }
+        grep -q '^  2 keys: a volume in re-encryption' "$d/triage.txt" || { echo "a header in re-encryption is not named as one"; r=1; }
+    fi
+    # the erased LUKS2 header states no key size
+    grep -A 3 '^==== l2e.img' "$d/triage.txt" | grep -q 'key size not stated, no keyslot is left' || { echo "an erased header is not named as one without a key size"; r=1; }
+    ( cd "$d" && sha256sum -c --quiet manifest.sha256 ) > /dev/null 2>&1 || { echo "the manifest does not verify"; r=1; }
+    [ -z "$(find "$d" -perm /077)" ] || { echo "a file of the run is open to the group or to others"; r=1; }
+    for key in k64 k32 knew other; do
+        ! grep -q "$(od -An -v -tx1 -N 16 "$T/$key" | tr -d ' \n')" "$T/dp.txt" "$d/triage.txt" "$d/verdict.json" "$d/scan.txt" "$d/manifest.sha256" ||
+            { echo "key material outside keys/"; r=1; }
+    done
+    # the verifier of the lab on the same schedules and headers: the same verdicts and keys.
+    # It names a header by its file without the ending, and takes the first digest of a header
+    # in re-encryption.
+    ( cd "$T" && python3 -I "$R/vkverify.py" "$d/keys/candidates.txt" l1.img l1sha1.img l1s512.img l2.img l2s512.img l2k256.img l2big.img l1e.img l2e.img ot.img \
+        --image disk.dd --json "$T/dp-lab.json" > "$T/dp-lab.txt" 2>&1 )
+    want=$(verdicts "$T/dp-lab.json")
+    got=$(verdicts "$d/verdict.json" | grep -v '^re\.img ' | sed 's/^\([^ @]*\)\.img /\1 /' | sort)
+    [ "$got" = "$(printf '%s\n' "$want" | sort)" ] || { echo "the verdicts are not those of vkverify.py:"; diff <(printf '%s\n' "$want" | sort) <(printf '%s\n' "$got"); r=1; }
+
+    # every header proven: status 0. Two schedules that lie apart: proven as a pair all the same.
+    ( cd "$T" && "$k" -s dump.lime -d dp/2 l2.img l1.img > "$T/dp2.txt" 2>&1 ); rc=$?
+    [ "$rc" = 0 ] || { echo "two headers, both proven: status $rc"; r=1; }
+    ( cd "$T" && "$k" -s apart.raw -d dp/3 l2.img > "$T/dp3.txt" 2>&1 ); rc=$?
+    d=$(ls -d "$T"/dp/3/scan_apart.raw_* 2> /dev/null | head -n 1)
+    [ "$rc" = 0 ] && cmp -s "$d/keys/l2.img.vk" "$T/k64" || { echo "two schedules that lie apart: status $rc"; cat "$T/dp3.txt"; r=1; }
+    grep -q '^  proven at attempt [0-9]*: a volume key of 64 bytes' "$T/dp3.txt" && ! grep -q 'tweak schedule lies' "$T/dp3.txt" && ! grep -q 'memory-pair' "$T/dp3.txt" ||
+        { echo "two schedules that lie apart are named as lying in place"; r=1; }
+    # a file without a header, and a header that ends early
+    ( cd "$T" && "$k" -s dump.lime -d dp/4 noise.bin magic.bin short.img > "$T/dp4.txt" 2>&1 ); rc=$?
+    [ "$rc" = 1 ] || { echo "no header that can be read: status $rc"; r=1; }
+    grep -q 'noise.bin holds no LUKS header$' "$T/dp4.txt" || { echo "a file without a header is not named"; r=1; }
+    grep -q 'magic.bin holds no LUKS header$' "$T/dp4.txt" || { echo "the magic of LUKS in data that is no header is taken for one"; r=1; }
+    grep -q '^  short.img  *unreadable header$' "$T/dp4.txt" || { echo "a header that ends early is not named as unreadable"; cat "$T/dp4.txt"; r=1; }
+    # A user who is not root may lock little memory. The program then takes no lock, says so, and
+    # goes on: with a lock on what it allocates later, the search of the files had no memory.
+    if [ "$(id -u)" != 0 ]; then
+        mkdir "$T/dp/8"
+        ( cd "$T" && ulimit -l 64 && "$k" -s dump.lime -d dp/8 l2.img disk.dd > "$T/dp8.txt" 2>&1 ); rc=$?
+        [ "$rc" = 0 ] && grep -q '^the memory of this program is not locked' "$T/dp8.txt" || { echo "with little memory to lock: status $rc"; cat "$T/dp8.txt"; r=1; }
+    fi
+    # the dump alone: what it holds of the two headers proves their keys, each copy once
+    ( cd "$T" && "$k" -s mem.raw -d dp/6 > "$T/dp6.txt" 2>&1 ); rc=$?
+    d=$(ls -d "$T"/dp/6/scan_mem.raw_* 2> /dev/null | head -n 1)
+    [ "$rc" = 0 ] || { echo "the dump alone: status $rc"; cat "$T/dp6.txt"; r=1; }
+    grep -q '^2 header(s) or digest(s) of a header in the memory of the dump itself$' "$T/dp6.txt" || { echo "the dump alone: not two headers in its memory"; cat "$T/dp6.txt"; r=1; }
+    cmp -s "$d/keys/memory@0x300000.vk" "$T/k64" || { echo "the LUKS1 header in memory does not prove its key"; r=1; }
+    cmp -s "$d/keys/memory@0x1fff0a.vk" "$T/k32" || { echo "the digests of the LUKS2 header in memory do not prove their key"; r=1; }
+    [ "$(ls "$d/keys" | wc -l)" = 3 ] || { echo "the dump alone: other files in keys/ than the list and two keys: $(ls "$d/keys" | tr '\n' ' ')"; r=1; }
+    grep -q '"in_memory": true' "$d/verdict.json" && ( cd "$d" && sha256sum -c --quiet manifest.sha256 ) > /dev/null 2>&1 || { echo "the dump alone: the report or the manifest"; r=1; }
+    # a header that is among the files is not taken from the memory as well
+    ( cd "$T" && "$k" -s mem.raw -d dp/7 l1.img > "$T/dp7.txt" 2>&1 ); rc=$?
+    [ "$rc" = 0 ] && grep -q '^==== l1.img$' "$T/dp7.txt" && grep -q '^==== memory@0x1fff0a$' "$T/dp7.txt" && ! grep -q '^==== memory@0x300000$' "$T/dp7.txt" ||
+        { echo "a header among the files is taken from the memory as well, or status $rc"; r=1; }
+    ( cd "$T" && "$k" -s dump.lime -d dp/5 no-such-file > "$T/dp5.txt" 2>&1 ); rc=$?
+    [ "$rc" = 1 ] && grep -q 'no-such-file is not a file or a device that can be read$' "$T/dp5.txt" || { echo "a file that does not exist: status $rc"; r=1; }
+    return $r
+}
+if [ -x keep ] && [ -x keep-san ]; then
+    for k in keep keep-san; do
+        check "dump: $k proves the keys of an image against header files, a disk image and what the image itself holds of a header, as vkverify.py does, and names what it cannot prove" dump_proof "$k"
+    done
+else
+    skip "dump: the program (make, musl-gcc and cc)"
 fi
 finish

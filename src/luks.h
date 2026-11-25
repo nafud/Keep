@@ -20,6 +20,8 @@ struct luks_digest {                    /* PBKDF2 of a volume key, as the header
     uint8_t salt[64], digest[HASH_MAX_DIGEST];
     size_t saltlen, digestlen;
     uint32_t iterations;
+    size_t key_bytes;                   /* of the key it stands for, 0 where the header does not say */
+    char cipher[72];                    /* of the data that key encrypts, as aes-xts-plain64, or empty */
 };
 
 struct luks_header {
@@ -37,6 +39,21 @@ struct luks_header {
  * header (err says what is there instead) and -1 where a read failed or a header is damaged.
  */
 int luks_read(int fd, struct luks_header *h, char err[LUKS_ERR_LEN]);
+
+/*
+ * What of a header can lie in the memory of a machine by itself, and proves a key all the same.
+ * luks_header1 reads the 592 bytes of a LUKS1 header, as the kernel has them in its cache of
+ * the device. luks_digests reads the object that stands behind "digests" in the metadata of a
+ * LUKS2 header, as a program that has read the header has it in its memory: TEXT begins at
+ * the brace of that object and need not end with it. Both return 0 with at least one digest,
+ * or -1.
+ */
+int luks_header1(const uint8_t *bytes, size_t len, struct luks_header *h);
+int luks_digests(const char *text, size_t len, struct luks_header *h);
+
+/* The same for a header that begins BASE bytes into fd, as that of a partition in the image of
+   a disk. */
+int luks_read_at(int fd, uint64_t base, struct luks_header *h, char err[LUKS_ERR_LEN]);
 
 /*
  * Write to out what "cryptsetup luksHeaderBackup" writes for this header: the header and the

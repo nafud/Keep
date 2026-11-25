@@ -14,6 +14,9 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
+#include <sys/mman.h>
+#include <sys/resource.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -86,6 +89,43 @@ int run_flush(struct run *r, int fd, const char *dir)
     return 0;
 }
 
+void run_stem(struct run *r, char *stem, size_t size)
+{
+    char **grown;
+    size_t i;
+
+    for (i = 0; i < r->nstems; i++)
+        if (!strcasecmp(r->stems[i], stem) && strlen(stem) + 1 < size) {
+            strcat(stem, "_");
+            i = (size_t)-1;
+        }
+    if ((grown = realloc(r->stems, (r->nstems + 1) * sizeof *grown))) {
+        r->stems = grown;
+        if ((r->stems[r->nstems] = strdup(stem)))
+            r->nstems++;
+    }
+}
+
+int run_keep_key(struct run *r, const char *stem, const uint8_t *key, size_t n, char name[17])
+{
+    char rel[PATH_MAX];
+    uint8_t digest[32];
+    int fd, ok;
+
+    if (pathf(rel, "keys/%s.vk", stem) || (fd = run_create(r, rel, O_WRONLY, 0600)) < 0) {
+        r->write_failed = 1;
+        return -1;
+    }
+    ok = !write_all(fd, key, n) && !run_flush(r, fd, "keys");
+    if (close(fd) || !ok) {
+        r->write_failed = 1;
+        return -1;
+    }
+    sha256(key, n, digest);
+    hex_encode(digest, 8, name);
+    return 0;
+}
+
 static int by_name(const void *a, const void *b)
 {
     return strcmp(((const struct run_file *)a)->name, ((const struct run_file *)b)->name);
@@ -133,6 +173,44 @@ void run_manifest(struct run *r)
     fclose(f);
 }
 
+/* A text as the inside of a JSON string: the two characters that end or escape it, control
+   characters as spaces, and a byte that is no UTF-8 as the replacement character. */
+static void json_text(FILE *f, const char *s)
+{
+    const unsigned char *p = (const unsigned char *)s;
+
+    while (*p) {
+        size_t n = *p < 0x80 ? 1 : (*p & 0xe0) == 0xc0 && *p >= 0xc2 ? 2 : (*p & 0xf0) == 0xe0 ? 3
+                 : (*p & 0xf8) == 0xf0 && *p <= 0xf4 ? 4 : 0, i;
+
+        for (i = 1; i < n && (p[i] & 0xc0) == 0x80; i++)
+            ;
+        if (!n || i < n) {
+            fputs("\xef\xbf\xbd", f);
+            p++;
+        } else if (n > 1) {
+            fwrite(p, 1, n, f);
+            p += n;
+        } else {
+            if (*p == '"' || *p == '\\')
+                fputc('\\', f);
+            fputc(*p < 0x20 ? ' ' : *p, f);
+            p++;
+        }
+    }
+}
+
+void run_json(FILE *f, const char *s)
+{
+    if (!s || !*s) {
+        fputs("null", f);
+    } else {
+        fputc('"', f);
+        json_text(f, s);
+        fputc('"', f);
+    }
+}
+
 void run_free(struct run *r)
 {
     size_t i;
@@ -146,6 +224,32 @@ void run_free(struct run *r)
     r->files = NULL;
     r->stems = NULL;
     r->nfiles = r->nstems = 0;
+}
+
+int run_lock_memory(char why[160])
+{
+    struct rlimit limit;
+    unsigned long long caps = 0;
+    char *status, *line;
+
+    /* CAP_IPC_LOCK, bit 14 of the effective capabilities, takes the limit off (mlock_future_ok
+       in mm/mmap.c). With the limit in force, what is allocated later could not be mapped. */
+    if ((status = read_text("/proc/self/status", 65536, NULL))) {
+        if ((line = strstr(status, "\nCapEff:")))
+            caps = strtoull(line + 8, NULL, 16);
+        free(status);
+    }
+    if (!(caps >> 14 & 1) && (getrlimit(RLIMIT_MEMLOCK, &limit) || limit.rlim_cur != RLIM_INFINITY)) {
+        snprintf(why, 160, "the memory of this program is not locked, because this user may lock only a part of it, "
+                 "so a key can reach the swap space");
+        return -1;
+    }
+    if (mlockall(MCL_CURRENT | MCL_FUTURE)) {
+        snprintf(why, 160, "the memory of this program could not be locked (%s), so a key can reach the swap space",
+                 strerror(errno));
+        return -1;
+    }
+    return 0;
 }
 
 void run_utc(char out[32], int for_name)

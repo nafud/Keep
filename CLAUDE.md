@@ -245,6 +245,12 @@ SHA-256.
   `verdict`, `key_sha256_16` and `note` for each key after the first. The fields of the volume
   itself are then those of its first key, and its `verdict` is that of the key that is least
   far.
+- `keep -s` writes the fields of `vkverify.py` for each header, with `offset` for where it lies
+  in its file, and `further_keys` for the second key of a header in re-encryption. Beside
+  `volumes` it has `memory_pairs`, a list with `key_file`, `key_bits`, `verdict` (`found in
+  memory`), `key_sha256_16` and `tweak_schedule_at` for each pair that no header proves, and
+  `further_memory_pairs`, the number of those that are not written as files. A header that
+  was found in the dump itself has `in_memory` true and its address as `offset`.
 - With `-F` the C program writes three images from one read. `memory` is then the first, with
   the fields above, and has `further_images`, a list with `status`, `file`, `format`,
   `bytes`, `sha256` and `note` for each of the others.
@@ -376,7 +382,7 @@ sudo apt install make musl-tools
 make                                    # keep and tests/keep-unit, static against musl
 sudo ./keep [-d DIR] [-b N]             # the keys of the running system: the work of keytriage.sh
 sudo ./keep -m [-f FORMAT | -F]         # the keys, then a memory image: lime (default), raw or avml, -F all three
-./keep -s DUMP [-d DIR]                 # the key schedules of a memory dump that exists
+./keep -s DUMP [-d DIR] [FILE...]       # the keys of a memory dump that exists, proven against the headers in the FILEs
 ./keep -h                               # the help, -V the version
 ```
 
@@ -389,8 +395,29 @@ sudo ./keep -m [-f FORMAT | -F]         # the keys, then a memory image: lime (d
   that is its physical address, or `avml`, the compressed format of AVML. `-F` writes all
   three from one read of the memory. An image that was asked for and is not there ends the
   run with status 1.
-- `-s DUMP` searches a dump as `kcore-keyscan` does and writes `scan_<dump>_<time>/` into the
-  destination, with `keys/candidates.txt` and `scan.txt`. It makes no proof yet.
+- `-s DUMP` searches a dump as `kcore-keyscan` does and proves which of the keys is the
+  volume key of each LUKS header in the `FILE`s, as `vkverify.py` does. A `FILE` is a header
+  backup, the raw image of a partition or of a whole disk, or a device: its start is read as a
+  header, and behind it every sector that begins with the magic of LUKS. The pairs of
+  schedules that lie as the kernel keeps the two keys of an XTS volume are tried first, then
+  each key alone, then every other pair. It writes `scan_<dump>_<time>/` into the destination,
+  with `triage.txt`, `scan.txt`, `verdict.json`, `manifest.sha256` and `keys/`: the list
+  `candidates.txt` and one `NAME.vk` for each proven key, where `NAME` is the name of the
+  file, with `@0xOFFSET` for a header that does not lie at its start, and `-2` for the second
+  key of a header in re-encryption.
+- The dump itself is searched for what a machine can hold of a header: a LUKS1 header at the
+  start of a page, and the object `digests` of the metadata of a LUKS2 header. Either proves
+  a key as the header in a file does, and stands in the report as `memory@0xADDRESS`. So a key
+  can be proven from a dump alone. A header that is among the `FILE`s is not taken from the
+  memory as well. What the memory holds can be of a volume that was closed, so such a digest
+  without a key does not count against the status.
+- Where no header is found, in a `FILE` or in the dump, nothing can be proven, and the run
+  says so. A pair of schedules that lies as the kernel keeps the two keys of a volume, and
+  that no header proves, is written as `keys/memory-pair-N.vk` and named `found in memory,
+  not proven`: it is a candidate for a volume whose header is not at hand, until a header
+  accepts it. Sixteen are written and further ones counted.
+- With `-s` the status is that of the search of the dump, and with `FILE`s also 1 where they
+  hold no header or a header has a key that is not proven.
 - `-d DIR` is the destination of either run, by default the directory of the start. `-b N`
   is for the running system only, and so are `-m`, `-f` and `-F`.
 - A wrong option, an option without its value, an argument that belongs to no option and
@@ -406,6 +433,7 @@ sudo ./keep -m [-f FORMAT | -F]         # the keys, then a memory image: lime (d
 | `cryptsetup luksHeaderBackup` | `src/luks.c`: the header and the keyslot area read from the backing device | `cryptsetup` 2.4.3 and 2.7.0: the same file byte for byte, for LUKS1 and LUKS2 |
 | `cryptsetup open --test-passphrase` | `src/luks.c` and `src/hash.c`: PBKDF2 of the key against the digest of the header backup | `cryptsetup` 2.7.0 on the same headers and keys, and Python's `hashlib` |
 | `kcore-keyscan` | `kcore-keyscan.c` linked in without its `main` | the scanner before the change: the same output, messages and status on every format |
+| `offline-keyscan.sh` and `vkverify.py`, for a header backup and a raw image | `src/dump.c`: the search of a dump, the headers of the files, and the proof of the candidate keys against each | `vkverify.py` on the same schedules and headers: the same verdicts and the same keys. On a guest, the keys of two open containers from the image that the program took of that machine |
 | bash and the applets of busybox | C, with the standard library only | `tests/unit-check.sh` |
 | AVML | `src/image.c`, `src/snappy.c` and `src/memory.c`: the RAM ranges of `/proc/iomem` read through `/proc/kcore`, written as a LiME image, a raw image or the compressed format of AVML | AVML 0.21.0 itself: it converts the compressed image to the LiME image of its blocks and the LiME image to the raw one, byte for byte the files that Python writes from the formats. On a guest, the image that AVML took of the same machine: the same amount of memory, and the key schedules at the same addresses |
 
@@ -486,6 +514,20 @@ Read in Linux 4.18, 5.10, 6.12 and 6.18, cryptsetup 2.0.6, 2.3.7, 2.7.0 and 2.8.
   CRC-32C of its data, compressed or as it is. Which copies a compressor finds is its own
   matter, so two compressors write different streams of the same data
   (`format_description.txt` and `framing_format.txt` of Snappy 1.2.1).
+- Nothing in the kernel keeps a LUKS header: dm-crypt is given the key and the cipher, and
+  cryptsetup reads the header past the page cache where it can (`O_DIRECT`). What a machine
+  holds of a header is what else read it. This is not from a source but from runs on a guest
+  (Ubuntu 24.04.5, kernel 6.8.0-147-generic, cryptsetup 2.7.0, udisks2 2.10.1-6ubuntu1.5),
+  with containers on loop devices with direct I/O and the images taken by AVML:
+  - `udisksd` held the whole metadata of an open LUKS2 volume twice in its heap, a minute
+    after the volume was opened. The metadata of a header with one keyslot have 731 bytes,
+    and the object `digests` in them about 200, which fits a page.
+  - After the caches were dropped and 85 % of the free memory was written over once, the
+    image still held those metadata at 4 places. The LUKS1 header was gone in one run and
+    was there at one place in another.
+  - From such an image alone, with no file, the C program proved the volume keys of both
+    containers, and left a digest of a volume that an earlier check had closed as not
+    proven.
 - cryptsetup gives the key of digest N the keyring description `cryptsetup:<UUID>-d<N>`
   (`get_key_description_by_digest`, the same in 2.0.6, 2.7.0 and 2.8.1), so the reference in a
   table says which digest of the header its key gives.
@@ -495,7 +537,7 @@ Read in Linux 4.18, 5.10, 6.12 and 6.18, cryptsetup 2.0.6, 2.3.7, 2.7.0 and 2.8.
 | File | What it does |
 |---|---|
 | `src/main.c` | The options. Makes the process not dumpable |
-| `src/dump.c` | The search of a memory dump that exists, into a folder of the destination |
+| `src/dump.c` | The search of a memory dump that exists: its schedules, the LUKS headers of the files that are given, the proof of the keys against them, and the pairs that no header proves |
 | `src/run.c` | The folder of a run: its report, its files, their flushing and the manifest |
 | `src/memory.c` | The memory image of a run: the room it needs, its files, and what the lab needs beside it to name the kernel |
 | `src/image.c` | What an image holds, from `/proc/iomem` and `/proc/kcore`, and the three formats. The memory is read once for all files |
@@ -508,7 +550,7 @@ Read in Linux 4.18, 5.10, 6.12 and 6.18, cryptsetup 2.0.6, 2.3.7, 2.7.0 and 2.8.
 | `src/json.c` | A reader of JSON as RFC 8259 defines it, for the metadata of LUKS2 |
 | `src/sys.c` | Mounts, what a volume carries, lockdown, Secure Boot, the name of the system, each from a named file |
 | `src/util.c` | Texts that grow, names for the screen and for files, hexadecimal, flushing |
-| `kcore-keyscan.c` | The scanner. `-DKEYSCAN_LIBRARY` leaves out its `main`, and `src/keyscan.h` declares what remains |
+| `kcore-keyscan.c` | The scanner. `-DKEYSCAN_LIBRARY` leaves out its `main`, and `src/keyscan.h` declares what remains. It hands the memory it reads to the program, which searches it for headers |
 | `tests/keep-unit.c` | Runs one part at a time, for `tests/unit-check.sh` |
 
 ### Where it differs from `keytriage.sh`
@@ -527,7 +569,9 @@ Read in Linux 4.18, 5.10, 6.12 and 6.18, cryptsetup 2.0.6, 2.3.7, 2.7.0 and 2.8.
   is backed up, and its key gets `captured, not proven` on the table route and `needs a memory
   read` on the memory route, with the function named. `vkverify.py` proves it in the lab.
 - The memory of the process is locked (`mlockall`), so that no key reaches the swap space, and
-  the process is not dumpable. `cryptsetup` creates no lock file in `/run/cryptsetup`, because
+  the process is not dumpable. The lock is taken where it can hold: as root, or where the user
+  has no limit of locked memory. A user with a limit, as in the lab, is told that the memory is
+  not locked. `cryptsetup` creates no lock file in `/run/cryptsetup`, because
   it does not run.
 - A LUKS2 volume with integrity gets the same verdicts from both. The C program names its
   cipher as the kernel does, `capi:authenc(hmac(sha256),xts(aes))-plain64`, and `keytriage.sh`
@@ -546,8 +590,14 @@ Read in Linux 4.18, 5.10, 6.12 and 6.18, cryptsetup 2.0.6, 2.3.7, 2.7.0 and 2.8.
 - It asks cryptsetup nothing and takes none of its locks. `cryptsetup status` waited without
   end on a volume whose re-encryption was paused in a step, and the C program read the same
   volume. A header that cryptsetup writes at that moment is read from the copy that holds.
-- The search of a dump is made in its own process and flushed to the destination, with no
-  proof yet: the proof against a disk image is the work of `vkverify.py`.
+- The search of a dump proves against header backups, raw images and devices. The disk file
+  of a virtual machine and an EnCase image are read by `vkverify.py` only, and so is a header
+  whose digest uses a function that `hash.c` does not compute.
+- For a header in re-encryption the search of a dump proves both keys, each against its own
+  digest. `vkverify.py` takes the first digest only.
+- A dump is searched for headers as well, which `vkverify.py` does not do.
+- A LUKS2 header in the image of a disk is found by the magic of its first copy. One whose
+  first copy is overwritten is found only where it lies at the start of the file.
 - The memory image is read as AVML reads it, the RAM ranges of `/proc/iomem` through
   `/proc/kcore`, with these differences:
   - A LiME image has one record for each range of memory, also where the range is all
@@ -577,27 +627,32 @@ Read in Linux 4.18, 5.10, 6.12 and 6.18, cryptsetup 2.0.6, 2.3.7, 2.7.0 and 2.8.
 
 ### What the checks have found
 
-Five defects of the C program were found by its checks and runs while it was written, and each
-check stays: a copy of zero bytes from a null pointer in the hash code and a sort of an empty
+Defects of the C program were found by its checks and runs while it was written, and each
+check stays. The first five: a copy of zero bytes from a null pointer in the hash code and a sort of an empty
 list of volumes (the sanitizers), the devices that stand on a volume named in the order of the
 directory and not of their names (the run beside `keytriage.sh` on LVM), the two keys of a
 volume in re-encryption found in memory and each written as the key of the other part (a run on
 a guest, now compared with the table in `compat-check.sh`), and a helper device listed as a
 volume of its own in the moment before cryptsetup puts it below its volume (a run on a guest,
-now a case of `unit-check.sh`).
+now a case of `unit-check.sh`). A sixth was found by running `unit-check.sh` as a user who is
+not root: with the lock of the memory in force for what is allocated later, and the limit of
+that user for locked memory, the search of a dump had no memory for the files it was to
+read. The lock is now taken only where it can hold, and the check runs with a small limit.
 
 One defect of `keytriage.sh` was found on the way: it stated no key size for a LUKS2 volume
 with integrity. It is corrected in 1.5.1, with its check in `selftest.sh`.
 
 ### Where it has run
 
-`keep` 2.0-pre4 is run beside `keytriage.sh` 1.5.1 by `compat-check.sh`: before any mapping is
+`keep` 2.0-pre5 is run beside `keytriage.sh` 1.5.1 by `compat-check.sh`: before any mapping is
 made, on the four mappings of the main run, with `-d` and a destination on FAT, on LVM on LUKS and on
 LUKS2 with integrity, and alone on a volume in re-encryption. Beside `keytriage.sh` it gave the
 same line of `verdict.json` for every volume, on the table route, the memory route, a mapping
 without a type and the null cipher, and header backups and keys that are the same byte for
 byte. On the volume in re-encryption it proved both keys, from memory and from the table, each
-for its part. The output of each of these runs was read line by line:
+for its part. It took the memory image of each system, and the schedules of both volume keys
+lay in every image at an address at which they lay in the image that AVML had taken. The
+output of each of these runs was read line by line:
 
 | System | Kernel | cryptsetup | Where |
 |---|---|---|---|
@@ -610,19 +665,42 @@ for its part. The output of each of these runs was read line by line:
 | AlmaLinux 9.9 | 5.14.0-741.22.1.el9_9.x86_64 | 2.8.6 | `distros.yml` |
 | Rocky Linux 10.3 | 6.12.0-264.16.1.el10_3.x86_64 | 2.8.6 | `distros.yml` |
 | openSUSE Leap 16.1 | 6.12.0-160100.9-default | 2.8.4 | `distros.yml`, without the part with integrity |
-| Arch Linux | 7.3.4-arch1-2 | 2.8.8 | `distros.yml` |
-| Ubuntu 24.04.5, runner image | 7.0.0-1014-aws | 2.7.0 | `checks.yml`, also the build with the sanitizers |
+| Arch Linux | 7.3.4-arch1-2 | 2.8.9 | `distros.yml` |
+| Ubuntu 24.04.5, runner image | 7.0.0-1017-azure | 2.7.0 | `checks.yml`, also the build with the sanitizers |
 | Ubuntu 22.04.5, runner image | 6.8.0-1070-azure | 2.4.3 | `checks.yml`, also the build with the sanitizers |
 
 On openSUSE Leap 16.1 cryptsetup could not make the container with integrity: the kernel
 refused the table that the format loads (`reload ioctl ... failed: Invalid argument`). That
 part is reported as skipped there, and LUKS2 with integrity is not checked on that system.
 
+The memory image in these runs:
+
+- Each of the ten guests has 2 GiB of memory, which the kernel names as 2 ranges of RAM. The
+  LiME image has 2146938944 bytes, the 2146938880 bytes of the two ranges behind two headers,
+  and the raw image 2147340288 bytes. Each was taken as LiME, raw and compressed, and then all
+  three from one read, which gave the same list of schedules for the three files. The
+  compressed image had 1.19 to 1.46 GB, 55 % to 68 % of the memory. Under KVM the read of
+  one image took 2 to 11 seconds and that of all three 15 to 30.
+- AVML converted every compressed image, and the scanner found in its LiME image what it
+  found in the compressed one.
+- The two runner images have 16 GiB, in 6 ranges of RAM. On one the LiME image had
+  17174331584 bytes and was read in 70 s. On the other the raw image had 20401094656 bytes,
+  as the ranges reach up to the address of 19 GiB, and was read in 56 s, and the compressed
+  image had 10101456970 bytes and was read in 44 s.
+- AVML's own images of the same machines held less memory by whole blocks of 16 MiB, which
+  are the blocks of zeros that it leaves out: one block on one guest, ten on another, and 56
+  on the runner with the LiME image. On the other runner its compressed image held 83 blocks
+  less than that of the C program, which leaves out such blocks as well.
+- The C program took its images after AVML had written one. That the later images hold fewer
+  blocks of zeros fits a file that is written through the page cache: the cache takes free
+  memory, and what lay there is overwritten. This was not measured by itself.
+
 The tables of both kinds of volume were first seen on a guest emulated on the workstation
 (Ubuntu 24.04.5, kernel 6.8.0-147-generic, cryptsetup 2.7.0), and `compat-check.sh` passed
 there with every part. On that guest `tests/keep-unit` gave the list, the tables, the UUIDs and
 the keys of `dmsetup` 1.02.185 for six mappings, a plain one and one with a space in its name
-among them. The outputs of the guest are not kept.
+among them. The memory images were first taken there too, with every part of
+`compat-check.sh`. The outputs of the guest are not kept.
 
 ### Not handled or not checked
 
@@ -647,12 +725,19 @@ among them. The outputs of the guest are not kept.
 - A memory image under kernel lockdown is not run. In the mode `integrity` the kernel offers
   `/proc/kcore`, and in the mode `confidentiality` it refuses it, which the run then says.
 - RAM that a driver added is a case of `unit-check.sh`. No machine with such RAM was run.
-- An image goes through the page cache of the examined system, like every file of a run.
-  What writing a file as long as the memory does to the memory that is read is not measured.
+- An image goes through the page cache of the examined system, like every file of a run, and
+  so does that of AVML. The cache of the file takes free memory, and what lay there is
+  overwritten, also while the image is taken. The runs above fit this and do not measure it.
+  Writing past the cache, as LiME can with its option `dio`, is not done.
 - A destination with FAT32 takes no file of 4 GiB, so an image of a machine with that much
   memory fails there and is removed. A raw image on a file system that keeps no holes, as
   FAT and exFAT, has what lies between the ranges written as zeros. Neither is run.
 - Volatility 3 has not read an image of the C program. The scanner and AVML have.
+- The proof from a dump alone is seen on one guest, with udisks2 2.10.1. Whether a system
+  without udisks2, as a server installation, holds the metadata of a LUKS2 header anywhere is
+  not known, and neither is it for a volume that was opened at boot, for other releases of
+  udisks2, or for metadata with several keyslots or tokens, where the object `digests` can
+  lie across two pages that do not follow each other in memory.
 
 ## Rules that every change keeps
 
@@ -749,7 +834,18 @@ cannot be read and a file that cannot be written. With `AVML=/path/to/avml` AVML
 converts the compressed image to a LiME image and the LiME image to a raw one, which must be
 the files of Python byte for byte. What cannot be placed is refused: a text without
 addresses, a core of a kernel before 4.12. Cores and texts with changed bytes must give no
-fault, 600 times. Both ways of computing SHA-256 are compared with `hashlib`. The options are given to both
+fault, 600 times. Both ways of computing SHA-256 are compared with `hashlib`. The search of
+a dump is given an image with the schedules of the keys of the headers that cryptsetup made:
+each key must be proven and written as it is, also for a header with erased keyslots, for
+one in re-encryption with its two keys, for a cipher with one key, for headers inside the
+image of a disk and for two schedules that do not lie as the kernel keeps them, and the
+verdicts and keys must be those of `vkverify.py` on the same schedules and headers. A header
+of another key, a file without a header and a header that ends early must be named as such.
+A dump with a LUKS1 header at the start of a page and with the digests of a LUKS2 header
+inside other bytes, once across the place where the search takes its next stretch of
+memory, must give both keys with no file at all, and none for text that only begins like
+the digests.
+The options are given to both
 builds of the program: what does not go together must end with status 2 and write nothing,
 the search of a dump must write the list of the scanner into `keys/` of its folder with no
 key on the screen, and a cut image must end the run with the status of the search.
@@ -768,7 +864,11 @@ the two containers are open, once for each word of `KEEP_IMAGES`: a format, or `
 each image to its end, and the schedule of each half of both volume keys must lie in it at
 an address at which it lies in the image that AVML took in the main run. The images of one
 read must give the same list of schedules, and AVML must convert the compressed image to a
-LiME image that gives that list too. It is run once with `-d` and the FAT file system as the destination, where its
+LiME image that gives that list too. The first image of a run is then searched as a dump
+that exists, with the images of the two containers as the files that hold the headers, and
+both volume keys must be proven and written as they are. It is searched once more with no
+file, and what it holds of a header by itself is told and not judged: the containers of the
+check lie in files, whose cache holds their headers. It is run once with `-d` and the FAT file system as the destination, where its
 screen must name the system, the open volumes and each key it holds by its file, its length
 and the start of its SHA-256. Before the two parts that follow, the two volumes with their keys in the
 keyring are closed, because every run with one of them open searches the whole memory once
@@ -901,8 +1001,9 @@ be opened and emulated otherwise, and starts the check over SSH through `sudo`.
 kernel and the cryptsetup of the latest run it stands for, and the XTS driver that the kernel
 chose in that run. The driver follows the processor of the machine behind the runner, which a
 guest under KVM sees as its own: the guests of Debian 13, AlmaLinux 10.3, Rocky Linux 10.3 and
-openSUSE Leap 16.1 each used `xts-aes-vaes-avx2` in one run and `xts-aes-vaes-avx10_512` in the
-others. The first ten are guests that
+openSUSE Leap 16.1 each used `xts-aes-vaes-avx2` in one run and `xts-aes-vaes-avx10_512` in
+others, and those of Fedora 45 and Arch Linux `xts-aes-vaes-avx512` in one run and
+`xts-aes-vaes-avx2` in another. The first ten are guests that
 `distros.yml` boots from the cloud images of `tests/compat-images.txt`, under KVM with BIOS boot,
 so lockdown is `none` on all of them. The next three are the runner images of `checks.yml`. The
 machine behind a runner image differs from run to run and with it the kernel. The outputs are
@@ -914,14 +1015,14 @@ kept as artifacts of the pipeline.
 | Debian 12 | 6.1.0-56-amd64 | 2.6.1 | `--volume-key-file` | `xts-aes-aesni` | 1.5.1 |
 | Ubuntu 26.04.1 | 7.0.0-43-generic | 2.8.4 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.5.1 |
 | Ubuntu 24.04.5 | 6.8.0-147-generic | 2.7.0 | `--volume-key-file` | `xts-aes-aesni` | 1.5.1 |
-| Fedora 45 | 7.2.11-300.fc45.x86_64 | 2.8.8 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.5.1 |
+| Fedora 45 | 7.2.11-300.fc45.x86_64 | 2.8.8 | `--volume-key-file` | `xts-aes-vaes-avx2` | 1.5.1 |
 | AlmaLinux 10.3 | 6.12.0-264.16.1.el10_3.x86_64 | 2.8.6 | `--volume-key-file` | `xts-aes-vaes-avx10_512` | 1.5.1 |
 | AlmaLinux 9.9 | 5.14.0-741.22.1.el9_9.x86_64 | 2.8.6 | `--volume-key-file` | `xts-aes-aesni` | 1.5.1 |
 | Rocky Linux 10.3 | 6.12.0-264.16.1.el10_3.x86_64 | 2.8.6 | `--volume-key-file` | `xts-aes-vaes-avx10_512` | 1.5.1 |
-| openSUSE Leap 16.1 | 6.12.0-160100.9-default | 2.8.4 | `--volume-key-file` | `xts-aes-vaes-avx10_512` | 1.5.1 |
-| Arch Linux, image of 2026-11-15 | 7.3.4-arch1-2 | 2.8.8 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.5.1 |
+| openSUSE Leap 16.1, Build3.23 | 6.12.0-160100.9-default | 2.8.4 | `--volume-key-file` | `xts-aes-vaes-avx2` | 1.5.1 |
+| Arch Linux, image of 2026-11-15 | 7.3.4-arch1-2 | 2.8.9 | `--volume-key-file` | `xts-aes-vaes-avx2` | 1.5.1 |
 | Ubuntu 24.04.5, runner image | 7.0.0-1014-aws | 2.7.0 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.5.1 |
-| Ubuntu 24.04.5, runner image | 7.0.0-1017-azure | 2.7.0 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.5.0 |
+| Ubuntu 24.04.5, runner image | 7.0.0-1017-azure | 2.7.0 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.5.1 |
 | Ubuntu 22.04.5, runner image | 6.8.0-1070-azure | 2.4.3 | `--master-key-file` | `xts-aes-aesni` | 1.5.1 |
 
 On every one of the ten guests the on-scene pairing of the XTS halves found the key, with each of

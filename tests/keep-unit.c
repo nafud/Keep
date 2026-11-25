@@ -216,6 +216,9 @@ static int cmd_luks(const char *path)
                h.digests[i].alg ? "" : " (not computed here)", h.digests[i].iterations, h.digests[i].saltlen);
         print_hex(h.digests[i].digest, h.digests[i].digestlen);
     }
+    for (i = 0; i < h.ndigests; i++)
+        printf("the key of digest %u: %zu bytes, cipher %s\n", h.digests[i].number, h.digests[i].key_bytes,
+               h.digests[i].cipher[0] ? h.digests[i].cipher : "unknown");
     close(fd);
     return 0;
 }

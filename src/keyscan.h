@@ -15,6 +15,11 @@ struct keyscan_hit {
 
 int keyscan_run(const char *path, int raw, unsigned every, FILE *keys, FILE *msg, int *failed);
 const struct keyscan_hit *keyscan_hits(int *n);         /* in the order they were found */
+
+/* Before a search: FN is then handed the memory that the search reads, each byte once and in
+   the order of the search, N bytes at a time with the physical address of the first. Bytes
+   that follow each other in memory come in calls that follow each other. NULL ends it. */
+void keyscan_watch(void (*fn)(void *arg, const uint8_t *p, size_t n, uint64_t phys), void *arg);
 void keyscan_wipe(void);
 
 #endif

@@ -85,6 +85,7 @@ static int luks1(const uint8_t *b, struct luks_header *h, char err[LUKS_ERR_LEN]
     uint32_t payload = be32(b + 104), key_bytes = be32(b + 108), offset[LUKS1_SLOTS];
     uint64_t af_sectors, last = 0;
     struct luks_digest *d = &h->digests[0];
+    char name[33], mode[33];
     int i, j;
 
     if (!key_bytes) {
@@ -123,6 +124,10 @@ static int luks1(const uint8_t *b, struct luks_header *h, char err[LUKS_ERR_LEN]
     }
     field(d->hash, sizeof d->hash, b + 72, 32);
     d->alg = hash_by_name(d->hash);
+    d->key_bytes = key_bytes;
+    field(name, sizeof name, b + 8, 32);                /* cipherName and cipherMode */
+    field(mode, sizeof mode, b + 40, 32);
+    snprintf(d->cipher, sizeof d->cipher, "%s%s%s", name, mode[0] ? "-" : "", mode);
     memcpy(d->digest, b + 112, LUKS_DIGEST);
     d->digestlen = LUKS_DIGEST;
     memcpy(d->salt, b + 132, LUKS_SALT);
@@ -145,7 +150,7 @@ struct copy {                           /* one of the two copies of the header *
 
 /* hdr_read_disk and hdr_disk_sanity_check_pre of cryptsetup. A copy that does not hold counts as
    not valid, a failed read is an error. */
-static int read_copy(int fd, uint64_t offset, int second, struct copy *c, char err[LUKS_ERR_LEN])
+static int read_copy(int fd, uint64_t base, uint64_t offset, int second, struct copy *c, char err[LUKS_ERR_LEN])
 {
     const struct hash_alg *alg;
     struct hash_ctx ctx;
@@ -154,7 +159,7 @@ static int read_copy(int fd, uint64_t offset, int second, struct copy *c, char e
     int r;
 
     memset(c, 0, sizeof *c);
-    if ((r = read_at(fd, c->bin, LUKS2_BIN, offset)) < 0)
+    if ((r = read_at(fd, c->bin, LUKS2_BIN, base + offset)) < 0)
         goto unreadable;
     if (r || memcmp(c->bin, second ? magic_second : magic_first, 6) || be16(c->bin + 6) != 2 ||
         be64(c->bin + 256) != offset)
@@ -170,7 +175,7 @@ static int read_copy(int fd, uint64_t offset, int second, struct copy *c, char e
         snprintf(err, LUKS_ERR_LEN, "no memory for the metadata of a LUKS2 header");
         return -1;
     }
-    if ((r = read_at(fd, c->json, c->size - LUKS2_BIN, offset + LUKS2_BIN)) < 0)
+    if ((r = read_at(fd, c->json, c->size - LUKS2_BIN, base + offset + LUKS2_BIN)) < 0)
         goto unreadable;
     if (!r) {
         memcpy(zeroed, c->bin, LUKS2_BIN);
@@ -189,7 +194,7 @@ static int read_copy(int fd, uint64_t offset, int second, struct copy *c, char e
     }
     return 0;
 unreadable:
-    snprintf(err, LUKS_ERR_LEN, "read at offset %llu: %s", (unsigned long long)offset, strerror(errno));
+    snprintf(err, LUKS_ERR_LEN, "read at offset %llu: %s", (unsigned long long)(base + offset), strerror(errno));
     free(c->json);
     c->json = NULL;
     return -1;
@@ -228,9 +233,18 @@ static long base64(const char *s, uint8_t *out, size_t room)
     return (long)n;
 }
 
+/* The member of an object of the metadata that the first element of a list names: the keyslot
+   or the segment of a digest. */
+static const struct json *first_named(const struct json *list, const struct json *among)
+{
+    const char *name = list && list->type == JSON_ARRAY && list->first ? json_string(list->first) : NULL;
+
+    return name ? json_member(among, name) : NULL;
+}
+
 /* One member of "digests": PBKDF2_digest_verify of cryptsetup states what it must hold. A digest
    that names no segment belongs to no data and proves no volume key. */
-static void digest(const struct json *j, struct luks_header *h)
+static void digest(const struct json *j, const struct json *meta, struct luks_header *h)
 {
     struct luks_digest *d = &h->digests[h->ndigests];
     const struct json *segments = json_member(j, "segments");
@@ -238,7 +252,9 @@ static void digest(const struct json *j, struct luks_header *h)
     const char *hash = json_string(json_member(j, "hash"));
     const char *salt = json_string(json_member(j, "salt"));
     const char *value = json_string(json_member(j, "digest"));
-    uint64_t iterations;
+    const struct json *slot, *e;
+    const char *cipher;
+    uint64_t iterations, key_size;
     long n;
 
     if (h->ndigests == LUKS_MAX_DIGESTS || !type || strcmp(type, "pbkdf2") || !hash || !salt || !value ||
@@ -260,10 +276,26 @@ static void digest(const struct json *j, struct luks_header *h)
         (n != LUKS_DIGEST && d->alg && (size_t)n != hash_len(d->alg)))
         return;
     d->digestlen = (size_t)n;
+    /* The key of the digest: as long as its keyslots say, where it has one and they agree, and
+       for the cipher of its first segment. A header whose keyslots were erased says no length. */
+    slot = first_named(json_member(j, "keyslots"), json_member(meta, "keyslots"));
+    if (slot && !json_u64(json_member(slot, "key_size"), &key_size) && key_size && key_size <= 1024) {
+        d->key_bytes = (size_t)key_size;
+        for (e = json_member(j, "keyslots")->first; e; e = e->next) {
+            const struct json *other = json_string(e) ? json_member(json_member(meta, "keyslots"), json_string(e)) : NULL;
+            uint64_t size;
+
+            if (other && (json_u64(json_member(other, "key_size"), &size) || size != key_size))
+                d->key_bytes = 0;
+        }
+    }
+    cipher = json_string(json_member(first_named(segments, json_member(meta, "segments")), "encryption"));
+    if (cipher)
+        snprintf(d->cipher, sizeof d->cipher, "%s", cipher);
     h->ndigests++;
 }
 
-static int luks2(int fd, struct luks_header *h, char err[LUKS_ERR_LEN])
+static int luks2(int fd, uint64_t base, struct luks_header *h, char err[LUKS_ERR_LEN])
 {
     static const uint64_t second_at[] = { 0x4000, 0x8000, 0x10000, 0x20000, 0x40000, 0x80000,
                                           0x100000, 0x200000, 0x400000 };      /* LUKS2_HDR2_OFFSETS */
@@ -276,14 +308,14 @@ static int luks2(int fd, struct luks_header *h, char err[LUKS_ERR_LEN])
     int r = -1;
 
     memset(&second, 0, sizeof second);
-    if (read_copy(fd, 0, 0, &first, err))
+    if (read_copy(fd, base, 0, 0, &first, err))
         return -1;
     if (first.valid) {
-        if (read_copy(fd, first.size, 1, &second, err))
+        if (read_copy(fd, base, first.size, 1, &second, err))
             goto out;
     } else {
         for (i = 0; i < sizeof second_at / sizeof second_at[0] && !second.valid; i++)
-            if (read_copy(fd, second_at[i], 1, &second, err))
+            if (read_copy(fd, base, second_at[i], 1, &second, err))
                 goto out;
     }
     if (!first.valid && !second.valid) {
@@ -313,7 +345,7 @@ static int luks2(int fd, struct luks_header *h, char err[LUKS_ERR_LEN])
     m = json_member(meta, "digests");
     for (m = m && m->type == JSON_OBJECT ? m->first : NULL; m; m = m->next)
         if (m->type == JSON_OBJECT)
-            digest(m, h);
+            digest(m, meta, h);
     r = 0;
 out:
     json_free(meta);
@@ -324,18 +356,69 @@ out:
 
 int luks_read(int fd, struct luks_header *h, char err[LUKS_ERR_LEN])
 {
+    return luks_read_at(fd, 0, h, err);
+}
+
+int luks_header1(const uint8_t *bytes, size_t len, struct luks_header *h)
+{
+    char err[LUKS_ERR_LEN];
+
+    memset(h, 0, sizeof *h);
+    if (len < LUKS1_PHDR || memcmp(bytes, magic_first, 6) || be16(bytes + 6) != 1)
+        return -1;
+    return luks1(bytes, h, err) || !h->ndigests ? -1 : 0;
+}
+
+int luks_digests(const char *text, size_t len, struct luks_header *h)
+{
+    const struct json *m;
+    struct json *digests;
+    const char *why;
+    size_t i, depth = 0;
+    int quoted = 0;
+
+    memset(h, 0, sizeof *h);
+    /* the end of the object: the brace that closes the first, outside every string */
+    for (i = 0; i < len; i++) {
+        if (quoted) {
+            if (text[i] == '\\')
+                i++;
+            else if (text[i] == '"')
+                quoted = 0;
+        } else if (text[i] == '"') {
+            quoted = 1;
+        } else if (text[i] == '{') {
+            depth++;
+        } else if (text[i] == '}' && !--depth) {
+            break;
+        } else if (!depth || !text[i]) {
+            return -1;
+        }
+    }
+    if (i >= len || !(digests = json_parse(text, i + 1, &why)))
+        return -1;
+    h->version = 2;
+    for (m = digests->type == JSON_OBJECT ? digests->first : NULL; m; m = m->next)
+        if (m->type == JSON_OBJECT)
+            digest(m, NULL, h);
+    json_free(digests);
+    return h->ndigests ? 0 : -1;
+}
+
+int luks_read_at(int fd, uint64_t base, struct luks_header *h, char err[LUKS_ERR_LEN])
+{
     uint8_t b[LUKS1_PHDR] = { 0 };
     int r;
 
     memset(h, 0, sizeof *h);
-    if ((r = read_at(fd, b, sizeof b, 0)) < 0) {
-        snprintf(err, LUKS_ERR_LEN, "read at offset 0: %s", strerror(errno));
+    if ((r = read_at(fd, b, sizeof b, base)) < 0) {
+        snprintf(err, LUKS_ERR_LEN, "read at offset %llu: %s", (unsigned long long)base, strerror(errno));
         return -1;
     }
     if (!r && !memcmp(b, magic_first, 6) && be16(b + 6) == 1)
         return luks1(b, h, err);
     /* A LUKS2 header whose first copy is overwritten still has its second one. */
-    if ((r = luks2(fd, h, err)) <= 0)
+    if ((r = luks2(fd, base, h, err)) <= 0)
         return r;
     memset(h, 0, sizeof *h);
     if (memcmp(b, magic_first, 6)) {

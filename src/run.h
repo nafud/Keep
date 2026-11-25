@@ -43,10 +43,35 @@ int run_add(struct run *r, const char *rel, const uint8_t sha256[32]);
    remembered in write_failed. Returns 0 or -1. */
 int run_flush(struct run *r, int fd, const char *dir);
 
+/*
+ * A name for the files of a volume or of a key that no other has in this run. FAT and exFAT
+ * fold the case of a name, so two names that are the same but for that are kept apart by a
+ * further _. Where the room for those is used up the name stays, and the second file is then
+ * refused, because no file of a run is written over.
+ */
+void run_stem(struct run *r, char *stem, size_t size);
+
+/* Write a key to keys/STEM.vk and flush it. Only then does it count as captured. NAME takes
+   the first 16 digits of its SHA-256, by which a key is named. Returns 0 or -1. */
+int run_keep_key(struct run *r, const char *stem, const uint8_t *key, size_t n, char name[17]);
+
 /* manifest.sha256: every file of the run with its SHA-256, in the form of sha256sum, by name. */
 void run_manifest(struct run *r);
 
+/* A text as a JSON string, or null for an empty one or none. The two characters that end or
+   escape a string are escaped, control characters become spaces, and a byte that is no UTF-8
+   becomes the replacement character. */
+void run_json(FILE *f, const char *s);
+
 void run_free(struct run *r);
+
+/*
+ * Keys pass through the memory of a run. Locked memory is not written to the swap space. The
+ * memory is locked, also what is allocated later, where the lock can hold: where the limit of
+ * locked memory does not apply to this process, or is none. Elsewhere a lock would make every
+ * larger allocation fail, so none is taken. Returns 0, or -1 with WHY, a line for the report.
+ */
+int run_lock_memory(char why[160]);
 
 /* The time now in UTC, for a line of the report or as part of the name of a folder. */
 void run_utc(char out[32], int for_name);

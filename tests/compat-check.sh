@@ -44,7 +44,11 @@
 #             in the main run. That image is removed before, for the room it takes. A
 #             compressed image is also converted by AVML itself, and the scanner must find
 #             in the result what it finds in the image. The images of one read must give
-#             the same list of schedules, each at the same address.
+#             the same list of schedules, each at the same address. The first image of a
+#             run is then searched as a dump that exists, "keep -s IMAGE", with the images
+#             of the two containers as the files that hold the headers: both volume keys
+#             must be proven and written as they are. It is searched once more with no
+#             file, and what it holds of a header by itself is told and not judged.
 #             With KEEP_SAN=/path/to/keep-san in the environment, that build of the program
 #             with the sanitizers of the compiler is run at the same places as well and must
 #             end with status 0, which it does not where a sanitizer finds a fault
@@ -266,7 +270,8 @@ beside "$O" "$W/cdest" "the same mappings"
 # cimage PROGRAM WORD LABEL : one run with -m and the format WORD, or with -m -F for the word
 # "all". Its images are examined and then removed.
 cimage() {
-    local k=$1 word=$2 label=$3 d=$W/cimage-$3 c img rc rcs n o key f formats said=""
+    local k=$1 word=$2 label=$3 d c img rc rcs n o key f formats said="" sd sa alone=""
+    d=$W/cimage-$(printf '%s' "$3" | tr -c 'a-z0-9' '_')        # a comma in a path would end the name in what the scanner says
     local -a how
     case $word in all) formats="lime raw avml"; how=(-F) ;; *) formats=$word; how=(-f "$word") ;; esac
     mkdir "$d"
@@ -292,6 +297,29 @@ cimage() {
         done
         # what one read wrote is the same memory in every file
         cmp -s "$d/candidates-$f.txt" "$d/candidates-${formats%% *}.txt" || echo "memory.$f gives other schedules than memory.${formats%% *} of the same read" >> "$d/why.txt"
+        if [ "$f" = "${formats%% *}" ]; then
+            # the image as a dump that exists: the search of it must prove the keys of both
+            # containers against the headers in their images, which are files of this folder
+            "$k" -s "$img" -d "$d" kc_l2.img kc_l1.img > "$d/screen-s.txt" 2>&1; rcs=$?
+            sd=$(ls -d "$d"/scan_* 2>/dev/null | tail -n 1)
+            [ "$rcs" = 0 ] && cmp -s "$sd/keys/kc_l2.img.vk" kc_l2.vk && cmp -s "$sd/keys/kc_l1.img.vk" kc_l1.vk &&
+                (cd "$sd" && sha256sum -c --quiet manifest.sha256 > /dev/null 2>&1) ||
+                { echo "keep -s does not prove the keys of both containers from memory.$f against their images, status $rcs" >> "$d/why.txt"; cat "$d/screen-s.txt" >> "$d/why.txt"; }
+            # The image alone, with no file: what it holds of a header by itself. This is told
+            # and not judged, because it depends on what runs on the system: the containers of
+            # this check lie in files, whose cache holds their headers.
+            if [ "$k" = "$KIT/c/keep" ]; then
+                mkdir "$d/alone"
+                "$k" -s "$img" -d "$d/alone" > "$d/screen-alone.txt" 2>&1
+                sa=$(ls -d "$d"/alone/scan_* 2>/dev/null | tail -n 1)
+                alone="$(grep -c '^==== memory@' "$d/screen-alone.txt") header(s) or digest(s) of a header in its memory"
+                for n in kc_l2 kc_l1; do
+                    for key in "$sa"/keys/memory@*.vk; do
+                        if cmp -s "$key" "$n.vk"; then alone="$alone, the key of $n proven from one"; break; fi
+                    done
+                done
+            fi
+        fi
         if [ "$f" = avml ]; then
             # AVML reads the compressed image: its LiME image of it must hold the same
             "$KIT/bin/avml" convert "$img" "$d/converted.lime" > "$d/convert.txt" 2>&1 && "$KIT/bin/kcore-keyscan" "$d/converted.lime" 2> /dev/null | cmp -s - "$d/candidates-$f.txt" ||
@@ -301,9 +329,10 @@ cimage() {
         said="$said, memory.$f $(stat -c%s "$img") bytes"
     done
     if [ ! -s "$d/why.txt" ]; then
-        echo "PASS   the memory image of the C program, $label:${said#,}, $(sed -n 's/^kcore-keyscan [^,]*, [^,]*, [0-9]* segments*, \([0-9]* bytes\).*/\1 of memory/p' "$d/scan-${formats%% *}.txt"), read in $(sed -n 's/.*"seconds": \([0-9]*\),.*/\1/p' "$c/verdict.json") s. The report names each size and SHA-256, the scanner reads each to its end, and the schedules of both containers lie where they lie in the image of AVML$(case " $formats " in *" avml "*) echo ". AVML converts the compressed image to the same memory" ;; esac)"
+        echo "PASS   the memory image of the C program, $label:${said#,}, $(sed -n 's/^kcore-keyscan [^,]*, [^,]*, [0-9]* segments*, \([0-9]* bytes\).*/\1 of memory/p' "$d/scan-${formats%% *}.txt"), read in $(sed -n 's/.*"seconds": \([0-9]*\),.*/\1/p' "$c/verdict.json") s. The report names each size and SHA-256, the scanner reads each to its end, and the schedules of both containers lie where they lie in the image of AVML. \"keep -s\" proves the keys of both containers from memory.${formats%% *} against their images$(case " $formats " in *" avml "*) echo ". AVML converts the compressed image to the same memory" ;; esac)"
         echo "       $(grep -m 1 'source /proc/kcore' "$d/screen.txt" | sed 's/^ *//')"
         echo "       $(grep -m 1 'System.map' "$d/screen.txt" | sed 's/^ *//')"
+        [ -z "$alone" ] || echo "       \"keep -s\" with memory.${formats%% *} and no file: $alone"
     else
         echo "FAIL   the memory image of the C program, $label"; sed 's/^/       /' "$d/why.txt" "$d/screen.txt"; PASS=0
     fi

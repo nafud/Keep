@@ -170,6 +170,17 @@ static uint8_t buf[KEEP + CHUNK];
 static size_t have;
 static uint64_t bphys, bvirt;
 
+/* A program that links the search can look at the memory as well: each byte is handed to it
+   once, in the order of the search, with the address of the first of them. */
+static void (*watcher)(void *arg, const uint8_t *p, size_t n, uint64_t phys);
+static void *watcher_arg;
+
+void keyscan_watch(void (*fn)(void *arg, const uint8_t *p, size_t n, uint64_t phys), void *arg)
+{
+    watcher = fn;
+    watcher_arg = arg;
+}
+
 /* Search the buffered bytes. Unless LAST, the final 239 bytes wait for the bytes after them. */
 static void sweep(int last)
 {
@@ -190,6 +201,8 @@ static void sweep(int last)
                 report(8, p, bphys + i, bvirt == NONE ? NONE : bvirt + i);
         }
     }
+    if (watcher && end)
+        watcher(watcher_arg, buf, end, bphys);
     memmove(buf, buf + end, have - end);
     have -= end; bphys += end;
     if (bvirt != NONE) bvirt += end;

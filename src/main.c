@@ -2,7 +2,7 @@
  * keep: finds the keys of the encrypted volumes of an unlocked Linux system, as one static program.
  *
  *   sudo ./keep [-d DIR] [-b N] [-m [-f FORMAT | -F]]
- *   ./keep -s DUMP [-d DIR]
+ *   ./keep -s DUMP [-d DIR] [FILE...]
  *   ./keep -h | -V
  *
  * Without -s   For every open dm-crypt volume of the running system, decide whether its volume
@@ -11,8 +11,12 @@
  *              the report go into a folder triage_<host>_<time>/ of the destination. Needs
  *              root.
  * -s DUMP      Search a memory dump that exists (raw, LiME, compressed AVML or ELF core) for
- *              AES key schedules. The list of them, which is key material, goes into a folder
- *              scan_<dump>_<time>/ of the destination, below keys/.
+ *              AES key schedules, and prove which of them is the volume key of each LUKS
+ *              header in the FILEs: header backups, raw images of disks or partitions, or
+ *              devices. The proven keys and the list of the schedules, which is key
+ *              material, go into a folder scan_<dump>_<time>/ of the destination, below keys/.
+ *              The dump itself is searched for headers as well: without a FILE a key is
+ *              proven where the memory still holds the header or the digests of its volume.
  * -m           after the keys, take a memory image of the running system into memory/ of
  *              that folder, in LiME format
  * -f FORMAT    the format of the image: lime (default), raw, or avml, which is compressed.
@@ -33,8 +37,9 @@
  * prints no key: a key is named by its length and the first 16 digits of its SHA-256.
  *
  * Exit status: 0, 1 when a run could not start, a write to the destination failed or a memory
- * image that was asked for is not there, 2 for a wrong option. With -s it is the status of the search: 1 also for a dump that could not be
- * read to its end, 3 for a failed self-test.
+ * image that was asked for is not there, 2 for a wrong option. With -s: 1 also for a dump that
+ * could not be read to its end and, with FILEs, where they hold no header or a header has a
+ * key that is not proven, 3 for a failed self-test of the search.
  */
 #include "dump.h"
 #include "triage.h"
@@ -48,7 +53,7 @@
 
 static const char usage[] =
     "usage: keep [-d DIR] [-b N] [-m [-f FORMAT | -F]]\n"
-    "       keep -s DUMP [-d DIR]\n"
+    "       keep -s DUMP [-d DIR] [FILE...]\n"
     "       keep -h | -V\n";
 
 static const char help[] =
@@ -61,10 +66,15 @@ static const char help[] =
     "      into a folder triage_<host>_<time>/ of the destination. With -m the memory of\n"
     "      the machine is taken after the keys, into memory/ of that folder.\n"
     "\n"
-    "  ./keep -s DUMP [-d DIR]\n"
+    "  ./keep -s DUMP [-d DIR] [FILE...]\n"
     "      Search a memory dump that exists (raw, LiME, compressed AVML or ELF core) for AES\n"
-    "      key schedules. The list goes into a folder scan_<dump>_<time>/ of the destination,\n"
-    "      below keys/.\n"
+    "      key schedules, and prove which of them is the volume key of each LUKS header in\n"
+    "      the FILEs: header backups, raw images of disks or partitions, or devices. The\n"
+    "      proven keys go into a folder scan_<dump>_<time>/ of the destination, below keys/.\n"
+    "      The dump itself is searched for headers as well, so without a FILE a key is\n"
+    "      proven where the memory still holds the header or the digests of its volume.\n"
+    "      Pairs of schedules that lie as the kernel keeps the two keys of a volume, and that\n"
+    "      no header proves, are kept as candidates.\n"
     "\n"
     "  -m         take a memory image of the running system, after the keys\n"
     "  -f FORMAT  the format of the image: lime (default), raw, or avml (compressed)\n"
@@ -149,7 +159,7 @@ int main(int argc, char **argv)
             return wrong(NULL);
         }
     }
-    if (optind != argc)
+    if (optind != argc && !dump)
         return wrong("an argument that belongs to no option");
     if (dump && has_budget)
         return wrong("-b belongs to the search of the running system, not to -s");
@@ -160,7 +170,7 @@ int main(int argc, char **argv)
     if (has_format && every)
         return wrong("-f names one format and -F all of them");
     if (dump) {
-        struct dump_options o = { .dump = dump, .dest = dest };
+        struct dump_options o = { .dump = dump, .dest = dest, .files = argv + optind, .nfiles = (size_t)(argc - optind) };
 
         return dump_run(&o);
     } else {

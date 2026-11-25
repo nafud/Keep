@@ -78,14 +78,6 @@ struct volume {
     size_t nkeys;
 };
 
-static void key_name(const uint8_t *key, size_t n, char out[17])
-{
-    uint8_t digest[32];
-
-    sha256(key, n, digest);
-    hex_encode(digest, 8, out);
-}
-
 /* What became of a key: its verdict, the route that gave it and a note. */
 static void settle(struct key_result *k, const char *what, const char *route, const char *fmt, ...)
     __attribute__((format(printf, 4, 5)));
@@ -133,44 +125,10 @@ static void verdict(struct run *r, struct volume *v, const char *what, const cha
 /* Write a key to keys/ and flush it. Only then does it count as captured. */
 static int keep_key(struct run *r, struct key_result *k, const uint8_t *key, size_t n)
 {
-    char rel[PATH_MAX];
-    int fd, ok;
-
-    if (pathf(rel, "keys/%s.vk", k->file) || (fd = run_create(r, rel, O_WRONLY, 0600)) < 0) {
-        r->write_failed = 1;
+    if (run_keep_key(r, k->file, key, n, k->hash))
         return -1;
-    }
-    ok = !write_all(fd, key, n) && !run_flush(r, fd, "keys");
-    if (close(fd) || !ok) {
-        r->write_failed = 1;
-        return -1;
-    }
-    key_name(key, n, k->hash);
     k->bytes = n;
     return 0;
-}
-
-/*
- * A name for the files of a volume or of a key that no other has in this run. FAT and exFAT
- * fold the case of a name, so two names that are the same but for that are kept apart by a
- * further _. Where the room for those is used up the name stays, and the second file is then
- * refused, because no file of a run is written over.
- */
-static void own_stem(struct run *r, char *stem, size_t size)
-{
-    char **grown;
-    size_t i;
-
-    for (i = 0; i < r->nstems; i++)
-        if (!strcasecmp(r->stems[i], stem) && strlen(stem) + 1 < size) {
-            strcat(stem, "_");
-            i = (size_t)-1;
-        }
-    if ((grown = realloc(r->stems, (r->nstems + 1) * sizeof *grown))) {
-        r->stems = grown;
-        if ((r->stems[r->nstems] = strdup(stem)))
-            r->nstems++;
-    }
 }
 
 /* The search of /proc/kcore, run once and used for every volume that needs it. */
@@ -654,54 +612,16 @@ static void one_volume(struct run *r, struct volume *v, const struct vol *f)
     }
 }
 
-/* A text as the inside of a JSON string: the two characters that end or escape it, control
-   characters as spaces, and a byte that is no UTF-8 as the replacement character. */
-static void json_text(FILE *f, const char *s)
-{
-    const unsigned char *p = (const unsigned char *)s;
-
-    while (*p) {
-        size_t n = *p < 0x80 ? 1 : (*p & 0xe0) == 0xc0 && *p >= 0xc2 ? 2 : (*p & 0xf0) == 0xe0 ? 3
-                 : (*p & 0xf8) == 0xf0 && *p <= 0xf4 ? 4 : 0, i;
-
-        for (i = 1; i < n && (p[i] & 0xc0) == 0x80; i++)
-            ;
-        if (!n || i < n) {
-            fputs("\xef\xbf\xbd", f);
-            p++;
-        } else if (n > 1) {
-            fwrite(p, 1, n, f);
-            p += n;
-        } else {
-            if (*p == '"' || *p == '\\')
-                fputc('\\', f);
-            fputc(*p < 0x20 ? ' ' : *p, f);
-            p++;
-        }
-    }
-}
-
-static void json_value(FILE *f, const char *s)
-{
-    if (!s || !*s) {
-        fputs("null", f);
-    } else {
-        fputc('"', f);
-        json_text(f, s);
-        fputc('"', f);
-    }
-}
-
 /* The fields of a key in verdict.json, in the three places where they stand in the line of a
    volume: the cipher, the size and the location, then the route, then the name of the key. */
 /* One memory image as an object of the report, without its closing brace. The first of a run
    has the fields that keytriage.sh has for the image that AVML wrote, in their order. */
 static void json_image(FILE *f, const struct memory_image *m, const struct memory_result *first)
 {
-    fputs("{\"status\": ", f); json_value(f, m->status);
-    fputs(", \"file\": ", f); json_value(f, m->file);
+    fputs("{\"status\": ", f); run_json(f, m->status);
+    fputs(", \"file\": ", f); run_json(f, m->file);
     fputs(", \"format\": ", f);
-    json_value(f, !m->file[0] ? "" : m->format == IMAGE_AVML ? "avml compressed" : image_name(m->format));
+    run_json(f, !m->file[0] ? "" : m->format == IMAGE_AVML ? "avml compressed" : image_name(m->format));
     if (m->file[0])
         fprintf(f, ", \"bytes\": %llu", (unsigned long long)m->bytes);
     else
@@ -710,27 +630,27 @@ static void json_image(FILE *f, const struct memory_image *m, const struct memor
         fprintf(f, ", \"seconds\": %u", first->seconds);
     else if (first)
         fputs(", \"seconds\": null", f);
-    fputs(", \"sha256\": ", f); json_value(f, m->sha256);
+    fputs(", \"sha256\": ", f); run_json(f, m->sha256);
     if (first) {
         fputs(", \"tool\": \"keep " KEEP_VERSION "\", \"system_map\": ", f);
-        json_value(f, first->system_map);
+        run_json(f, first->system_map);
     }
-    fputs(", \"note\": ", f); json_value(f, m->note);
+    fputs(", \"note\": ", f); run_json(f, m->note);
 }
 
 static void json_key(FILE *f, const struct key_result *k, int part)
 {
     if (part == 0) {
-        fputs(", \"cipher\": ", f); json_value(f, k->cipher);
+        fputs(", \"cipher\": ", f); run_json(f, k->cipher);
         if (k->has_bits)
             fprintf(f, ", \"key_bits\": %u", k->bits);
         else
             fputs(", \"key_bits\": null", f);
-        fputs(", \"key_location\": ", f); json_value(f, k->location);
+        fputs(", \"key_location\": ", f); run_json(f, k->location);
     } else if (part == 1) {
-        fputs(", \"route\": ", f); json_value(f, k->route);
+        fputs(", \"route\": ", f); run_json(f, k->route);
     } else {
-        fputs(", \"key_sha256_16\": ", f); json_value(f, k->hash);
+        fputs(", \"key_sha256_16\": ", f); run_json(f, k->hash);
     }
 }
 
@@ -797,11 +717,12 @@ int triage_run(const struct triage_options *o)
     const char *bad;
     size_t ntabs = 0, nvols = 0, i, k;
     FILE *json;
-    int fd, present = 1, no_memory = 0, lock_errno;
+    char unlocked[160] = "";
+    int fd, present = 1, no_memory = 0;
 
     /* Keys pass through the memory of this process. Locked memory is not written to the swap
        space of the examined system. */
-    lock_errno = mlockall(MCL_CURRENT | MCL_FUTURE) ? errno : 0;
+    run_lock_memory(unlocked);
     umask(077);
     if ((bad = hash_selftest()) || (bad = snappy_selftest()))
         return run_die("%s does not compute the example of its standard, so a proof or an image would not be reliable", bad);
@@ -859,9 +780,8 @@ int triage_run(const struct triage_options *o)
     else
         run_say(r, "destination: %s, %llu MiB free", medium.s,
             (unsigned long long)vfs.f_bavail * vfs.f_frsize / 1048576);
-    if (lock_errno)
-        run_say(r, "the memory of this program could not be locked (%s), so a part of it can reach the swap space",
-            strerror(lock_errno));
+    if (unlocked[0])
+        run_say(r, "%s", unlocked);
     run_say(r, "%s", "");
 
     /* The open crypt volumes: every mapped device with a crypt target in its table, which is
@@ -885,7 +805,7 @@ int triage_run(const struct triage_options *o)
         memcpy(v->shown, v->name, DM_NAME_LEN);
         name_clean(v->shown);
         name_file(v->name, v->file, DM_NAME_LEN);
-        own_stem(r, v->file, sizeof v->file);
+        run_stem(r, v->file, sizeof v->file);
         v->nkeys = found[i].nkeys;
         if (v->nkeys && !(v->keys = calloc(v->nkeys, sizeof *v->keys))) {
             no_memory = 1;
@@ -896,7 +816,7 @@ int triage_run(const struct triage_options *o)
                 snprintf(v->keys[k].file, sizeof v->keys[k].file, "%s", v->file);
             } else {
                 snprintf(v->keys[k].file, sizeof v->keys[k].file, "%s-%zu", v->file, k + 1);
-                own_stem(r, v->keys[k].file, sizeof v->keys[k].file);
+                run_stem(r, v->keys[k].file, sizeof v->keys[k].file);
             }
         }
     }
@@ -954,14 +874,14 @@ int triage_run(const struct triage_options *o)
         r->write_failed = 1;
     } else {
         fprintf(json, "{\n  \"schema\": \"keep-report/1\",\n  \"tool\": \"keep %s\",\n  \"host\": ", KEEP_VERSION);
-        json_value(json, host);
-        fputs(",\n  \"kernel\": ", json); json_value(json, un.release);
-        fputs(",\n  \"os\": ", json); json_value(json, os);
-        fputs(",\n  \"cryptsetup\": null,\n  \"other_filesystems\": ", json); json_value(json, other);
+        run_json(json, host);
+        fputs(",\n  \"kernel\": ", json); run_json(json, un.release);
+        fputs(",\n  \"os\": ", json); run_json(json, os);
+        fputs(",\n  \"cryptsetup\": null,\n  \"other_filesystems\": ", json); run_json(json, other);
         fprintf(json, ",\n  \"started_utc\": \"%s\",\n  \"finished_utc\": \"%s\",\n  \"lockdown\": ", started, finished);
-        json_value(json, r->lockdown);
-        fputs(",\n  \"secure_boot\": ", json); json_value(json, secure_boot);
-        fputs(",\n  \"source\": \"/proc/kcore\",\n  \"evidence_medium\": ", json); json_value(json, medium.s);
+        run_json(json, r->lockdown);
+        fputs(",\n  \"secure_boot\": ", json); run_json(json, secure_boot);
+        fputs(",\n  \"source\": \"/proc/kcore\",\n  \"evidence_medium\": ", json); run_json(json, medium.s);
         fputs(",\n  \"memory\": ", json);
         if (!mem.nimages) {
             fputs("null", json);
@@ -984,16 +904,16 @@ int triage_run(const struct triage_options *o)
 
             if (v->has_header)
                 snprintf(header, sizeof header, "headers/%s.hdr", v->file);
-            fputs(i ? ",\n    {\"name\": " : "\n    {\"name\": ", json); json_value(json, v->name);
-            fputs(", \"type\": ", json); json_value(json, v->type);
+            fputs(i ? ",\n    {\"name\": " : "\n    {\"name\": ", json); run_json(json, v->name);
+            fputs(", \"type\": ", json); run_json(json, v->type);
             json_key(json, v->nkeys ? &v->keys[0] : &none, 0);
-            fputs(", \"device\": ", json); json_value(json, v->device);
-            fputs(", \"in_use\": ", json); json_value(json, v->in_use);
-            fputs(", \"header_backup\": ", json); json_value(json, header);
+            fputs(", \"device\": ", json); run_json(json, v->device);
+            fputs(", \"in_use\": ", json); run_json(json, v->in_use);
+            fputs(", \"header_backup\": ", json); run_json(json, header);
             json_key(json, v->nkeys ? &v->keys[0] : &none, 1);
-            fputs(", \"verdict\": ", json); json_value(json, v->verdict);
+            fputs(", \"verdict\": ", json); run_json(json, v->verdict);
             json_key(json, v->nkeys ? &v->keys[0] : &none, 2);
-            fputs(", \"note\": ", json); json_value(json, v->note);
+            fputs(", \"note\": ", json); run_json(json, v->note);
             /* the further keys of a volume that has more than one, each with what became of it */
             for (k = 1; k < v->nkeys; k++) {
                 char file[PATH_MAX] = "";
@@ -1001,12 +921,12 @@ int triage_run(const struct triage_options *o)
                 if (v->keys[k].hash[0])
                     snprintf(file, sizeof file, "keys/%s.vk", v->keys[k].file);
                 fputs(k == 1 ? ", \"further_keys\": [{\"key_file\": " : ", {\"key_file\": ", json);
-                json_value(json, file);
+                run_json(json, file);
                 json_key(json, &v->keys[k], 0);
                 json_key(json, &v->keys[k], 1);
-                fputs(", \"verdict\": ", json); json_value(json, v->keys[k].verdict);
+                fputs(", \"verdict\": ", json); run_json(json, v->keys[k].verdict);
                 json_key(json, &v->keys[k], 2);
-                fputs(", \"note\": ", json); json_value(json, v->keys[k].note);
+                fputs(", \"note\": ", json); run_json(json, v->keys[k].note);
                 fputs(k + 1 == v->nkeys ? "}]" : "}", json);
             }
             fputc('}', json);
