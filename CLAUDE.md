@@ -695,7 +695,7 @@ with integrity. It is corrected in 1.5.1, with its check in `selftest.sh`.
 
 ### Where it has run
 
-`keep` 2.0-pre6 is run beside `keytriage.sh` 1.5.1 by `compat-check.sh`: before any mapping is
+`keep` 2.0-pre8 is run beside `keytriage.sh` 1.5.1 by `compat-check.sh`: before any mapping is
 made, on the four mappings of the main run, with `-d` and a destination on FAT, on LVM on LUKS and on
 LUKS2 with integrity, and alone on a volume in re-encryption. Beside `keytriage.sh` it gave the
 same line of `verdict.json` for every volume, on the table route, the memory route, a mapping
@@ -720,7 +720,7 @@ by line:
 | openSUSE Leap 16.1 | 6.12.0-160100.9-default | 2.8.4 | `distros.yml`, without the part with integrity |
 | Arch Linux | 7.3.4-arch1-2 | 2.8.9 | `distros.yml` |
 | Ubuntu 24.04.5, runner image | 7.0.0-1014-aws | 2.7.0 | `checks.yml`, also the build with the sanitizers |
-| Ubuntu 24.04.5, runner image | 7.0.0-1017-azure | 2.7.0 | `checks.yml`, with 2.0-pre5, also the build with the sanitizers |
+| Ubuntu 24.04.5, runner image | 7.0.0-1017-azure | 2.7.0 | `checks.yml`, with 2.0-pre5 and in part with 2.0-pre7, also the build with the sanitizers |
 | Ubuntu 22.04.5, runner image | 6.8.0-1070-azure | 2.4.3 | `checks.yml`, also the build with the sanitizers |
 
 On openSUSE Leap 16.1 cryptsetup could not make the container with integrity: the kernel
@@ -756,6 +756,18 @@ The memory image in these runs:
 - The C program took its images after AVML had written one. That the later images hold fewer
   blocks of zeros fits a file that is written through the page cache: the cache takes free
   memory, and what lay there is overwritten. This was not measured by itself.
+- From 2.0-pre7 on an image is written with direct writes, and the pages of each file that
+  lay in the page cache after the run were counted before anything read the file. With
+  2.0-pre7, of an image of 2 GiB with about 524000 pages: on nine guests one page of the
+  LiME and of the compressed image, the end of the file, and none of the raw image. On
+  Fedora 45, whose root file system is btrfs with compression, 65 to 512 pages of the LiME
+  and the raw image and one of the compressed image: btrfs of Linux 7.2 takes a direct
+  write through the cache (see "What the sources say"). On the runners, as far as that run
+  came, one page of 4192953 of the LiME image and none of the raw image.
+- With 2.0-pre8, which lets the pages of a flushed file go, no page of any image lay in the
+  cache after the run: on the ten guests for each format and for the three of one read, on
+  the runners for the LiME image of 17174331584 bytes (read in 42 s), the raw image of
+  17951621120 bytes (73 s) and the compressed image of 10096333254 bytes (50 s).
 
 The tables of both kinds of volume were first seen on a guest emulated on the workstation
 (Ubuntu 24.04.5, kernel 6.8.0-147-generic, cryptsetup 2.7.0), and `compat-check.sh` passed

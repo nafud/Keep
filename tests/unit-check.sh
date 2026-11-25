@@ -1362,7 +1362,7 @@ fi
 # The search of a dump with the proof. The image holds the schedules of the keys of the headers
 # above, as the kernel keeps the two keys of an XTS volume: k64, k32 as two keys of AES-128,
 # knew, and k32 once more as one key of AES-256, which is the key of the header with CBC.
-cat "$T/k32" /dev/urandom | head -c 64 > "$T/kcbc"
+{ cat "$T/k32"; head -c 32 /dev/urandom; } > "$T/kcbc"
 python3 -I tests/make-schedule-fixture.py --format lime --size 8 "$T/dump.lime" "$T/k64" "$T/k32" "$T/knew" "$T/kcbc" > /dev/null
 truncate -s 80M "$T/disk.dd"
 dd if="$T/l2.img" of="$T/disk.dd" bs=1M seek=1 conv=notrunc status=none
