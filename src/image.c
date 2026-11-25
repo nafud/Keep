@@ -45,8 +45,18 @@
  * way. FAT takes a direct write that makes a file longer through the cache by itself
  * (fat_direct_IO), and the kernel then writes those pages and drops them before the write
  * returns (direct_write_fallback in fs/libfs.c of Linux 6.12, __generic_file_write_iter in
- * Linux 4.18), so the cache holds a mebibyte of the image at a time and not the image. tmpfs
- * keeps a file in the page cache, whichever way it is written.
+ * Linux 4.18), so the cache holds a mebibyte of the image at a time and not the image. btrfs
+ * does the same from Linux 6.18 on for every direct write to a file with checksums of its
+ * data, which is every file unless they are turned off (btrfs_direct_write in
+ * fs/btrfs/direct-io.c of Linux 6.18, 7.0 and 7.2, not in 6.12). The kernel drops only the
+ * pages that are free to go at that moment: on a guest with btrfs and Linux 7.2, 65 to 512
+ * pages of an image of 2 GiB were still in the cache at the end. tmpfs keeps a file in the
+ * page cache, whichever way it is written.
+ *
+ * So a file that is written and flushed is named to the kernel as one whose pages are not
+ * needed (POSIX_FADV_DONTNEED), which lets go what the cache still holds of it: the last
+ * page, and what a file system took through the cache. dd does this after its last block
+ * (invalidate_cache in dd.c).
  *
  * The SHA-256 of each file is computed while it is written, so the file is not read again.
  * A stretch that the kernel does not hand out is written as zeros and counted. The kernel
@@ -571,6 +581,16 @@ static void read_block(int core, uint64_t off, uint64_t addr, uint8_t *buf, size
         }
         done += (size_t)got;
     }
+}
+
+int image_settle(struct image_file *f)
+{
+    if (fsync(f->fd))
+        return -1;
+    /* Advice, which the kernel follows for the pages that are clean and in no use. A page
+       that stays is a page of the cache as before, and the file is whole without it. */
+    posix_fadvise(f->fd, 0, 0, POSIX_FADV_DONTNEED);
+    return 0;
 }
 
 int image_write(int core, const struct image_source *src, struct image_file *files, size_t nfiles,

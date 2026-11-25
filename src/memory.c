@@ -232,7 +232,7 @@ void memory_run(struct run *r, const enum image_format *formats, size_t n, struc
         struct memory_image *m = of[i];
         int why = files[i].failed;
 
-        if (!why && run_flush(r, files[i].fd, "memory"))
+        if (!why && (image_settle(&files[i]) || run_flush(r, files[i].fd, "memory")))
             why = errno ? errno : EIO;
         if (close(files[i].fd) && !why)
             why = errno;
@@ -254,9 +254,9 @@ void memory_run(struct run *r, const enum image_format *formats, size_t n, struc
         res->captured++;
         run_say(r, "  %s, %llu bytes, %s, written in %u s", m->file, (unsigned long long)m->bytes, what(m->format), res->seconds);
         run_say(r, "  sha256 %s", m->sha256);
-        run_say(r, "  %s", m->direct ? "written with direct writes, which pass the page cache of the machine"
-                                     : "written through the page cache of the machine: the file system of the destination "
-                                       "takes no direct writes");
+        run_say(r, "  %s", m->direct ? "written with direct writes (O_DIRECT), and its pages let go from the page cache"
+                                     : "written through the page cache, and its pages let go from it: the file system of "
+                                       "the destination takes no direct writes");
     }
     if (failed && res->captured)
         run_say(r, "  %s", err);

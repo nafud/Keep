@@ -398,8 +398,9 @@ sudo ./keep -m [-f FORMAT | -F]         # the keys, then a memory image: lime (d
   that is its physical address, or `avml`, the compressed format of AVML. `-F` writes all
   three from one read of the memory. An image that was asked for and is not there ends the
   run with status 1. An image is written with direct writes, which pass the page cache of
-  the machine, where the file system of the destination has them, and the run says which
-  way each file was written.
+  the machine, where the file system of the destination has them, and when it is flushed
+  the pages that the cache holds of it are let go. The run says which way each file was
+  written.
 - `-s DUMP` searches a dump as `kcore-keyscan` does and proves which of the keys is the
   volume key of each LUKS header in the `FILE`s, as `vkverify.py` does. A `FILE` is a header
   backup, the raw image of a partition or of a whole disk, or a device: its start is read as a
@@ -538,10 +539,17 @@ Read in Linux 4.18, 5.10, 6.12 and 6.18, cryptsetup 2.0.6, 2.3.7, 2.7.0 and 2.8.
     returns (`direct_write_fallback` in `fs/libfs.c` of 6.12, `__generic_file_write_iter` in
     4.18). exFAT of 6.12 takes such a write as it is (`exfat_direct_IO`). Linux 4.18 has no
     exFAT.
+  - btrfs takes every direct write to a file with checksums of its data through the page
+    cache in the same way, from Linux 6.18 on (`btrfs_direct_write` in
+    `fs/btrfs/direct-io.c` of 6.18, 7.0 and 7.2, not of 6.12). Every file has such checksums
+    unless they are turned off. The kernel drops the pages that are free to go when the
+    write returns (`invalidate_mapping_pages`), and not the others.
   - LiME writes with `O_DIRECT` where its option `dio` is given and a first write of that
     kind succeeds, and otherwise without (`setup_disk` in `disk.c`).
   - `dd` of GNU coreutils writes the last block of a file, which is no whole one, after it
-    has taken `O_DIRECT` off the descriptor (`iwrite` in `dd.c`). The program does the same.
+    has taken `O_DIRECT` off the descriptor (`iwrite` in `dd.c`), and names the file to the
+    kernel as one whose pages are not needed once it is flushed (`POSIX_FADV_DONTNEED` in
+    `invalidate_cache`). The program does both.
 - Nothing in the kernel keeps a LUKS header: dm-crypt is given the key and the cipher, and
   cryptsetup reads the header past the page cache where it can (`O_DIRECT`). What a machine
   holds of a header is what else read it. This is not from a source but from runs on a guest
@@ -648,7 +656,9 @@ Read in Linux 4.18, 5.10, 6.12 and 6.18, cryptsetup 2.0.6, 2.3.7, 2.7.0 and 2.8.
     through the cache, and `keytriage.sh` then reads the file through it once more. Where
     the file system of the destination has no direct writes, the image goes through the
     cache, and the run and `direct_io` of the report say so. What is left at the end of a
-    file and is no whole block of 4096 bytes goes through the cache as well: one page.
+    file and is no whole block of 4096 bytes goes through the cache as well: one page. A
+    file that is flushed has the pages that the cache holds of it let go, so that no copy
+    of the image, which holds the keys, stays in the memory of the machine.
   - An image is started where the destination has room for it and 64 MiB more. A compressed
     image is started whatever room there is, as with `keytriage.sh`, except beside other
     images, where it must not take their room and needs room for the most it can take.
@@ -800,10 +810,11 @@ it lockdown `integrity`. The screen and the report of each run were read:
 - RAM that a driver added is a case of `unit-check.sh`. No machine with such RAM was run.
 - The small files of a run, the report, the header backups and the keys, go through the
   page cache of the examined system, and so does an image on a file system without direct
-  writes. On FAT the kernel takes the direct writes of a growing file through the cache and
-  drops the pages after each, so the cache holds a mebibyte of the image at a time: read in
-  the source, and no image was written to FAT in a run. An image on exFAT or NTFS is not
-  run either. On tmpfs a file lies in memory whichever way it is written.
+  writes. On FAT, and on btrfs from Linux 6.18 on, the kernel takes the direct writes
+  through the cache and drops the pages after each, so the cache holds a mebibyte of the
+  image at a time and not the image. For btrfs this is run (see "Where it has run"), for
+  FAT it is read in the source, and no image was written to FAT in a run. An image on exFAT
+  or NTFS is not run either. On tmpfs a file lies in memory whichever way it is written.
 - A write that a file system refuses with `EINVAL` after it has opened the file for direct
   writes ends the direct writes of that file, which then goes through the cache. No file
   system that does this was found to check it on.
@@ -927,8 +938,9 @@ addresses, a core of a kernel before 4.12. Cores and texts with changed bytes mu
 fault, 600 times. The images are written with direct writes where the file system of the
 temporary directory has them, which the check asks for on ext4, xfs and btrfs: ranges that
 begin and end inside a block of the file, a range that ends where a write ends and an image
-of less than a block are cases, a file that is there must not be written over, and
-`keep-unit cached` must then count no page of an image in the page cache but its last, and
+of less than a block are cases, a file that is there must not be written over. After its
+writes no page of an image may lie in the page cache but its last, as `keep-unit` counts
+them with `mincore`, after the file is flushed and its pages are let go none at all, and
 more than one for a copy that was written in the usual way. As root, or with `sudo` that
 asks no password, the same cases are written on a ramfs, which has no direct writes, and
 must give the same files through the cache. Both ways of computing SHA-256 are compared
@@ -961,7 +973,7 @@ Four parts of `compat-check.sh` are there for what the C program does beyond the
 mappings. With a memory image in the run (`-m` or `-c`), the C program takes its own while
 the two containers are open, once for each word of `KEEP_IMAGES`: a format, or `all` for
 `-F`. Each file must be named as written with direct writes, and before anything reads it
-`c/keep-unit cached` must count no page of it in the page cache but the last. The report
+`c/keep-unit cached` may count one page of it in the page cache at most. The report
 must name each file with its size and its SHA-256, the scanner must read
 each image to its end, and the schedule of each half of both volume keys must lie in it at
 an address at which it lies in the image that AVML took in the main run. The images of one

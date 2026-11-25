@@ -38,9 +38,9 @@
 #             With -m or -c it also takes the memory image, once for each word of
 #             KEEP_IMAGES (default "lime raw avml all"), while the two containers are open.
 #             A word is a format, or "all" for every format from one read (-F). An image
-#             is written with direct writes, which pass the page cache: after the run no
-#             page of its file may lie in the cache but the last, as c/keep-unit counts
-#             them. The report
+#             is written with direct writes and its pages are let go from the page cache:
+#             after the run c/keep-unit may count one page of its file there at most. The
+#             report
 #             must name each file with its size and its SHA-256, the scanner must read
 #             each image to its end, and the schedule of each half of both volume keys
 #             must lie in it at an address at which it lies in the image that AVML wrote
@@ -283,10 +283,10 @@ cimage() {
     c=$(ls -d "$d"/triage_* 2>/dev/null | tail -n 1)
     : > "$d/why.txt"
     [ "$rc" = 0 ] || echo "status $rc" >> "$d/why.txt"
-    # The image is written with direct writes, which pass the page cache: before anything
-    # reads a file, none of its pages may lie in the cache but the last, which is the end of
-    # the file that is no whole block. A file system of the guest without such writes would
-    # be named by the run, and is none that this check knows.
+    # The image is written with direct writes and its pages are let go from the page cache:
+    # before anything reads a file, none of its pages may lie in the cache, but one that the
+    # kernel could not let go. A file system of the guest without such writes would be named
+    # by the run, and is none that this check knows.
     for f in $formats; do
         [ -s "$c/memory/memory.$f" ] || continue
         n=$("$KIT/c/keep-unit" cached "$c/memory/memory.$f" 2>&1)
@@ -295,7 +295,7 @@ cimage() {
         *) echo "memory.$f after the run: $n" >> "$d/why.txt" ;;
         esac
     done
-    [ "$(grep -c '^  written with direct writes, which pass the page cache of the machine$' "$d/screen.txt")" = "$(set -- $formats; echo $#)" ] ||
+    [ "$(grep -c '^  written with direct writes (O_DIRECT), and its pages let go from the page cache$' "$d/screen.txt")" = "$(set -- $formats; echo $#)" ] ||
         echo "not every image is named as written with direct writes" >> "$d/why.txt"
     (cd "$c" 2>/dev/null && sha256sum -c --quiet manifest.sha256 > "$d/manifest.txt" 2>&1) || echo "the manifest does not verify" >> "$d/why.txt"
     for f in $formats; do
@@ -350,7 +350,7 @@ cimage() {
         echo "PASS   the memory image of the C program, $label:${said#,}, $(sed -n 's/^kcore-keyscan [^,]*, [^,]*, [0-9]* segments*, \([0-9]* bytes\).*/\1 of memory/p' "$d/scan-${formats%% *}.txt"), read in $(sed -n 's/.*"seconds": \([0-9]*\),.*/\1/p' "$c/verdict.json") s. The report names each size and SHA-256, the scanner reads each to its end, and the schedules of both containers lie where they lie in the image of AVML. \"keep -s\" proves the keys of both containers from memory.${formats%% *} against their images$(case " $formats " in *" avml "*) echo ". AVML converts the compressed image to the same memory" ;; esac)"
         echo "       $(grep -m 1 'source /proc/kcore' "$d/screen.txt" | sed 's/^ *//')"
         echo "       $(grep -m 1 'System.map' "$d/screen.txt" | sed 's/^ *//')"
-        echo "       pages in the page cache after the run, written with direct writes:${cached#,}"
+        echo "       pages in the page cache after the run:${cached#,}"
         [ -z "$alone" ] || echo "       \"keep -s\" with memory.${formats%% *} and no file: $alone"
     else
         echo "FAIL   the memory image of the C program, $label"; sed 's/^/       /' "$d/why.txt" "$d/screen.txt"; PASS=0

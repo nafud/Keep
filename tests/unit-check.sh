@@ -782,6 +782,8 @@ def ways(out):
     lines, said = [], []
     for l in out.splitlines():
         w = l.split(" ", 1)
+        if len(w) == 2 and w[0] in ("lime", "raw", "avml") and w[1].endswith(" pages in the page cache after its writes"):
+            continue                    # counted by a check of its own
         (said if len(w) == 2 and w[0] in ("lime", "raw", "avml") and w[1] in WAYS else lines).append(l)
     return lines, said
 
@@ -1039,19 +1041,22 @@ ext2/ext3|xfs|btrfs) export KEEP_WAY="direct writes" ;;
 ramfs) export KEEP_WAY="through the page cache" ;;
 *) export KEEP_WAY="" ;;
 esac
-# The pages of an image file that lie in the page cache after it was written with direct
-# writes: none but the last, which is the end of the file that is no whole block. The raw
-# image of the fixture is as long as its highest address, 4 GiB and 8 MiB, most of it a hole.
+# The pages of an image file that lie in the page cache. After its direct writes: none but
+# the last, which is the end of the file that is no whole block. After the file is flushed
+# and its pages are let go: none. The raw image of the fixture is as long as its highest
+# address, 4 GiB and 8 MiB, most of it a hole.
 image_cached() {
     local u=$1 f n
     rm -f "$T/fx.c.lime" "$T/fx.c.raw" "$T/fx.c.avml"
     "$u" image "$T/fx.iomem" "$T/fx.elf" lime "$T/fx.c.lime" raw "$T/fx.c.raw" avml "$T/fx.c.avml" > "$T/fx.c.txt" || { cat "$T/fx.c.txt"; return 1; }
     [ "$(grep -c ' direct writes$' "$T/fx.c.txt")" = 3 ] || { echo "not every file was written with direct writes:"; cat "$T/fx.c.txt"; return 1; }
+    [ "$(grep -c '^[a-z]* [01] of [0-9]* pages in the page cache after its writes$' "$T/fx.c.txt")" = 3 ] ||
+        { echo "pages of an image in the page cache after its direct writes:"; cat "$T/fx.c.txt"; return 1; }
     for f in lime raw avml; do
         n=$("$u" cached "$T/fx.c.$f") || return 1
         case $n in
-        "0 of "*|"1 of "*) ;;
-        *) echo "memory.$f: $n"; return 1 ;;
+        "0 of "*) ;;
+        *) echo "memory.$f after its pages were let go: $n"; return 1 ;;
         esac
     done
     # the measure itself: a file that was written in the usual way lies in the cache

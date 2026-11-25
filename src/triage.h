@@ -4,7 +4,7 @@
 #ifndef KEEP_TRIAGE_H
 #define KEEP_TRIAGE_H
 
-#define KEEP_VERSION "2.0-pre7 (2026-11)"
+#define KEEP_VERSION "2.0-pre8 (2026-11)"
 #include "image.h"
 
 #include <stddef.h>

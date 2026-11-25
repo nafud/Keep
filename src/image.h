@@ -79,4 +79,10 @@ int image_write(int core, const struct image_source *src, struct image_file *fil
                 void (*progress)(void *arg, uint64_t done), void *arg, uint64_t *unread,
                 char err[IMAGE_ERR_LEN]);
 
+/*
+ * Flush a file that image_write has written to its device, and let the pages that the page
+ * cache holds of it go. Returns 0, or -1 with errno where the flush failed.
+ */
+int image_settle(struct image_file *f);
+
 #endif

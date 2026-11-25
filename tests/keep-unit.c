@@ -26,7 +26,9 @@
  *                                               to each file OUT in its format. OUT must not
  *                                               exist, or be a device, which is written as it
  *                                               is. Says for each file whether it was written
- *                                               with direct writes
+ *                                               with direct writes, and how many of its pages
+ *                                               lay in the page cache after its writes, before
+ *                                               it is flushed and its pages are let go
  *   keep-unit cached FILE                       how many pages of FILE lie in the page cache
  *   keep-unit snappy                            standard input as a framed Snappy stream
  *   keep-unit dm-answer list|table FILE         FILE as an answer of the kernel to one of the two
@@ -587,36 +589,50 @@ static int cmd_image_source(const char *iomem_path, const char *core_path)
     return 0;
 }
 
-/* The pages of a file that lie in the page cache, as the kernel says with mincore. */
-static int cmd_cached(const char *path)
+/* The pages of a file that lie in the page cache, as the kernel says with mincore. Returns 0,
+   or -1 with errno. */
+static int cached(const char *path, size_t *in, size_t *pages)
 {
-    unsigned char *vec;
+    unsigned char *vec = NULL;
+    void *map = MAP_FAILED;
     struct stat st;
-    size_t pages, i, in = 0;
-    void *map;
-    int fd;
+    size_t i;
+    int fd, r = -1;
 
-    if ((fd = open(path, O_RDONLY)) < 0 || fstat(fd, &st)) {
-        fprintf(stderr, "keep-unit: %s: %s\n", path, strerror(errno));
-        return 1;
-    }
-    pages = ((size_t)st.st_size + 4095) / 4096;
-    if (!pages) {
-        printf("0 of 0 pages in the page cache\n");
-        return 0;
+    *in = *pages = 0;
+    if ((fd = open(path, O_RDONLY)) < 0)
+        return -1;
+    if (fstat(fd, &st))
+        goto out;
+    *pages = ((size_t)st.st_size + 4095) / 4096;
+    if (!*pages) {
+        r = 0;
+        goto out;
     }
     map = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_SHARED, fd, 0);
-    vec = malloc(pages);
-    if (map == MAP_FAILED || !vec || mincore(map, (size_t)st.st_size, vec)) {
+    vec = malloc(*pages);
+    if (map == MAP_FAILED || !vec || mincore(map, (size_t)st.st_size, vec))
+        goto out;
+    for (i = 0; i < *pages; i++)
+        *in += vec[i] & 1;
+    r = 0;
+out:
+    free(vec);
+    if (map != MAP_FAILED)
+        munmap(map, (size_t)st.st_size);
+    close(fd);
+    return r;
+}
+
+static int cmd_cached(const char *path)
+{
+    size_t in, pages;
+
+    if (cached(path, &in, &pages)) {
         fprintf(stderr, "keep-unit: %s: %s\n", path, strerror(errno));
         return 1;
     }
-    for (i = 0; i < pages; i++)
-        in += vec[i] & 1;
     printf("%zu of %zu pages in the page cache\n", in, pages);
-    free(vec);
-    munmap(map, (size_t)st.st_size);
-    close(fd);
     return 0;
 }
 
@@ -626,7 +642,7 @@ static int cmd_image(int argc, char **argv)
     struct image_source src;
     char err[IMAGE_ERR_LEN];
     uint64_t unread;
-    size_t n = (size_t)(argc - 2) / 2, i;
+    size_t n = (size_t)(argc - 2) / 2, i, in, pages;
     int core, r;
 
     if (n > sizeof files / sizeof files[0])
@@ -660,6 +676,11 @@ static int cmd_image(int argc, char **argv)
             printf("%s %llu bytes, sha256 ", image_name(files[i].format), (unsigned long long)files[i].bytes);
             print_hex(files[i].sha256, 32);
             printf("%s %s\n", image_name(files[i].format), files[i].direct ? "direct writes" : "through the page cache");
+            /* what the writes left in the cache, before the file is flushed and its pages let go */
+            if (!cached(argv[3 + 2 * i], &in, &pages))
+                printf("%s %zu of %zu pages in the page cache after its writes\n", image_name(files[i].format), in, pages);
+            if (image_settle(&files[i]))
+                printf("%s is not flushed: %s\n", image_name(files[i].format), strerror(errno));
         }
         close(files[i].fd);
     }
