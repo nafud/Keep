@@ -9,7 +9,8 @@
 # here statically), keytriage.sh, VERSIONS.txt and MANIFEST.sha256. keytriage.sh is started in
 # the shell of the medium: bin/bash -p keytriage.sh. While the C program of Keep is built it
 # rides along as c/keep, static against musl, so that the checks can run it beside
-# keytriage.sh. The ISO is written with Rock Ridge so that symlinks and execute bits survive;
+# keytriage.sh, and with it c/keep-unit, which runs one part of it at a time and tells the
+# checks how much of a file lies in the page cache. The ISO is written with Rock Ridge so that symlinks and execute bits survive;
 # attached to a guest it is read-only by nature.
 # The download is kept under work/cache/.
 #
@@ -47,12 +48,13 @@ cp "$HERE/keytriage.sh" "$T/"
 chmod 755 "$T/keytriage.sh"
 
 # the C program, which is to take the place of everything above
-make -s -C "$HERE" keep
+make -s -C "$HERE" keep tests/keep-unit
 mkdir "$T/c"
 cp "$HERE/keep" "$T/c/keep"
-chmod 755 "$T/c/keep"
+cp "$HERE/tests/keep-unit" "$T/c/keep-unit"
+chmod 755 "$T/c/keep" "$T/c/keep-unit"
 
-for b in bin/bash bin/busybox bin/avml bin/kcore-keyscan c/keep; do
+for b in bin/bash bin/busybox bin/avml bin/kcore-keyscan c/keep c/keep-unit; do
     file "$T/$b" | grep -q 'statically linked\|static-pie linked' || { echo "$b is not static"; exit 1; }
 done
 {
@@ -64,7 +66,7 @@ done
     echo "c/keep:       $("$T/c/keep" -V), built here with $(musl-gcc --version | head -1) against musl $(dpkg-query -W -f='${Version}' musl-dev)"
     echo "keytriage.sh: $(grep -m1 '^VERSION=' "$HERE/keytriage.sh")"
     echo
-    echo "linkage:"; file "$T/bin/bash" "$T/bin/busybox" "$T/bin/avml" "$T/bin/kcore-keyscan" "$T/c/keep" | sed 's/, BuildID[^,]*//'
+    echo "linkage:"; file "$T/bin/bash" "$T/bin/busybox" "$T/bin/avml" "$T/bin/kcore-keyscan" "$T/c/keep" "$T/c/keep-unit" | sed 's/, BuildID[^,]*//'
 } > "$T/VERSIONS.txt"
 (cd "$T" && find . -type f ! -name MANIFEST.sha256 -print0 | sort -z | xargs -0 sha256sum > MANIFEST.sha256)
 xorriso -as mkisofs -quiet -volid KEEPTOOLS -rational-rock -joliet -o "$OUT/tools.iso" "$T" 2>/dev/null

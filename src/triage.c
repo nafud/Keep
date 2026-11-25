@@ -631,6 +631,7 @@ static void json_image(FILE *f, const struct memory_image *m, const struct memor
     else if (first)
         fputs(", \"seconds\": null", f);
     fputs(", \"sha256\": ", f); run_json(f, m->sha256);
+    fprintf(f, ", \"direct_io\": %s", !m->file[0] ? "null" : m->direct ? "true" : "false");
     if (first) {
         fputs(", \"tool\": \"keep " KEEP_VERSION "\", \"system_map\": ", f);
         run_json(f, first->system_map);

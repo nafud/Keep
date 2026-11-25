@@ -33,7 +33,11 @@
 #   image      the memory image, from texts like /proc/iomem and cores like /proc/kcore that
 #              are written here with the memory they stand for: the LiME and the raw image
 #              must be the files that Python writes from the definitions of the two formats,
-#              with the SHA-256 of hashlib. The compressed image is read back by a decoder
+#              with the SHA-256 of hashlib. An image is written with direct writes, which
+#              pass the page cache: ranges that begin and end inside a block of the file are
+#              cases, the file of an image must have no page in the cache but its last, and
+#              on a ramfs, which has no such writes, the files must be the same (root, or
+#              sudo without a password). The compressed image is read back by a decoder
 #              that is written here from the two documents of Snappy: its blocks must be
 #              those of AVML, each chunk must have its checksum, and the memory must be the
 #              same. With AVML=/path/to/avml that program converts the compressed image to a
@@ -90,7 +94,7 @@ case ${1:-} in
 esac
 R=$(cd "$(dirname "$0")/.." && pwd)
 T=$(mktemp -d) || exit 1
-trap 'rm -rf "$T"' EXIT
+trap '[ -z "${RAMFS:-}" ] || ${SUDO:-} umount "$RAMFS"; rm -rf "$T"' EXIT
 cd "$R" || exit 1
 
 FAILED=0
@@ -764,6 +768,23 @@ def write(name, data):
         f.write(data)
     return path
 
+OUT = ("out.lime", "out.raw", "out.avml")
+def fresh():
+    """The file of an image must not exist when it is made."""
+    for name in OUT:
+        try: os.unlink(tmp + "/image/" + name)
+        except FileNotFoundError: pass
+
+WAYS = ("direct writes", "through the page cache")
+way = os.environ.get("KEEP_WAY", "")    # the way that the file system of tmp must give, or any
+def ways(out):
+    """The lines of an image run without those that say how a file was written, and those."""
+    lines, said = [], []
+    for l in out.splitlines():
+        w = l.split(" ", 1)
+        (said if len(w) == 2 and w[0] in ("lime", "raw", "avml") and w[1] in WAYS else lines).append(l)
+    return lines, said
+
 def case(what, iomem, segments, memory, records, unread=0, size=None):
     """The source and the images of one case, against the records written down for it."""
     global bad
@@ -780,15 +801,19 @@ def case(what, iomem, segments, memory, records, unread=0, size=None):
         bad += 1; print(what, ": the source is", rc, lines, err[-300:], "expected", want, total)
         return
     most = int(lines[-1][len(total):])
+    fresh()
     rc, out, err = run("image", io, co, "lime", tmp + "/image/out.lime", "raw", tmp + "/image/out.raw", "avml", tmp + "/image/out.avml")
-    packed = open(tmp + "/image/out.avml", "rb").read()
+    packed = open(tmp + "/image/out.avml", "rb").read() if os.path.exists(tmp + "/image/out.avml") else b""
     said = ["lime %d bytes, sha256 %s" % (len(want_lime), hashlib.sha256(want_lime).hexdigest()),
             "raw %d bytes, sha256 %s" % (len(want_raw), hashlib.sha256(want_raw).hexdigest()),
             "avml %d bytes, sha256 %s" % (len(packed), hashlib.sha256(packed).hexdigest()),
             "%d bytes not read" % unread]
-    if rc != 0 or out.splitlines() != said:
+    lines, how = ways(out)
+    if rc != 0 or lines != said:
         bad += 1; print(what, ": status", rc, out, err[-300:], "expected", said)
         return
+    if [h.split(" ", 1)[0] for h in how] != ["lime", "raw", "avml"] or any(h.split(" ", 1)[1] != (way or WAYS[0]) for h in how) and way:
+        bad += 1; print(what, ": the files were written", how, "expected each", way or "in one of the two ways")
     if open(tmp + "/image/out.lime", "rb").read() != want_lime or open(tmp + "/image/out.raw", "rb").read() != want_raw:
         bad += 1; print(what, ": an image is not the file that its format defines")
     want_blocks = blocks(memory, records)
@@ -866,6 +891,21 @@ if part == "formats":
     case("a block of zeros between two blocks", "00100000-%08x : System RAM\n" % (0x100000 + len(holes) - 1),
          [(0x100000, len(holes), None)], {0x100000: bytes(holes)}, [(0x100000, 0x100000 + len(holes))])
     case("memory that is all zeros", "00100000-002fffff : System RAM\n", [(0x100000, 2 * MiB, None)], {}, [(0x100000, 0x300000)])
+    # A direct write is whole blocks of 4096 bytes. Ranges that end and begin inside one
+    # block of the file, one that begins and ends inside its blocks, and an image that ends
+    # inside a block.
+    edges = {0x1000: rnd.randbytes(0x800), 0x1a00: rnd.randbytes(0x1600), 0x100200: rnd.randbytes(0xc00)}
+    case("ranges that begin and end inside a block of the file",
+         "00001000-000017ff : System RAM\n00001a00-00002fff : System RAM\n00100200-00100dff : System RAM\n",
+         [(0x1000, 0x800, None), (0x1a00, 0x1600, None), (0x100200, 0xc00, None)], edges,
+         [(0x1000, 0x1800), (0x1a00, 0x3000), (0x100200, 0x100e00)])
+    # a range that fills what is written at once to its last byte, and a gap of less than a block behind it
+    full = {0x100000: rnd.randbytes(15 * MiB), 0x1000800: rnd.randbytes(0x1000)}
+    case("a range that ends where a write ends, and the next inside the block behind it",
+         "00100000-00ffffff : System RAM\n01000800-010017ff : System RAM\n",
+         [(0x100000, 15 * MiB, None), (0x1000800, 0x1000, None)], full, [(0x100000, 0x1000000), (0x1000800, 0x1001800)])
+    case("an image of less than a block", "00001000-000011ff : System RAM\n", [(0x1000, 0x200, None)],
+         {0x1000: rnd.randbytes(0x200)}, [(0x1000, 0x1200)])
     # a core that ends inside a segment: what is missing is zeros and is counted
     cut = dict(mem); cut[0x100000] = high[:2 * MiB + 0x800]
     case("a stretch that cannot be read", IOMEM, segs, cut, [(0x1000, 0x9f000), (0x100000, 0x403000)],
@@ -874,12 +914,18 @@ if part == "formats":
     # a file that cannot be written: the other image is complete all the same
     io, co = write("iomem", IOMEM.encode()), write("core", core(segs, mem))
     want = raw(mem, [(0x1000, 0x9f000), (0x100000, 0x403000)])
+    fresh()
     rc, out, err = run("image", io, co, "lime", "/dev/full", "raw", tmp + "/image/out.raw")
     if rc != 0 or out.splitlines()[:2] != ["lime failed: No space left on device", "raw %d bytes, sha256 %s" % (len(want), hashlib.sha256(want).hexdigest())]:
         bad += 1; print("one file that cannot be written: status", rc, out, err[-300:])
+    fresh()
     rc, out, err = run("image", io, co, "avml", "/dev/full", "raw", tmp + "/image/out.raw")
     if rc != 0 or out.splitlines()[0] != "avml failed: No space left on device":
         bad += 1; print("a compressed image that cannot be written: status", rc, out, err[-300:])
+    # the file of an image is made, and one that is there is not written over
+    rc, out, err = run("image", io, co, "raw", tmp + "/image/out.raw")
+    if rc != 1 or "cannot be made: File exists" not in err or open(tmp + "/image/out.raw", "rb").read() != want:
+        bad += 1; print("a file that is there: status", rc, out, err[-300:])
     rc, out, err = run("image", io, co, "raw", "/dev/full", "lime", "/dev/full")
     if rc != 1 or "failed: no image could be written to its end" not in out:
         bad += 1; print("no file that can be written: status", rc, out, err[-300:])
@@ -957,6 +1003,7 @@ elif part == "changed":
         else:
             off = rnd.choice((32, 54, 56))
             b[off:off + 2] = struct.pack("<H", rnd.choice((0, 1, 4, 5, 56, 64, 0xffff)))
+        fresh()
         rc, out, err = run("image", io, write("core", bytes(b)), "lime", tmp + "/image/out.lime", "raw", tmp + "/image/out.raw", "avml", tmp + "/image/out.avml")
         if rc not in (0, 1):
             bad += 1; print("a changed core ended with status", rc, ":", err[-400:])
@@ -979,14 +1026,64 @@ EOF
 # memory twice, as /proc/kcore offers the text of the kernel, so each schedule counts once.
 image_fixture() {
     local u=$1
-    printf '100000000-1007fffff : System RAM\n' > "$T/fx.iomem"
+    rm -f "$T/fx.out.lime"
     "$u" image "$T/fx.iomem" "$T/fx.elf" lime "$T/fx.out.lime" > "$T/fx.out.txt" || { cat "$T/fx.out.txt"; return 1; }
     cmp <(tests/keyscan "$T/fx.elf" 2> /dev/null | sed 's/ virt .* key / key /' | sort -u) <(tests/keyscan "$T/fx.out.lime" 2> /dev/null | sed 's/ virt .* key / key /' | sort -u) ||
         { echo "the LiME image of the fixture gives other schedules than the fixture"; return 1; }
     [ "$(tests/keyscan "$T/fx.out.lime" 2> /dev/null | wc -l)" -ge 6 ] || { echo "too few schedules"; return 1; }
 }
+# The way an image is written. A file system with direct writes must get them: these are the
+# ones of the machines that run this check. Elsewhere either way is taken.
+case $(stat -f -c %T "$T") in
+ext2/ext3|xfs|btrfs) export KEEP_WAY="direct writes" ;;
+ramfs) export KEEP_WAY="through the page cache" ;;
+*) export KEEP_WAY="" ;;
+esac
+# The pages of an image file that lie in the page cache after it was written with direct
+# writes: none but the last, which is the end of the file that is no whole block. The raw
+# image of the fixture is as long as its highest address, 4 GiB and 8 MiB, most of it a hole.
+image_cached() {
+    local u=$1 f n
+    rm -f "$T/fx.c.lime" "$T/fx.c.raw" "$T/fx.c.avml"
+    "$u" image "$T/fx.iomem" "$T/fx.elf" lime "$T/fx.c.lime" raw "$T/fx.c.raw" avml "$T/fx.c.avml" > "$T/fx.c.txt" || { cat "$T/fx.c.txt"; return 1; }
+    [ "$(grep -c ' direct writes$' "$T/fx.c.txt")" = 3 ] || { echo "not every file was written with direct writes:"; cat "$T/fx.c.txt"; return 1; }
+    for f in lime raw avml; do
+        n=$("$u" cached "$T/fx.c.$f") || return 1
+        case $n in
+        "0 of "*|"1 of "*) ;;
+        *) echo "memory.$f: $n"; return 1 ;;
+        esac
+    done
+    # the measure itself: a file that was written in the usual way lies in the cache
+    cat "$T/fx.c.lime" > "$T/fx.c.copy"
+    n=$("$u" cached "$T/fx.c.copy")
+    [ "${n%% *}" -gt 1 ] || { echo "a file written in the usual way: $n"; return 1; }
+    rm -f "$T/fx.c.lime" "$T/fx.c.raw" "$T/fx.c.avml" "$T/fx.c.copy"
+}
+# A file system without direct writes: the images are the same files, written through the cache.
+RAMFS=
+image_ramfs() {
+    local u=$1 r=0
+    mkdir -p "$T/ram" && $SUDO mount -t ramfs none "$T/ram" && RAMFS=$T/ram || { echo "a ramfs cannot be mounted"; return 1; }
+    $SUDO chmod 1777 "$T/ram"
+    KEEP_WAY="through the page cache" python3 -I "$T/image.py" "$u" "$T/ram" formats || r=1
+    $SUDO umount "$T/ram" && RAMFS=
+    return $r
+}
+printf '100000000-1007fffff : System RAM\n' > "$T/fx.iomem"
+if [ "$(id -u)" = 0 ]; then SUDO=; ROOT=1; elif sudo -n true 2> /dev/null; then SUDO="sudo -n"; ROOT=1; else SUDO=; ROOT=0; fi
 for u in "${UNITS[@]}"; do
     check "image: ${u##*/} writes the LiME and the raw image that the formats define, each byte of RAM once, and a compressed image that reads as the same memory" python3 -I "$T/image.py" "$u" "$T" formats
+    if [ "$KEEP_WAY" = "direct writes" ] && [ -f "$T/fx.elf" ]; then
+        check "image: ${u##*/} leaves no page of an image in the page cache but its last: direct writes" image_cached "$u"
+    else
+        skip "image: the page cache after an image (the temporary directory is on $(stat -f -c %T "$T"), not on ext4, xfs or btrfs)"
+    fi
+    if [ "$ROOT" = 1 ]; then
+        check "image: ${u##*/} writes the same files on a ramfs, which has no direct writes, through the page cache" image_ramfs "$u"
+    else
+        skip "image: on a file system without direct writes (root, or sudo without a password, to mount a ramfs)"
+    fi
     check "image: ${u##*/} writes Snappy streams that decode to their data, of zeros, random bytes and text that repeats" python3 -I "$T/image.py" "$u" "$T" streams
     if [ -n "${AVML:-}" ] && [ -x "$AVML" ]; then
         check "image: AVML converts what ${u##*/} wrote: the compressed image to the LiME image of its blocks, the LiME image to the raw one" python3 -I "$T/image.py" "$u" "$T" formats "$AVML"
@@ -1289,7 +1386,8 @@ EOF
 # bytes, its digests once more across the place where the search of the memory takes its next
 # stretch, and text that begins like the digests and is none.
 python3 -I tests/make-schedule-fixture.py --format raw --size 8 "$T/mem.raw" "$T/k64" "$T/k32" > /dev/null
-python3 -I - "$T" <<'EOF'
+cp "$T/mem.raw" "$T/mem-plain.raw"
+python3 -I - "$T" > "$T/mem2.at" <<'EOF'
 import sys
 t = sys.argv[1]
 img = bytearray(open(t + "/mem.raw", "rb").read())
@@ -1301,6 +1399,14 @@ img[0x1fff00:0x1fff00 + len(meta) - at] = meta[at:]
 img[0x500010:0x500010 + 30] = b'"digests":{"0":{"type":"pbkdf2'
 img[0x600000:0x600008] = b"LUKS\xba\xbe\x00\x01"
 open(t + "/mem.raw", "wb").write(img)
+# A dump with the digests of two headers: at the lower address those of a header whose key the
+# dump does not hold, as of a volume that was closed, behind them those of a header with a key.
+img = bytearray(open(t + "/mem-plain.raw", "rb").read())
+gone = open(t + "/ot.img", "rb").read(32768)[4096:].split(b"\0", 1)[0]
+img[0x100100:0x100100 + len(gone)] = gone
+img[0x41f123:0x41f123 + len(meta)] = meta
+open(t + "/mem2.raw", "wb").write(img)
+print("0x%x 0x%x" % (0x100100 + gone.index(b'"digests":{') + 10, 0x41f123 + at + 10))
 EOF
 # verdicts REPORT : "name verdict key..." for each header of a report, by name
 verdicts() {
@@ -1382,6 +1488,32 @@ dump_proof() {
     ( cd "$T" && "$k" -s mem.raw -d dp/7 l1.img > "$T/dp7.txt" 2>&1 ); rc=$?
     [ "$rc" = 0 ] && grep -q '^==== l1.img$' "$T/dp7.txt" && grep -q '^==== memory@0x1fff0a$' "$T/dp7.txt" && ! grep -q '^==== memory@0x300000$' "$T/dp7.txt" ||
         { echo "a header among the files is taken from the memory as well, or status $rc"; r=1; }
+    # Two digests in the dump, the first without a key. Every header has the attempts that cost
+    # little before any header has every other pair of keys: the key of the second is proven
+    # before the first costs those, and the first is then not proven after them.
+    read -r gone held < "$T/mem2.at"
+    mkdir "$T/dp/9"
+    ( cd "$T" && "$k" -s mem2.raw -d dp/9 > "$T/dp9.txt" 2>&1 ); rc=$?
+    d=$(ls -d "$T"/dp/9/scan_mem2.raw_* 2> /dev/null | head -n 1)
+    [ "$rc" = 0 ] && cmp -s "$d/keys/memory@$held.vk" "$T/k32" || { echo "two digests, the first without a key: status $rc, or the key of the second is not proven"; cat "$T/dp9.txt"; r=1; }
+    n=$(grep -n "^==== memory@$gone: every other pair of keys\$" "$T/dp9.txt" | cut -d: -f1)
+    want=$(grep -n '^  proven at attempt [0-9]*: a volume key of 32 bytes' "$T/dp9.txt" | cut -d: -f1)
+    [ -n "$n" ] && [ -n "$want" ] && [ "$want" -lt "$n" ] || { echo "the key of the second digest is not proven before every pair is tried for the first"; cat "$T/dp9.txt"; r=1; }
+    grep -q '^  every other pair of keys, [0-9]* of them, is tried when every header has had these attempts$' "$T/dp9.txt" &&
+        grep -q '^  up to [0-9]* pairs, each with the [0-9]* iterations of the digest$' "$T/dp9.txt" ||
+        { echo "the pairs that are left are not counted before they are tried"; r=1; }
+    grep -q "^  memory@$gone  *not proven\$" "$d/triage.txt" && [ ! -e "$d/keys/memory@$gone.vk" ] || { echo "the digest without a key is not named as not proven"; r=1; }
+    # the pairs that are left are every pair of two keys of one size but those that lie in place
+    python3 -I -c 'import json, re, sys
+c = json.load(open(sys.argv[1]))["candidates"]; text = open(sys.argv[2]).read()
+left = int(re.search(r"every other pair of keys, (\d+) of them", text).group(1))
+first = int(re.search(r"\n  (\d+) keys tried, the pairs of schedules that lie as the kernel keeps", text).group(1))
+total = int(re.search(r"\n  none of (\d+) candidate keys gives the digest", text).group(1))
+# The first round: each pair in place, and each key alone. The second: of each size every
+# pair of two keys, but those of the first round.
+want = c["aes128"] * (c["aes128"] - 1) + c["aes256"] * (c["aes256"] - 1) - (first - c["keys"])
+sys.exit(0 if first > c["keys"] and left == want and total == first + left else "the attempts: %d first, %d left and %d expected, %d in all" % (first, left, want, total))' \
+        "$d/verdict.json" "$T/dp9.txt" || r=1
     ( cd "$T" && "$k" -s dump.lime -d dp/5 no-such-file > "$T/dp5.txt" 2>&1 ); rc=$?
     [ "$rc" = 1 ] && grep -q 'no-such-file is not a file or a device that can be read$' "$T/dp5.txt" || { echo "a file that does not exist: status $rc"; r=1; }
     return $r

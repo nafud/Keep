@@ -209,8 +209,7 @@ void memory_run(struct run *r, const enum image_format *formats, size_t n, struc
             continue;
         }
         snprintf(m->file, sizeof m->file, "memory/memory.%s", image_name(m->format));
-        if (pathf(path, "%s/%s", r->out, m->file) ||
-            (files[nfiles].fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600)) < 0) {
+        if (pathf(path, "%s/%s", r->out, m->file) || image_open(&files[nfiles], path)) {
             m->file[0] = 0;
             settle(r, m, FAILED, "its file cannot be made: %s", strerror(errno));
             r->write_failed = 1;
@@ -248,12 +247,16 @@ void memory_run(struct run *r, const enum image_format *formats, size_t n, struc
         }
         m->status = CAPTURED;
         m->bytes = files[i].bytes;
+        m->direct = files[i].direct;
         hex_encode(files[i].sha256, 32, m->sha256);
         if (run_add(r, m->file, files[i].sha256))
             r->write_failed = 1;
         res->captured++;
         run_say(r, "  %s, %llu bytes, %s, written in %u s", m->file, (unsigned long long)m->bytes, what(m->format), res->seconds);
         run_say(r, "  sha256 %s", m->sha256);
+        run_say(r, "  %s", m->direct ? "written with direct writes, which pass the page cache of the machine"
+                                     : "written through the page cache of the machine: the file system of the destination "
+                                       "takes no direct writes");
     }
     if (failed && res->captured)
         run_say(r, "  %s", err);

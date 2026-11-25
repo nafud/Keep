@@ -47,21 +47,33 @@ void image_source_free(struct image_source *src);
 uint64_t image_size(enum image_format f, const struct image_source *src, int *exact);
 
 struct image_file {
-    enum image_format format;   /* set by the caller, with fd */
-    int fd;                     /* an empty file, open for writing */
+    enum image_format format;   /* set by the caller */
+    int fd;                     /* an empty file, open for writing: image_open */
+    int direct;                 /* it is written with direct writes: image_open, image_write */
     int failed;                 /* the errno of the write that failed, 0 for a complete image */
     uint64_t bytes;             /* the size of the file */
     uint8_t sha256[32];         /* of the file, computed while it was written */
     struct hash_ctx hash;
     uint64_t pos;               /* the address behind the last byte written, for the raw format */
+    uint8_t *out;               /* what is not yet in the file, at an address that a direct write takes */
+    size_t fill;
+    uint64_t at;                /* the offset of the file at which out begins */
 };
+
+/*
+ * Make the file of an image at PATH, which must not exist, for its owner alone. It is opened
+ * for direct writes (O_DIRECT), which pass the page cache, and where the file system has
+ * none of those, for writes through the cache, with f->direct 0. Returns 0, or -1 with errno.
+ */
+int image_open(struct image_file *f, const char *path);
 
 /*
  * Read the memory of SRC once from CORE and write it to every file of FILES, each in its
  * format. A file whose write fails is left as it is and the others go on. A stretch that
  * cannot be read is written as zeros and counted in *unread. PROGRESS, where given, is called
  * with the bytes of memory done so far. Returns 0 when the memory was read to its end and at
- * least one file is complete, or -1 with err.
+ * least one file is complete, or -1 with err. A file that refused a direct write is written
+ * through the page cache from there on and has direct 0.
  */
 int image_write(int core, const struct image_source *src, struct image_file *files, size_t nfiles,
                 void (*progress)(void *arg, uint64_t done), void *arg, uint64_t *unread,

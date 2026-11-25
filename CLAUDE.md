@@ -36,7 +36,7 @@ README.
 | `tests/make-compat-vm.sh` | test, workstation | Starts a libvirt guest that stays, from a distribution's cloud image, for work by hand |
 | `tests/selftest.sh` | test, workstation and pipeline | Runs every check that needs neither root nor device-mapper, `keytriage.sh` included on stand-ins for the examined system, and ends with `RESULT: PASS` or `RESULT: FAIL` |
 | `tests/unit-check.sh` | test, workstation and pipeline | Builds the parts of the C program twice, statically and with the sanitizers of the compiler, and checks each against an independent source: `hashlib`, Python's `json`, `cryptsetup` |
-| `tests/keep-unit.c` | test | Runs one part of the C program at a time, for `unit-check.sh` and for a comparison with `dmsetup` on a guest |
+| `tests/keep-unit.c` | test | Runs one part of the C program at a time, for `unit-check.sh` and for a comparison with `dmsetup` on a guest, and counts the pages of a file that lie in the page cache |
 | `docs/` | GitHub Pages | The page of Keep: `index.html`, `assets/keep.css`, `assets/keep.js` and the fonts |
 | `.github/workflows/` | GitHub | `checks.yml` runs the self-test, builds the medium and runs `compat-check.sh` on two runner images on every push. `distros.yml` runs it in guests of ten distribution releases. `pages.yml` publishes `docs/` from `main` |
 
@@ -253,7 +253,9 @@ SHA-256.
   was found in the dump itself has `in_memory` true and its address as `offset`.
 - With `-F` the C program writes three images from one read. `memory` is then the first, with
   the fields above, and has `further_images`, a list with `status`, `file`, `format`,
-  `bytes`, `sha256` and `note` for each of the others.
+  `bytes`, `sha256`, `direct_io` and `note` for each of the others.
+- The C program adds `direct_io` to `memory`: true for an image that was written with direct
+  writes, false for one that went through the page cache, `null` where there is no file.
 - No tool of Keep reads the report back. It is for the examiner's own programs and for the
   checks, and `triage.txt` beside it says the same for a reader. A change of a field name is a
   change of the schema string.
@@ -290,8 +292,9 @@ sudo apt install bash-static busybox-static xorriso gcc make musl-tools curl fil
   The medium carries no Python, so `vkverify.py` and `offline-keyscan.sh` are lab tools.
 - The build refuses a binary that is not statically linked, and writes `VERSIONS.txt` and
   `MANIFEST.sha256`.
-- `c/keep` is the C program, built by `make` against musl. It is on the medium only so that
-  the checks can run it beside the scripts.
+- `c/keep` is the C program, built by `make` against musl, and `c/keep-unit` the program of
+  its unit checks. Both are on the medium only for the checks: the first is run beside the
+  scripts, the second counts the pages of an image that lie in the page cache.
 - `dmsetup` and `cryptsetup` are not on the medium. The examined system's own are used, and their
   resolved paths and SHA-256 are recorded in the report so they can be checked against the
   distribution's packages afterwards.
@@ -394,13 +397,17 @@ sudo ./keep -m [-f FORMAT | -F]         # the keys, then a memory image: lime (d
   `memory.lime`. `-f` names another format: `raw`, where each byte lies at the file offset
   that is its physical address, or `avml`, the compressed format of AVML. `-F` writes all
   three from one read of the memory. An image that was asked for and is not there ends the
-  run with status 1.
+  run with status 1. An image is written with direct writes, which pass the page cache of
+  the machine, where the file system of the destination has them, and the run says which
+  way each file was written.
 - `-s DUMP` searches a dump as `kcore-keyscan` does and proves which of the keys is the
   volume key of each LUKS header in the `FILE`s, as `vkverify.py` does. A `FILE` is a header
   backup, the raw image of a partition or of a whole disk, or a device: its start is read as a
   header, and behind it every sector that begins with the magic of LUKS. The pairs of
   schedules that lie as the kernel keeps the two keys of an XTS volume are tried first, then
-  each key alone, then every other pair. It writes `scan_<dump>_<time>/` into the destination,
+  each key alone, then every other pair. Every header has the first two before any header
+  has the third, which is the square of the number of keys and is counted on the screen
+  before it begins. It writes `scan_<dump>_<time>/` into the destination,
   with `triage.txt`, `scan.txt`, `verdict.json`, `manifest.sha256` and `keys/`: the list
   `candidates.txt` and one `NAME.vk` for each proven key, where `NAME` is the name of the
   file, with `@0xOFFSET` for a header that does not lie at its start, and `-2` for the second
@@ -514,6 +521,27 @@ Read in Linux 4.18, 5.10, 6.12 and 6.18, cryptsetup 2.0.6, 2.3.7, 2.7.0 and 2.8.
   CRC-32C of its data, compressed or as it is. Which copies a compressor finds is its own
   matter, so two compressors write different streams of the same data
   (`format_description.txt` and `framing_format.txt` of Snappy 1.2.1).
+- A file that is written in the usual way goes through the page cache: the kernel takes
+  free memory for its pages, and what lay there is gone. A file that is opened with
+  `O_DIRECT` is written from the memory of the program to the device. Read in Linux 4.18
+  and 6.12, LiME 1.9.1 and coreutils 9.4:
+  - Such a write must be whole blocks, at its place in the file, in its length and in the
+    address of its memory (`__blockdev_direct_IO` in `fs/direct-io.c`). The program writes
+    from a buffer at a page address, a mebibyte at a time.
+  - A file system without such writes refuses the file at open with `EINVAL`
+    (`open_check_o_direct` in Linux 4.18, `do_dentry_open` in 6.12). The file is made
+    before that and stays, as a run on Linux 6.18 showed. ramfs is one in both (`ramfs_aops`,
+    `ram_aops`), and tmpfs in 4.18. In 6.12 tmpfs opens such a file (`FMODE_CAN_ODIRECT` in
+    `mm/shmem.c`), and keeps it in memory like any of its files.
+  - FAT takes a direct write that makes the file longer through the page cache by itself
+    (`fat_direct_IO`), and the kernel writes those pages out and drops them before the write
+    returns (`direct_write_fallback` in `fs/libfs.c` of 6.12, `__generic_file_write_iter` in
+    4.18). exFAT of 6.12 takes such a write as it is (`exfat_direct_IO`). Linux 4.18 has no
+    exFAT.
+  - LiME writes with `O_DIRECT` where its option `dio` is given and a first write of that
+    kind succeeds, and otherwise without (`setup_disk` in `disk.c`).
+  - `dd` of GNU coreutils writes the last block of a file, which is no whole one, after it
+    has taken `O_DIRECT` off the descriptor (`iwrite` in `dd.c`). The program does the same.
 - Nothing in the kernel keeps a LUKS header: dm-crypt is given the key and the cipher, and
   cryptsetup reads the header past the page cache where it can (`O_DIRECT`). What a machine
   holds of a header is what else read it. This is not from a source but from runs on a guest
@@ -540,7 +568,7 @@ Read in Linux 4.18, 5.10, 6.12 and 6.18, cryptsetup 2.0.6, 2.3.7, 2.7.0 and 2.8.
 | `src/dump.c` | The search of a memory dump that exists: its schedules, the LUKS headers of the files that are given, the proof of the keys against them, and the pairs that no header proves |
 | `src/run.c` | The folder of a run: its report, its files, their flushing and the manifest |
 | `src/memory.c` | The memory image of a run: the room it needs, its files, and what the lab needs beside it to name the kernel |
-| `src/image.c` | What an image holds, from `/proc/iomem` and `/proc/kcore`, and the three formats. The memory is read once for all files |
+| `src/image.c` | What an image holds, from `/proc/iomem` and `/proc/kcore`, and the three formats. The memory is read once for all files, and written with direct writes |
 | `src/snappy.c` | The framed Snappy format, written, with CRC-32C |
 | `src/triage.c` | The run: destination, system, volumes, the ladder for each key, verdicts, `triage.txt`, `verdict.json`, `manifest.sha256`. Locks the memory of the process |
 | `src/dm.c` | The list of the mapped devices and the table of one, from the kernel |
@@ -596,6 +624,8 @@ Read in Linux 4.18, 5.10, 6.12 and 6.18, cryptsetup 2.0.6, 2.3.7, 2.7.0 and 2.8.
 - For a header in re-encryption the search of a dump proves both keys, each against its own
   digest. `vkverify.py` takes the first digest only.
 - A dump is searched for headers as well, which `vkverify.py` does not do.
+- With several headers every one has the attempts that cost little before any has every
+  other pair of keys. `vkverify.py` ends one header before it begins the next.
 - A LUKS2 header in the image of a disk is found by the magic of its first copy. One whose
   first copy is overwritten is found only where it lies at the start of the file.
 - The memory image is read as AVML reads it, the RAM ranges of `/proc/iomem` through
@@ -613,6 +643,12 @@ Read in Linux 4.18, 5.10, 6.12 and 6.18, cryptsetup 2.0.6, 2.3.7, 2.7.0 and 2.8.
     them is written.
   - The SHA-256 of an image is computed while it is written, and the file is not read
     again. `keytriage.sh` reads it again for that.
+  - An image is written with direct writes, which pass the page cache, so that the file of
+    the image does not take the free memory that the image has yet to read. AVML writes
+    through the cache, and `keytriage.sh` then reads the file through it once more. Where
+    the file system of the destination has no direct writes, the image goes through the
+    cache, and the run and `direct_io` of the report say so. What is left at the end of a
+    file and is no whole block of 4096 bytes goes through the cache as well: one page.
   - An image is started where the destination has room for it and 64 MiB more. A compressed
     image is started whatever room there is, as with `keytriage.sh`, except beside other
     images, where it must not take their room and needs room for the most it can take.
@@ -638,6 +674,11 @@ now a case of `unit-check.sh`). A sixth was found by running `unit-check.sh` as 
 not root: with the lock of the memory in force for what is allocated later, and the limit of
 that user for locked memory, the search of a dump had no memory for the files it was to
 read. The lock is now taken only where it can hold, and the check runs with a small limit.
+
+One thing was found by a run by hand on a machine (see below) and is no defect of what the
+program gave. The search of a dump spent 510 s on a digest without a key before it proved
+the key of the header behind it: since 2.0-pre7 every header has the attempts that cost
+little first, with a case of `unit-check.sh`.
 
 One defect of `keytriage.sh` was found on the way: it stated no key size for a LUKS2 volume
 with integrity. It is corrected in 1.5.1, with its check in `selftest.sh`.
@@ -757,10 +798,18 @@ it lockdown `integrity`. The screen and the report of each run were read:
   not by the check. In the mode `confidentiality` the kernel refuses `/proc/kcore`, which
   the run then says, and that is not run.
 - RAM that a driver added is a case of `unit-check.sh`. No machine with such RAM was run.
-- An image goes through the page cache of the examined system, like every file of a run, and
-  so does that of AVML. The cache of the file takes free memory, and what lay there is
-  overwritten, also while the image is taken. The runs above fit this and do not measure it.
-  Writing past the cache, as LiME can with its option `dio`, is not done.
+- The small files of a run, the report, the header backups and the keys, go through the
+  page cache of the examined system, and so does an image on a file system without direct
+  writes. On FAT the kernel takes the direct writes of a growing file through the cache and
+  drops the pages after each, so the cache holds a mebibyte of the image at a time: read in
+  the source, and no image was written to FAT in a run. An image on exFAT or NTFS is not
+  run either. On tmpfs a file lies in memory whichever way it is written.
+- A write that a file system refuses with `EINVAL` after it has opened the file for direct
+  writes ends the direct writes of that file, which then goes through the cache. No file
+  system that does this was found to check it on.
+- That the image of AVML, written through the cache, costs memory that it has yet to read is
+  what the fewer blocks of zeros in later images fit (see "Where it has run"). How much of
+  the memory of a machine an image through the cache overwrites was not measured.
 - A destination with FAT32 takes no file of 4 GiB, so an image of a machine with that much
   memory fails there and is removed. A raw image on a file system that keeps no holes, as
   FAT and exFAT, has what lies between the ranges written as zeros. Neither is run.
@@ -774,9 +823,11 @@ it lockdown `integrity`. The screen and the report of each run were read:
   not known, and neither is it for a volume that was opened at boot, for other releases of
   udisks2, or for metadata with several keyslots or tokens, where the object `digests` can
   lie across two pages that do not follow each other in memory.
-- A digest that a dump holds and has no key for costs every pair of the keys of the dump,
-  and the headers behind it wait for that: 510 s for 90 keys on the machine above. With n
-  keys of one size these are n * n attempts, each with the iterations of the digest.
+- A digest that a dump holds and has no key for costs every pair of the keys of the dump:
+  510 s for 90 keys on the machine above. With n keys of one size these are n * n attempts,
+  each with the iterations of the digest. They come after every header has had the attempts
+  that cost little, and their number is said before. A run that is ended while it makes
+  them has written the keys it proved, and neither its report nor its manifest.
 
 ## Rules that every change keeps
 
@@ -873,7 +924,15 @@ cannot be read and a file that cannot be written. With `AVML=/path/to/avml` AVML
 converts the compressed image to a LiME image and the LiME image to a raw one, which must be
 the files of Python byte for byte. What cannot be placed is refused: a text without
 addresses, a core of a kernel before 4.12. Cores and texts with changed bytes must give no
-fault, 600 times. Both ways of computing SHA-256 are compared with `hashlib`. The search of
+fault, 600 times. The images are written with direct writes where the file system of the
+temporary directory has them, which the check asks for on ext4, xfs and btrfs: ranges that
+begin and end inside a block of the file, a range that ends where a write ends and an image
+of less than a block are cases, a file that is there must not be written over, and
+`keep-unit cached` must then count no page of an image in the page cache but its last, and
+more than one for a copy that was written in the usual way. As root, or with `sudo` that
+asks no password, the same cases are written on a ramfs, which has no direct writes, and
+must give the same files through the cache. Both ways of computing SHA-256 are compared
+with `hashlib`. The search of
 a dump is given an image with the schedules of the keys of the headers that cryptsetup made:
 each key must be proven and written as it is, also for a header with erased keyslots, for
 one in re-encryption with its two keys, for a cipher with one key, for headers inside the
@@ -883,7 +942,9 @@ of another key, a file without a header and a header that ends early must be nam
 A dump with a LUKS1 header at the start of a page and with the digests of a LUKS2 header
 inside other bytes, once across the place where the search takes its next stretch of
 memory, must give both keys with no file at all, and none for text that only begins like
-the digests.
+the digests. A dump with the digests of two headers, the first without a key, must give the
+key of the second before every other pair is tried for the first, and the attempts must be
+as many as the keys and their pairs.
 The options are given to both
 builds of the program: what does not go together must end with status 2 and write nothing,
 the search of a dump must write the list of the scanner into `keys/` of its folder with no
@@ -899,7 +960,9 @@ keep-san`), that build is run at the same places and must end with status 0.
 Four parts of `compat-check.sh` are there for what the C program does beyond the four
 mappings. With a memory image in the run (`-m` or `-c`), the C program takes its own while
 the two containers are open, once for each word of `KEEP_IMAGES`: a format, or `all` for
-`-F`. The report must name each file with its size and its SHA-256, the scanner must read
+`-F`. Each file must be named as written with direct writes, and before anything reads it
+`c/keep-unit cached` must count no page of it in the page cache but the last. The report
+must name each file with its size and its SHA-256, the scanner must read
 each image to its end, and the schedule of each half of both volume keys must lie in it at
 an address at which it lies in the image that AVML took in the main run. The images of one
 read must give the same list of schedules, and AVML must convert the compressed image to a

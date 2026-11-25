@@ -13,6 +13,7 @@ struct memory_image {                   /* one image that was asked for, and wha
     char file[48];                      /* in the folder of the run, empty where none is kept */
     uint64_t bytes;
     char sha256[65];
+    int direct;                         /* written with direct writes, which pass the page cache */
     char note[400];
 };
 

@@ -16,6 +16,13 @@
  * it, struct aesni_xts_ctx), then each key alone, then every other pair. The place only orders
  * the attempts. The digest decides.
  *
+ * The first two kinds of attempt are as many as the dump has keys. The third is every pair of
+ * two keys of one size, the square of their number, each with the iterations of the digest:
+ * 90 keys of a machine with 16 GiB took 510 s for one digest. A digest whose key the dump
+ * does not hold costs all of them, and what a dump holds of a header can be of a volume that
+ * was closed. So every header has the attempts of the first two kinds before any header has
+ * those of the third, which are counted on the screen before they begin.
+ *
  * A header can also lie in the dump itself, and it proves a key like any other. The kernel
  * keeps what was read of a device in its cache, and the 592 bytes of a LUKS1 header are in the
  * first page of its device. A program that has read a LUKS2 header has the metadata in its
@@ -84,8 +91,15 @@ struct target {                         /* a LUKS header that was located, or a 
     unsigned taken;                     /* bit n: digest n + 1 has its key */
     struct proof proofs[LUKS_MAX_DIGESTS];
     unsigned attempts;
+    size_t far;                         /* the pairs that the second round has to try */
+    const char *uncomputed;             /* the hash of a digest that is not computed here */
     const char *verdict;
     char note[LUKS_ERR_LEN + 96];
+};
+
+struct place {                          /* two schedules that lie as the XTS code keeps a pair */
+    int data, tweak;                    /* which of the keys, as first counts them */
+    const struct keyscan_hit *at;       /* the tweak schedule */
 };
 
 struct keys {                           /* the schedules of the dump, and each key once */
@@ -93,6 +107,9 @@ struct keys {                           /* the schedules of the dump, and each k
     int nhits;
     int *first;                         /* the hit at which a key was found first */
     int nfirst, aes128, aes256;
+    struct place *places;               /* each pair of keys that lies in place, once, where it was found first */
+    size_t nplaces;
+    uint8_t *in_place;                  /* nfirst * nfirst: the data key i and the tweak key j are such a pair */
 };
 
 static size_t key_len(const struct keyscan_hit *h)
@@ -133,6 +150,40 @@ static int data_behind(const struct keys *k, int tweak)
         if (k->hits[j].nk == k->hits[tweak].nk && k->hits[j].phys == k->hits[tweak].phys + XTS_DISTANCE)
             return j;
     return -1;
+}
+
+/* The pairs of keys that lie in place. They are the same for every header. */
+static int places(struct keys *k)
+{
+    size_t nd = (size_t)k->nfirst, i, j;
+    int a, b;
+
+    if (!nd)
+        return 0;
+    if (!(k->in_place = calloc(nd, nd)) || !(k->places = malloc((size_t)k->nhits * sizeof *k->places)))
+        return -1;
+    for (a = 0; a < k->nhits; a++) {
+        if ((b = data_behind(k, a)) < 0)
+            continue;
+        for (i = 0; i < nd && !same_key(&k->hits[k->first[i]], &k->hits[b]); i++)
+            ;
+        for (j = 0; j < nd && !same_key(&k->hits[k->first[j]], &k->hits[a]); j++)
+            ;
+        if (k->in_place[i * nd + j])
+            continue;                           /* the same pair at another place */
+        k->in_place[i * nd + j] = 1;
+        k->places[k->nplaces].data = (int)i;
+        k->places[k->nplaces].tweak = (int)j;
+        k->places[k->nplaces++].at = &k->hits[a];
+    }
+    return 0;
+}
+
+static void keys_free(struct keys *k)
+{
+    free(k->first);
+    free(k->places);
+    free(k->in_place);
 }
 
 /* ---- the headers in the memory of the dump ---------------------------------------------------- */
@@ -350,7 +401,8 @@ struct effort {                         /* one header's attempts, and when the s
     struct run *r;
     struct target *t;
     time_t start, said;
-    const char *uncomputed;             /* the hash of a digest that is not computed here */
+    unsigned before;                    /* the attempts before this round */
+    size_t of;                          /* how many this round makes at most, where that is said */
 };
 
 /* One candidate key against the digests that have no key yet. Returns 1 when the header needs
@@ -366,11 +418,14 @@ static int attempt(struct effort *e, const uint8_t *key, size_t len, const struc
     t->attempts++;
     if (now - e->said >= 15) {
         e->said = now;
-        printf("  %u keys tried, %lld s\n", t->attempts, (long long)(now - e->start));
+        if (e->of)
+            printf("  %u of %zu pairs tried, %lld s\n", t->attempts - e->before, e->of, (long long)(now - e->start));
+        else
+            printf("  %u keys tried, %lld s\n", t->attempts, (long long)(now - e->start));
         fflush(stdout);
     }
     if ((which = luks_proves(&t->h, key, len, t->taken, &hash)) < 0) {
-        e->uncomputed = hash ? hash : "no known function";
+        t->uncomputed = hash ? hash : "no known function";
         return 1;
     }
     if (!which)
@@ -401,35 +456,37 @@ static int attempt(struct effort *e, const uint8_t *key, size_t len, const struc
     return all_proven(t);
 }
 
-/* The candidate keys of the dump against one header, in the order of vkverify.py. */
-static void prove(struct run *r, struct target *t, const struct keys *k)
+/* Whether the second round has this pair of keys to try for a header. */
+static int is_far(const struct target *t, const struct keys *k, size_t i, size_t j)
+{
+    const struct keyscan_hit *data = &k->hits[k->first[i]], *tweak = &k->hits[k->first[j]];
+
+    return i != j && data->nk == tweak->nk && !k->in_place[i * (size_t)k->nfirst + j] && wanted(t, 2 * key_len(data), 1);
+}
+
+/*
+ * The first round for one header, the attempts that cost little: the pairs of keys that lie
+ * in place, and each key alone. They are as many as the dump has keys, and where a volume was
+ * open on the machine of the dump, one of them is its key. Returns 1 when the header needs no
+ * further attempt, and else counts what the second round has to try.
+ */
+static int first_round(struct run *r, struct target *t, const struct keys *k)
 {
     struct effort e = { .r = r, .t = t };
-    uint8_t key[64], *tried = NULL;
-    size_t nd = (size_t)k->nfirst, i, j, proven = 0;
-    int a, b, done = 0;
+    uint8_t key[64];
+    size_t nd = (size_t)k->nfirst, i, j;
+    int done = 0;
 
     e.start = e.said = time(NULL);
-    /* which pairs of keys were tried as a pair that lies in place */
-    if (nd && !(tried = calloc(nd, nd))) {
-        snprintf(t->note, sizeof t->note, "no memory for the attempts");
-        return;
-    }
-    for (a = 0; a < k->nhits && !done; a++) {
-        size_t len = key_len(&k->hits[a]);
+    for (i = 0; i < k->nplaces && !done; i++) {
+        const struct keyscan_hit *data = &k->hits[k->first[k->places[i].data]], *tweak = &k->hits[k->first[k->places[i].tweak]];
+        size_t len = key_len(data);
 
-        if ((b = data_behind(k, a)) < 0 || !wanted(t, 2 * len, 1))
+        if (!wanted(t, 2 * len, 1))
             continue;
-        for (i = 0; i < nd && !same_key(&k->hits[k->first[i]], &k->hits[b]); i++)
-            ;
-        for (j = 0; j < nd && !same_key(&k->hits[k->first[j]], &k->hits[a]); j++)
-            ;
-        if (tried[i * nd + j])
-            continue;
-        tried[i * nd + j] = 1;
-        memcpy(key, k->hits[b].key, len);               /* the data key, then the tweak key */
-        memcpy(key + len, k->hits[a].key, len);
-        done = attempt(&e, key, 2 * len, &k->hits[a]);
+        memcpy(key, data->key, len);                    /* the data key, then the tweak key */
+        memcpy(key + len, tweak->key, len);
+        done = attempt(&e, key, 2 * len, k->places[i].at);
     }
     for (i = 0; i < nd && !done; i++) {
         const struct keyscan_hit *h = &k->hits[k->first[i]];
@@ -437,25 +494,47 @@ static void prove(struct run *r, struct target *t, const struct keys *k)
         if (wanted(t, key_len(h), 0))
             done = attempt(&e, h->key, key_len(h), NULL);
     }
+    explicit_bzero(key, sizeof key);
+    for (i = 0; i < nd && !done; i++)
+        for (j = 0; j < nd; j++)
+            t->far += (size_t)is_far(t, k, i, j);
+    return done || !t->far;
+}
+
+/* The second round for one header: every other pair of keys, in the order of vkverify.py.
+   They are as many as the square of the keys of one size. */
+static void second_round(struct run *r, struct target *t, const struct keys *k)
+{
+    struct effort e = { .r = r, .t = t, .before = t->attempts, .of = t->far };
+    uint8_t key[64];
+    size_t nd = (size_t)k->nfirst, i, j;
+    int done = 0;
+
+    e.start = e.said = time(NULL);
     for (i = 0; i < nd && !done; i++)
         for (j = 0; j < nd && !done; j++) {
             const struct keyscan_hit *data = &k->hits[k->first[i]], *tweak = &k->hits[k->first[j]];
             size_t len = key_len(data);
 
-            if (i == j || data->nk != tweak->nk || tried[i * nd + j] || !wanted(t, 2 * len, 1))
+            if (!is_far(t, k, i, j))
                 continue;
             memcpy(key, data->key, len);
             memcpy(key + len, tweak->key, len);
             done = attempt(&e, key, 2 * len, NULL);
         }
     explicit_bzero(key, sizeof key);
-    free(tried);
+}
+
+/* What the attempts on a header came to. */
+static void conclude(struct target *t)
+{
+    size_t proven = 0, i;
 
     for (i = 0; i < t->h.ndigests; i++)
         proven += t->proofs[i].bytes > 0;
-    if (e.uncomputed) {
+    if (t->uncomputed) {
         snprintf(t->note, sizeof t->note, "the digest of the header uses %s, which this program does not compute. vkverify.py does",
-                 e.uncomputed);
+                 t->uncomputed);
     } else if (all_proven(t) && proven == t->h.ndigests) {
         t->verdict = PROVEN;
         snprintf(t->note, sizeof t->note, "%s", t->h.ndigests > 1 ? "each key gives its digest of the header" : "gives the digest of the header");
@@ -471,6 +550,15 @@ static void prove(struct run *r, struct target *t, const struct keys *k)
     }
 }
 
+static void verdict(struct run *r, struct target *t)
+{
+    if (t->verdict != PROVEN)
+        run_say(r, "  %s", t->note);
+    run_say(r, "  VERDICT: %s", t->verdict);
+    run_say(r, "%s", "");
+}
+
+/* A header on the screen, and its first round. */
 static void one_target(struct run *r, struct target *t, const struct keys *k)
 {
     const struct luks_digest *d = &t->h.digests[0];
@@ -485,33 +573,46 @@ static void one_target(struct run *r, struct target *t, const struct keys *k)
     else
         run_say(r, "  from %s", t->file);
     if (!t->readable) {
-        run_say(r, "  %s", t->note);
-        run_say(r, "  VERDICT: %s", t->verdict);
-        run_say(r, "%s", "");
+        verdict(r, t);
         return;
     }
     if (!t->h.ndigests) {
         run_say(r, "  LUKS%d, UUID %s, with no digest of a volume key", t->h.version, t->h.uuid);
         snprintf(t->note, sizeof t->note, "the header has no digest of a volume key");
-    } else {
-        if (t->in_memory && t->h.version == 2)
-            run_say(r, "  LUKS2, digest pbkdf2-%s with %u iterations. The cipher and the size of the key stand in other parts of "
-                    "the metadata, so keys of every size are tried", d->hash, d->iterations);
-        else if (d->key_bytes)
-            run_say(r, "  LUKS%d, cipher %s, key of %zu bits, UUID %s, digest pbkdf2-%s with %u iterations", t->h.version,
-                    d->cipher[0] ? d->cipher : "unknown", d->key_bytes * 8, t->h.uuid, d->hash, d->iterations);
-        else
-            run_say(r, "  LUKS%d, cipher %s, key size not stated, no keyslot is left, UUID %s, digest pbkdf2-%s with %u iterations",
-                    t->h.version, d->cipher[0] ? d->cipher : "unknown", t->h.uuid, d->hash, d->iterations);
-        if (t->h.ndigests > 1)
-            run_say(r, "  %zu keys: a volume in re-encryption has one for the part that is done and one for the rest",
-                    t->h.ndigests);
-        prove(r, t, k);
+        verdict(r, t);
+        return;
     }
-    if (t->verdict != PROVEN)
-        run_say(r, "  %s", t->note);
-    run_say(r, "  VERDICT: %s", t->verdict);
+    if (t->in_memory && t->h.version == 2)
+        run_say(r, "  LUKS2, digest pbkdf2-%s with %u iterations. The cipher and the size of the key stand in other parts of "
+                "the metadata, so keys of every size are tried", d->hash, d->iterations);
+    else if (d->key_bytes)
+        run_say(r, "  LUKS%d, cipher %s, key of %zu bits, UUID %s, digest pbkdf2-%s with %u iterations", t->h.version,
+                d->cipher[0] ? d->cipher : "unknown", d->key_bytes * 8, t->h.uuid, d->hash, d->iterations);
+    else
+        run_say(r, "  LUKS%d, cipher %s, key size not stated, no keyslot is left, UUID %s, digest pbkdf2-%s with %u iterations",
+                t->h.version, d->cipher[0] ? d->cipher : "unknown", t->h.uuid, d->hash, d->iterations);
+    if (t->h.ndigests > 1)
+        run_say(r, "  %zu keys: a volume in re-encryption has one for the part that is done and one for the rest",
+                t->h.ndigests);
+    if (first_round(r, t, k)) {
+        conclude(t);
+        verdict(r, t);
+        return;
+    }
+    run_say(r, "  %u keys tried, the pairs of schedules that lie as the kernel keeps the two keys of a volume and each key "
+            "alone:%s", t->attempts, t->taken ? " not every key of the header is among them" : " none gives the digest");
+    run_say(r, "  every other pair of keys, %zu of them, is tried when every header has had these attempts", t->far);
     run_say(r, "%s", "");
+}
+
+/* The second round of a header on the screen. */
+static void one_more(struct run *r, struct target *t, const struct keys *k)
+{
+    run_say(r, "==== %s: every other pair of keys", t->name);
+    run_say(r, "  up to %zu pairs, each with the %u iterations of the digest", t->far, t->h.digests[0].iterations);
+    second_round(r, t, k);
+    conclude(t);
+    verdict(r, t);
 }
 
 /* ---- the pairs that no header proves ---------------------------------------------------------- */
@@ -702,8 +803,9 @@ int dump_run(const struct dump_options *o)
         free(said);
     }
     keys.hits = keyscan_hits(&keys.nhits);
-    if (distinct(&keys)) {
+    if (distinct(&keys) || places(&keys)) {
         keyscan_wipe();
+        keys_free(&keys);
         return run_die("no memory");
     }
     run_say(r, "%d schedules in keys/candidates.txt, %d different keys: %d of AES-128, %d of AES-256", keys.nhits,
@@ -747,7 +849,7 @@ int dump_run(const struct dump_options *o)
     free(w);
     if (found < 0) {
         keyscan_wipe();
-        free(keys.first);
+        keys_free(&keys);
         free(targets);
         return run_die("no memory");
     }
@@ -760,13 +862,19 @@ int dump_run(const struct dump_options *o)
         run_say(r, "No file with a LUKS header is given, and the dump itself holds none, so no key can be proven. A header\n"
                 "backup or the image of the disk as a further argument gives the proof: keep -s DUMP FILE...");
     run_say(r, "%s", "");
-    for (i = 0; i < ntargets; i++) {
+    /* Every header has the attempts that cost little before any header has the others: a
+       digest that the dump has no key for, as that of a volume that was closed, costs every
+       pair of keys, and no header with a key waits for that. */
+    for (i = 0; i < ntargets; i++)
         one_target(r, &targets[i], &keys);
+    for (i = 0; i < ntargets; i++)
+        if (targets[i].far)
+            one_more(r, &targets[i], &keys);
+    for (i = 0; i < ntargets; i++)
         proven += !targets[i].in_memory && targets[i].verdict == PROVEN;
-    }
     memory_pairs(r, &keys, targets, ntargets, pairs, &npairs, &further);
     keyscan_wipe();
-    free(keys.first);
+    keys_free(&keys);
 
     run_say(r, "==== verdicts");
     for (i = 0; i < ntargets; i++) {

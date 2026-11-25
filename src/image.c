@@ -29,6 +29,25 @@
  *          the length of that stream in 8 bytes. A reader cannot tell a block of zeros from
  *          memory that is not there, which is why the other two formats leave nothing out.
  *
+ * How it is written. A file that is written in the usual way goes through the page cache of
+ * the machine: the kernel takes free memory for the pages of the file, and what lay in that
+ * memory is gone, also the part of it that the image has not reached yet. So the file is
+ * opened with O_DIRECT, as LiME does with its option dio (disk.c of LiME 1.9.1), and its bytes
+ * go from a buffer of this program to the device. Such a write must be whole blocks of the
+ * device, in the file and in memory (__blockdev_direct_IO in fs/direct-io.c), so the bytes
+ * are gathered in a buffer at a page address and written a mebibyte at a time. What is left
+ * at the end is less than a block and is written in the usual way, as dd of GNU coreutils
+ * writes its last block (iwrite in dd.c of coreutils 9.4): it is one page of the cache.
+ *
+ * Not every file system has such writes. One without them refuses the file at open (EINVAL,
+ * do_dentry_open in fs/open.c: ramfs is one), and the file is then opened without O_DIRECT.
+ * A write that is refused with EINVAL later ends the direct writes of that file in the same
+ * way. FAT takes a direct write that makes a file longer through the cache by itself
+ * (fat_direct_IO), and the kernel then writes those pages and drops them before the write
+ * returns (direct_write_fallback in fs/libfs.c of Linux 6.12, __generic_file_write_iter in
+ * Linux 4.18), so the cache holds a mebibyte of the image at a time and not the image. tmpfs
+ * keeps a file in the page cache, whichever way it is written.
+ *
  * The SHA-256 of each file is computed while it is written, so the file is not read again.
  * A stretch that the kernel does not hand out is written as zeros and counted. The kernel
  * itself hands out zeros for a page of a range that is not in use as RAM (read_kcore_iter).
@@ -39,6 +58,7 @@
 
 #include <elf.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -47,6 +67,8 @@
 #define BLOCK (16u << 20)       /* read and handed to the formats at once. The block of AVML */
 #define PIECE (1u << 20)        /* asked of the source at once */
 #define PAGE  4096u
+#define ALIGN 4096u             /* of a direct write: its place in the file, its length, its memory */
+#define CHUNK (1u << 20)        /* written to a file at once, a multiple of ALIGN */
 #define NO_ADDRESS (~(uint64_t)0)       /* p_paddr of a segment that is not physical memory */
 
 static const char *const names[IMAGE_FORMATS] = { "lime", "raw", "avml" };
@@ -300,37 +322,147 @@ uint64_t image_size(enum image_format f, const struct image_source *src, int *ex
     return size;
 }
 
-/* Bytes to a file and into its SHA-256. After a failed write the file takes nothing more. */
-static void put(struct image_file *f, const void *buf, size_t n)
+int image_open(struct image_file *f, const char *path)
 {
-    if (f->failed)
-        return;
-    if (write_all(f->fd, buf, n)) {
-        f->failed = errno ? errno : EIO;
-        return;
-    }
-    hash_update(&f->hash, buf, n);
-    f->bytes += n;
+    const int flags = O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW;
+
+    f->direct = 1;
+    if ((f->fd = open(path, flags | O_DIRECT, 0600)) >= 0 || errno != EINVAL)
+        return f->fd < 0 ? -1 : 0;
+    /* A file system without direct writes. The kernel made the file before it refused it
+       (the file is created in lookup_open, and refused in do_dentry_open after that). */
+    f->direct = 0;
+    if (unlink(path) && errno != ENOENT)
+        return -1;
+    return (f->fd = open(path, flags, 0600)) < 0 ? -1 : 0;
 }
 
-/* A stretch of a raw image that is no memory: it is not written, and reads as zeros. */
-static void hole(struct image_file *f, uint64_t n)
+/* N bytes of the buffer of a file to the offset where they belong. */
+static int out_write(struct image_file *f, size_t n)
 {
-    static const uint8_t zeros[65536];
+    const uint8_t *p = f->out;
+    uint64_t off = f->at;
+
+    while (n) {
+        ssize_t put = pwrite(f->fd, p, n, (off_t)off);
+
+        if (put < 0 && errno == EINTR)
+            continue;
+        if (put < 0 && errno == EINVAL && f->direct) {
+            /* a file system that opens a file for direct writes and takes none of ours */
+            int fl = fcntl(f->fd, F_GETFL);
+
+            if (fl < 0 || fcntl(f->fd, F_SETFL, fl & ~O_DIRECT))
+                return -1;
+            f->direct = 0;
+            continue;
+        }
+        if (put <= 0) {
+            if (!put)
+                errno = EIO;
+            return -1;
+        }
+        p += put;
+        off += (uint64_t)put;
+        n -= (size_t)put;
+    }
+    return 0;
+}
+
+/* Write the buffer where it is full, or with PAD also the blocks that have begun, their rest
+   as zeros. */
+static void out_flush(struct image_file *f, int pad)
+{
+    size_t n = pad ? (f->fill + ALIGN - 1) / ALIGN * ALIGN : f->fill == CHUNK ? CHUNK : 0;
 
     if (f->failed || !n)
         return;
-    if (lseek(f->fd, (off_t)n, SEEK_CUR) < 0) {
-        f->failed = errno;
+    memset(f->out + f->fill, 0, n - f->fill);
+    if (out_write(f, n)) {
+        f->failed = errno ? errno : EIO;
         return;
     }
+    f->at += n;
+    f->fill = 0;
+}
+
+/* Bytes to a file and into its SHA-256. After a failed write the file takes nothing more. */
+static void put(struct image_file *f, const void *buf, size_t n)
+{
+    const uint8_t *p = buf;
+
+    if (f->failed)
+        return;
+    hash_update(&f->hash, buf, n);
     f->bytes += n;
-    while (n) {
-        size_t step = n < sizeof zeros ? (size_t)n : sizeof zeros;
+    while (n && !f->failed) {
+        size_t k = n < CHUNK - f->fill ? n : CHUNK - f->fill;
+
+        memcpy(f->out + f->fill, p, k);
+        f->fill += k;
+        p += k;
+        n -= k;
+        out_flush(f, 0);
+    }
+}
+
+/*
+ * A stretch of a raw image that is no memory, and reads as zeros. It is not written, but for
+ * the blocks of the file that it shares with memory, which are written whole.
+ */
+static void hole(struct image_file *f, uint64_t n)
+{
+    static const uint8_t zeros[65536];
+    uint64_t to = f->at + f->fill + n, left = n;
+
+    if (f->failed || !n)
+        return;
+    f->bytes += n;
+    while (left) {
+        size_t step = left < sizeof zeros ? (size_t)left : sizeof zeros;
 
         hash_update(&f->hash, zeros, step);
-        n -= step;
+        left -= step;
     }
+    if (to - f->at > (f->fill + ALIGN - 1) / ALIGN * ALIGN) {
+        /* it ends behind the block that has begun: the file goes on at the block of its end */
+        out_flush(f, 1);
+        if (f->failed)
+            return;
+        f->at = to / ALIGN * ALIGN;
+        f->fill = 0;
+    }
+    memset(f->out + f->fill, 0, (size_t)(to - f->at) - f->fill);
+    f->fill = (size_t)(to - f->at);
+    out_flush(f, 0);
+}
+
+/* What is left in the buffer at the end of an image: its whole blocks, and then the rest,
+   which no direct write takes. */
+static void out_end(struct image_file *f)
+{
+    size_t whole = f->fill / ALIGN * ALIGN, rest = f->fill - whole;
+
+    if (f->failed)
+        return;
+    if (whole && out_write(f, whole)) {
+        f->failed = errno ? errno : EIO;
+        return;
+    }
+    if (!rest)
+        return;
+    memmove(f->out, f->out + whole, rest);
+    f->at += whole;
+    if (f->direct) {
+        int fl = fcntl(f->fd, F_GETFL);
+
+        if (fl < 0 || fcntl(f->fd, F_SETFL, fl & ~O_DIRECT)) {
+            f->failed = errno ? errno : EIO;
+            return;
+        }
+    }
+    if (out_write(f, rest))
+        f->failed = errno ? errno : EIO;
 }
 
 static void le32(uint8_t *p, uint32_t v)
@@ -448,15 +580,30 @@ int image_write(int core, const struct image_source *src, struct image_file *fil
     uint8_t *buf;
     uint64_t done = 0;
     size_t i, k, alive = nfiles;
+    int no_memory;
 
     *unread = 0;
     buf = malloc(BLOCK);
+    no_memory = !buf;
     for (k = 0; k < nfiles; k++) {
-        files[k].failed = buf ? 0 : ENOMEM;
-        files[k].bytes = files[k].pos = 0;
+        void *out = NULL;
+
+        if (posix_memalign(&out, ALIGN, CHUNK))
+            out = NULL;
+        no_memory |= !out;
+        files[k].out = out;
+        files[k].fill = 0;
+        files[k].failed = 0;
+        files[k].bytes = files[k].pos = files[k].at = 0;
         hash_init(&files[k].hash, hash_by_name("sha256"));
     }
-    if (!buf) {
+    if (no_memory) {
+        for (k = 0; k < nfiles; k++) {
+            free(files[k].out);
+            files[k].out = NULL;
+            files[k].failed = ENOMEM;
+        }
+        free(buf);
         snprintf(err, IMAGE_ERR_LEN, "the block of the image: no memory");
         return -1;
     }
@@ -480,8 +627,14 @@ int image_write(int core, const struct image_source *src, struct image_file *fil
     }
     explicit_bzero(buf, BLOCK);         /* memory of the machine, which holds its keys */
     free(buf);
-    for (k = 0; k < nfiles; k++)
+    for (k = 0, alive = 0; k < nfiles; k++) {
+        out_end(&files[k]);
+        alive += !files[k].failed;
+        explicit_bzero(files[k].out, CHUNK);
+        free(files[k].out);
+        files[k].out = NULL;
         hash_final(&files[k].hash, files[k].sha256);
+    }
     if (!alive) {
         snprintf(err, IMAGE_ERR_LEN, "no image could be written to its end");
         return -1;

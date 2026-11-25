@@ -23,7 +23,11 @@
  *                                               a text like /proc/iomem and a core like
  *                                               /proc/kcore
  *   keep-unit image IOMEM CORE FORMAT OUT [FORMAT OUT]...    that memory, read once and written
- *                                               to each file OUT in its format
+ *                                               to each file OUT in its format. OUT must not
+ *                                               exist, or be a device, which is written as it
+ *                                               is. Says for each file whether it was written
+ *                                               with direct writes
+ *   keep-unit cached FILE                       how many pages of FILE lie in the page cache
  *   keep-unit snappy                            standard input as a framed Snappy stream
  *   keep-unit dm-answer list|table FILE         FILE as an answer of the kernel to one of the two
  *                                               requests, printed like the two lines below
@@ -46,10 +50,12 @@
 #include "../src/util.h"
 #include "../src/volume.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -581,6 +587,39 @@ static int cmd_image_source(const char *iomem_path, const char *core_path)
     return 0;
 }
 
+/* The pages of a file that lie in the page cache, as the kernel says with mincore. */
+static int cmd_cached(const char *path)
+{
+    unsigned char *vec;
+    struct stat st;
+    size_t pages, i, in = 0;
+    void *map;
+    int fd;
+
+    if ((fd = open(path, O_RDONLY)) < 0 || fstat(fd, &st)) {
+        fprintf(stderr, "keep-unit: %s: %s\n", path, strerror(errno));
+        return 1;
+    }
+    pages = ((size_t)st.st_size + 4095) / 4096;
+    if (!pages) {
+        printf("0 of 0 pages in the page cache\n");
+        return 0;
+    }
+    map = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_SHARED, fd, 0);
+    vec = malloc(pages);
+    if (map == MAP_FAILED || !vec || mincore(map, (size_t)st.st_size, vec)) {
+        fprintf(stderr, "keep-unit: %s: %s\n", path, strerror(errno));
+        return 1;
+    }
+    for (i = 0; i < pages; i++)
+        in += vec[i] & 1;
+    printf("%zu of %zu pages in the page cache\n", in, pages);
+    free(vec);
+    munmap(map, (size_t)st.st_size);
+    close(fd);
+    return 0;
+}
+
 static int cmd_image(int argc, char **argv)
 {
     struct image_file files[8];
@@ -598,11 +637,21 @@ static int cmd_image(int argc, char **argv)
             return 2;
     if ((core = open_source(argv[0], argv[1], &src)) < 0)
         return 1;
-    for (i = 0; i < n; i++)
-        if ((files[i].fd = open(argv[3 + 2 * i], O_WRONLY | O_CREAT | O_TRUNC, 0600)) < 0) {
-            fprintf(stderr, "keep-unit: %s cannot be written\n", argv[3 + 2 * i]);
+    for (i = 0; i < n; i++) {
+        struct stat st;
+
+        /* a device stands for a medium that takes no byte, /dev/full */
+        if (!stat(argv[3 + 2 * i], &st) && S_ISCHR(st.st_mode)) {
+            files[i].direct = 0;
+            files[i].fd = open(argv[3 + 2 * i], O_WRONLY);
+        } else if (image_open(&files[i], argv[3 + 2 * i])) {
+            files[i].fd = -1;
+        }
+        if (files[i].fd < 0) {
+            fprintf(stderr, "keep-unit: %s cannot be made: %s\n", argv[3 + 2 * i], strerror(errno));
             return 1;
         }
+    }
     r = image_write(core, &src, files, n, NULL, NULL, &unread, err);
     for (i = 0; i < n; i++) {
         if (files[i].failed) {
@@ -610,6 +659,7 @@ static int cmd_image(int argc, char **argv)
         } else {
             printf("%s %llu bytes, sha256 ", image_name(files[i].format), (unsigned long long)files[i].bytes);
             print_hex(files[i].sha256, 32);
+            printf("%s %s\n", image_name(files[i].format), files[i].direct ? "direct writes" : "through the page cache");
         }
         close(files[i].fd);
     }
@@ -692,6 +742,8 @@ int main(int argc, char **argv)
         return cmd_image_source(argv[2], argv[3]);
     if (argc >= 6 && argc % 2 == 0 && !strcmp(argv[1], "image"))
         return cmd_image(argc - 2, argv + 2);
+    if (argc == 3 && !strcmp(argv[1], "cached"))
+        return cmd_cached(argv[2]);
     if (argc == 3 && !strcmp(argv[1], "names"))
         return cmd_names(argv[2]);
     if (argc == 4 && !strcmp(argv[1], "dm-answer") && (!strcmp(argv[2], "list") || !strcmp(argv[2], "table")))
@@ -707,7 +759,7 @@ int main(int argc, char **argv)
     fprintf(stderr, "usage: keep-unit [plain] selftest | cpu | hash NAME | pbkdf2 NAME KEY SALT ITERATIONS LENGTH | json | luks FILE | "
             "luks-backup FILE OUT | luks-prove FILE KEYFILE | mount-of MOUNTINFO PATH | in-use SYSFS MOUNTINFO SWAPS MAJOR MINOR | other-fs MOUNTS | "
             "lockdown FILE | secure-boot DIR | os-name FILE FILE | memory FILE | names NAME | image-source IOMEM CORE | "
-            "image IOMEM CORE FORMAT OUT... | snappy | dm-answer list|table FILE | volumes FILE... | "
+            "image IOMEM CORE FORMAT OUT... | cached FILE | snappy | dm-answer list|table FILE | volumes FILE... | "
             "dm-list | dm-table NAME | dm-volumes\n");
     return 2;
 }
