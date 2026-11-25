@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- The page loads nothing from another host and runs no inline script or style. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'">
+<title>Systems · Keep</title>
+<meta name="description" content="The Linux distributions on which Keep was run and checked, one card for each, with the kernel and what the run showed there.">
+<link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+<link rel="preload" href="../assets/fonts/JetBrainsMono-Regular.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="../assets/keep.css">
+<script src="../assets/theme.js"></script>
+<script src="../assets/keep.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#content">Skip to the content</a>
+<!-- The labels on the upper line of the frame: the name, the sections and the way to the source. -->
+<header class="chrome top">
+  <a class="chrome-title" href="../" title="Keep, the home page">[keep]</a>
+  <nav aria-label="Sections"><ul>
+    <li><a href="../installation/">installation</a></li>
+    <li><a href="../usage/">usage</a></li>
+    <li><a href="../systems/" aria-current="page">systems</a></li>
+    <li><a href="../about/">about</a></li>
+  </ul></nav>
+  <a href="https://github.com/nafud/Keep" title="The source of Keep, github.com/nafud/Keep">src</a>
+</header>
+<div class="page">
+<main class="content" id="content">
+
+<h1>Systems</h1>
+<p class="lead">Keep is one static file, so it is the same file on every distribution, and so are its commands. What differs from system to system is the kernel, and what the system keeps for the lab. Each system on which Keep was run has a card here with what that run showed.</p>
+<p>A card names the kernel and the cryptsetup of the latest run it stands for, and whether the system has a <code>System.map</code> that Keep keeps beside a memory image, for the symbol table of Volatility 3. The XTS driver is the implementation of <code>xts(aes)</code> that the kernel chose in that run. It follows the processor of the machine and not the distribution, so it differs between runs on the same system.</p>
+
+<h2 id="pipeline">Checked in the pipeline</h2>
+<p>The pipeline on GitHub boots each of these ten systems as a guest from the distribution's own cloud image, pinned by its published checksum, and runs <code>tests/compat-check.sh</code> in it with <code>keep</code> <span>2.0-pre9</span>. The check makes volumes from keys it has just drawn: LUKS2 with the key in the kernel keyring, LUKS1 with the key in the table, a mapping without a type, one with the null cipher, LVM on LUKS, LUKS2 with integrity and a volume in re-encryption. Keep must give the right verdict for each and keys that are the known ones byte for byte. It then takes the memory of the guest in each format, and the search of that image must prove both volume keys again.</p>
+<p>The guests have 2 GiB of memory and boot with BIOS under KVM, so kernel lockdown is <code>none</code> on all of them.</p>
+<div class="cards">
+<article class="card">
+<h3 class="card-title">Debian 13</h3>
+<dl>
+<dt>kernel</dt><dd>6.12.117+deb13-amd64</dd>
+<dt>cryptsetup</dt><dd>2.7.5</dd>
+<dt>xts driver</dt><dd><code>xts-aes-vaes-avx10_512</code></dd>
+<dt>symbols</dt><dd>none: a placeholder in <code>/boot</code></dd>
+</dl>
+</article>
+<article class="card">
+<h3 class="card-title">Debian 12</h3>
+<dl>
+<dt>kernel</dt><dd>6.1.0-56-amd64</dd>
+<dt>cryptsetup</dt><dd>2.6.1</dd>
+<dt>xts driver</dt><dd><code>xts-aes-aesni</code></dd>
+<dt>symbols</dt><dd>none: a placeholder in <code>/boot</code></dd>
+</dl>
+</article>
+<article class="card">
+<h3 class="card-title">Ubuntu 26.04.1</h3>
+<dl>
+<dt>kernel</dt><dd>7.0.0-43-generic</dd>
+<dt>cryptsetup</dt><dd>2.8.4</dd>
+<dt>xts driver</dt><dd><code>xts-aes-vaes-avx512</code></dd>
+<dt>symbols</dt><dd>System.map kept</dd>
+</dl>
+</article>
+<article class="card">
+<h3 class="card-title">Ubuntu 24.04.5</h3>
+<dl>
+<dt>kernel</dt><dd>6.8.0-147-generic</dd>
+<dt>cryptsetup</dt><dd>2.7.0</dd>
+<dt>xts driver</dt><dd><code>xts-aes-aesni</code></dd>
+<dt>symbols</dt><dd>System.map kept</dd>
+</dl>
+</article>
+<article class="card">
+<h3 class="card-title">Fedora 45</h3>
+<dl>
+<dt>kernel</dt><dd>7.2.11-300.fc45.x86_64</dd>
+<dt>cryptsetup</dt><dd>2.8.8</dd>
+<dt>xts driver</dt><dd><code>xts-aes-vaes-avx512</code></dd>
+<dt>symbols</dt><dd>System.map kept</dd>
+</dl>
+<p class="card-text">The root file system is btrfs, which takes the direct writes of an image through the page cache from Linux 6.18 on. The pages are let go when the file is flushed: none lay in the cache after the run.</p>
+</article>
+<article class="card">
+<h3 class="card-title">AlmaLinux 10.3</h3>
+<dl>
+<dt>kernel</dt><dd>6.12.0-264.16.1.el10_3.x86_64</dd>
+<dt>cryptsetup</dt><dd>2.8.6</dd>
+<dt>xts driver</dt><dd><code>xts-aes-vaes-avx10_512</code></dd>
+<dt>symbols</dt><dd>System.map kept</dd>
+</dl>
+</article>
+<article class="card">
+<h3 class="card-title">AlmaLinux 9.9</h3>
+<dl>
+<dt>kernel</dt><dd>5.14.0-741.22.1.el9_9.x86_64</dd>
+<dt>cryptsetup</dt><dd>2.8.6</dd>
+<dt>xts driver</dt><dd><code>xts-aes-aesni</code></dd>
+<dt>symbols</dt><dd>System.map kept</dd>
+</dl>
+<p class="card-text">The oldest kernel on which Keep was run.</p>
+</article>
+<article class="card">
+<h3 class="card-title">Rocky Linux 10.3</h3>
+<dl>
+<dt>kernel</dt><dd>6.12.0-264.16.1.el10_3.x86_64</dd>
+<dt>cryptsetup</dt><dd>2.8.6</dd>
+<dt>xts driver</dt><dd><code>xts-aes-vaes-avx10_512</code></dd>
+<dt>symbols</dt><dd>System.map kept</dd>
+</dl>
+</article>
+<article class="card">
+<h3 class="card-title">openSUSE Leap 16.1</h3>
+<dl>
+<dt>kernel</dt><dd>6.12.0-160100.9-default</dd>
+<dt>cryptsetup</dt><dd>2.8.4</dd>
+<dt>xts driver</dt><dd><code>xts-aes-vaes-avx2</code></dd>
+<dt>symbols</dt><dd>System.map kept</dd>
+</dl>
+<p class="card-text">Without the part with integrity: cryptsetup could not make the LUKS2 container with integrity there, because the kernel refused its table. LUKS2 with integrity is not checked on this system.</p>
+</article>
+<article class="card">
+<h3 class="card-title">Arch Linux</h3>
+<dl>
+<dt>kernel</dt><dd>7.3.4-arch1-2</dd>
+<dt>cryptsetup</dt><dd>2.8.9</dd>
+<dt>xts driver</dt><dd><code>xts-aes-vaes-avx2</code></dd>
+<dt>symbols</dt><dd>none: no System.map there</dd>
+</dl>
+<p class="card-text">The cloud image of 2026-11-15.</p>
+</article>
+</div>
+
+<h2 id="runners">The machines of the pipeline</h2>
+<p>The same check runs on the two runner images of the pipeline itself, on every change. These machines have 16 GiB of memory, which makes their images the largest that the check takes. The machine behind a runner image differs from run to run, and with it the kernel.</p>
+<div class="cards">
+<article class="card">
+<h3 class="card-title">Ubuntu 24.04.5, runner image</h3>
+<dl>
+<dt>kernel</dt><dd>7.0.0-1014-aws</dd>
+<dt>cryptsetup</dt><dd>2.7.0</dd>
+<dt>xts driver</dt><dd><code>xts-aes-vaes-avx512</code></dd>
+<dt>memory</dt><dd>16 GiB</dd>
+</dl>
+<p class="card-text">The raw image, 17951621120 bytes, was read in 73 s and the compressed one, 10117846686 bytes, in 50 s. The build with the sanitizers runs here too.</p>
+</article>
+<article class="card">
+<h3 class="card-title">Ubuntu 22.04.5, runner image</h3>
+<dl>
+<dt>kernel</dt><dd>6.8.0-1073-azure</dd>
+<dt>cryptsetup</dt><dd>2.4.3</dd>
+<dt>xts driver</dt><dd><code>xts-aes-aesni</code></dd>
+<dt>memory</dt><dd>16 GiB</dd>
+</dl>
+<p class="card-text">The LiME image, 17174331584 bytes, was read in 42 s. The build with the sanitizers runs here too.</p>
+</article>
+</div>
+
+<h2 id="hand">Run by hand</h2>
+<p>One machine that is no guest, with Secure Boot on. Keep was run on it by its options, without the check, and the screen and the report of each run were read.</p>
+<div class="cards">
+<article class="card">
+<h3 class="card-title">Linux Mint 22.3</h3>
+<dl>
+<dt>kernel</dt><dd>6.14.0-37-generic</dd>
+<dt>secure boot</dt><dd>enabled</dd>
+<dt>lockdown</dt><dd>integrity</dd>
+<dt>memory</dt><dd>16 GiB, 5 ranges of RAM</dd>
+</dl>
+<p class="card-text">A LUKS2 container with its key in the kernel keyring got <span class="reached">captured and proven</span> from memory. The LiME image, 16848920736 bytes, was written in 16 to 19 s in three runs, and <code>banners.Banners</code> of Volatility 3 2.28.2 named the kernel from it. An image that AVML took of the machine gave the same key with no file at all, from the digests of the header that lay in memory.</p>
+</article>
+</div>
+
+<h2 id="drivers">The drivers of XTS</h2>
+<p>On x86-64 the kernel keeps the two key schedules of an <code>aes-xts</code> volume in one structure, the tweak schedule first and the data schedule 496 bytes after it. Keep pairs the schedules it finds in memory by that distance. The runs met four implementations, and with each of them the two halves of the key lay at that distance: <code>xts-aes-aesni</code>, <code>xts-aes-vaes-avx2</code>, <code>xts-aes-vaes-avx512</code> and <code>xts-aes-vaes-avx10_512</code>.</p>
+
+<h2 id="not">Not checked</h2>
+<ul>
+<li>Red Hat Enterprise Linux itself. The pipeline runs AlmaLinux and Rocky Linux, which are made to be compatible with it.</li>
+<li>Kernels before 5.14. What Keep asks of the kernel is read in the sources from Linux 4.18 on, the kernel of RHEL 8, and is not run there.</li>
+<li>Linux Mint and a system with Secure Boot on are run by hand on one machine and not by the check, because Linux Mint has no cloud image.</li>
+<li>openSUSE Tumbleweed, which has no dated build to pin.</li>
+<li>Kernel lockdown in the mode <code>confidentiality</code>, which refuses <code>/proc/kcore</code>. Keep then says so and ends with <span class="not">live copy only</span> for a volume whose key is in the keyring. This is read in the source of the kernel and not run.</li>
+<li>Any processor that is not x86-64.</li>
+</ul>
+<p>A report of a system where Keep passes or fails is welcome as an issue on <a href="https://github.com/nafud/Keep/issues">GitHub</a>.</p>
+
+</main>
+
+<nav class="toc" aria-label="On this page">
+  <h2>On this page</h2>
+  <ol>
+    <li><a href="#content">Systems</a></li>
+    <li><a href="#pipeline">Checked in the pipeline</a></li>
+    <li><a href="#runners">The machines of the pipeline</a></li>
+    <li><a href="#hand">Run by hand</a></li>
+    <li><a href="#drivers">The drivers of XTS</a></li>
+    <li><a href="#not">Not checked</a></li>
+  </ol>
+</nav>
+
+</div>
+<!-- The labels on the lower line of the frame: the path of the page and, written by keep.js,
+     the position in it. -->
+<div class="chrome bottom">
+  <span class="chrome-path"><a href="../" title="The home page">~</a>/systems</span>
+</div>
+</body>
+</html>

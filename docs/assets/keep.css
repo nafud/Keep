@@ -1,12 +1,13 @@
-/* The page of Keep. It follows the conventions of the page of Kiln (docs/stylesheets/extra.css
-   there, on Material for MkDocs): the sizes, the colours, the headings, the code, the tables and
-   the frame are Kiln's, written out here because this page has no theme beneath it.
+/* The pages of Keep. They take their design from the page of Kiln (docs/stylesheets/extra.css
+   there, on Material for MkDocs): the frame, the sizes, the colours of the five themes, the
+   headings, the code, the tables and the cards are Kiln's, written out here because these
+   pages have no theme beneath them.
 
-   The whole window is one pane with a thin frame, like a terminal. The name of the page and the
-   link to the source sit on its upper line, the version and the position in the page on its
-   lower line. Inside, three columns stand on the one background with nothing drawn around them:
-   left the word Keep, in the middle the text, right the table of contents. One typeface,
-   JetBrains Mono. Colours follow the system's light or dark setting. */
+   The whole window is one pane with a thin frame, like a terminal. On its upper line sit the
+   name, the sections and the link to the source, on its lower line the path of the page and
+   the position in it. The home page is the word Keep, drawn in characters, and two sentences.
+   Every other page is one column of text, 900px wide, with its table of contents beside it
+   where the window has the room. One typeface, JetBrains Mono. */
 
 @font-face {
   font-family: "JetBrains Mono";
@@ -20,15 +21,42 @@
   font-weight: 700;
   font-display: swap;
 }
-/* The glyphs K, e and p of UnifrakturMaguntia, for the word in the left column (see keep.js). */
+/* The glyphs K, e and p of UnifrakturMaguntia, for the word of the home page (see keep.js). */
 @font-face {
   font-family: "Keep Blackletter";
   src: url("fonts/keep-blackletter.woff2") format("woff2");
   font-display: block;
 }
 
-/* The colours of Kiln's themes "system light" and "system dark". */
+/* ---- the themes ---- */
+/* Kiln's five, in its order, and its first is the one a reader gets: terminal. The key t goes
+   to the next (keep.js), and theme.js puts the reader's choice on the root before the page is
+   drawn. Every colour of the pages is one of these names. The last three are the colours of a
+   sample of the screen of keep: its labels, what is reached and what is open. */
 :root {
+  color-scheme: dark;
+  --bg: #000000;
+  --surface: #0a0a0a;
+  --border: #2e2e2e;
+  --text: #e6e6e6;
+  --text-2: #b3b3b3;
+  --muted: #7a7a7a;
+  --faint: #4d4d4d;
+  --accent: #00cdcd;
+  --code-bg: #050505;
+  --th-bg: #0a0a0a;
+  --shadow: rgba(0, 0, 0, 0.5);
+  --s-label: #00cdcd;
+  --s-reached: #00cd00;
+  --s-open: #5c5cff;
+  /* The frame stands this far from the edges of the window. A row of labels is twice that and
+     the line high, so that the text of a label is centred on the line. */
+  --inset: 12px;
+  --row: calc(var(--inset) * 2 + 1px);
+  --mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace;
+}
+:root[data-theme="light"] {
+  color-scheme: light;
   --bg: #fafafa;
   --surface: #ffffff;
   --border: #e5e7eb;
@@ -39,31 +67,58 @@
   --accent: #2563eb;
   --code-bg: #f5f5f5;
   --th-bg: #f9fafb;
-  --ok: #15803d;
-  --warn: #a65a05;
-  --bad: #b42323;
-  /* The frame stands this far from the edges of the window. A row of labels is twice that and
-     the line high, so that the text of a label is centred on the line. */
-  --inset: 12px;
-  --row: calc(var(--inset) * 2 + 1px);
-  --mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace;
+  --shadow: rgba(0, 0, 0, 0.07);
+  --s-label: #0e7490;
+  --s-reached: #15803d;
+  --s-open: #2563eb;
 }
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #1e2028;
-    --surface: #252830;
-    --border: #2e3138;
-    --text: #e2e4e9;
-    --text-2: #9ca3af;
-    --muted: #6b7280;
-    --faint: #4b5563;
-    --accent: #2563eb;
-    --code-bg: #1a1d24;
-    --th-bg: #1a1d24;
-    --ok: #56d37f;
-    --warn: #f0b243;
-    --bad: #f47f7f;
-  }
+:root[data-theme="dark"] {
+  --bg: #1e2028;
+  --surface: #252830;
+  --border: #2e3138;
+  --text: #e2e4e9;
+  --text-2: #9ca3af;
+  --muted: #6b7280;
+  --faint: #4b5563;
+  --accent: #2563eb;
+  --code-bg: #1a1d24;
+  --th-bg: #1a1d24;
+  --shadow: rgba(0, 0, 0, 0.25);
+  --s-label: #22b8cf;
+  --s-reached: #56d37f;
+  --s-open: #6ea8fe;
+}
+:root[data-theme="phosphor"] {
+  --bg: #0a0f0a;
+  --surface: #0d130d;
+  --border: #1d3b1d;
+  --text: #33ff33;
+  --text-2: #2bd42b;
+  --muted: #1fa51f;
+  --faint: #157a15;
+  --accent: #66ff66;
+  --code-bg: #070c07;
+  --th-bg: #070c07;
+  --shadow: rgba(51, 255, 51, 0.1);
+  --s-label: #1fa51f;
+  --s-reached: #66ff66;
+  --s-open: #33ff33;
+}
+:root[data-theme="nord"] {
+  --bg: #2e3440;
+  --surface: #3b4252;
+  --border: #4c566a;
+  --text: #eceff4;
+  --text-2: #d8dee9;
+  --muted: #7b88a1;
+  --faint: #616e88;
+  --accent: #88c0d0;
+  --code-bg: #292e39;
+  --th-bg: #272c37;
+  --shadow: rgba(0, 0, 0, 0.3);
+  --s-label: #88c0d0;
+  --s-reached: #a3be8c;
+  --s-open: #81a1c1;
 }
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -121,7 +176,7 @@ body::before {
 }
 .chrome {
   position: fixed; left: 0; right: 0; z-index: 6;
-  display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+  display: flex; align-items: center; gap: 1rem;
   height: var(--row);
   padding: 0 1.4rem;
   color: var(--muted);
@@ -132,22 +187,33 @@ body::before {
 .chrome.top { top: 0; }
 .chrome.bottom { bottom: 0; letter-spacing: 0.05em; }
 .chrome > * { background: var(--bg); padding: 0 0.45em; white-space: nowrap; pointer-events: auto; }
+.chrome > :last-child:not(:first-child) { margin-left: auto; }   /* src, and the position */
 .chrome a { color: inherit; transition: color 150ms ease; }
 .chrome a:hover { color: var(--accent); opacity: 1; }
 .chrome .chrome-title { color: var(--text); font-size: 0.7rem; letter-spacing: 0.04em; }
+/* The sections. The one of the page on screen stands in the accent with a star before it, the
+   mark vim gives the alternate file. In a narrow window the row is moved sideways. */
+.chrome nav { min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.chrome nav::-webkit-scrollbar { display: none; }
+.chrome ul { display: flex; gap: 1.1em; list-style: none; margin: 0; padding: 0; }
+.chrome li { margin: 0; }
+.chrome a[aria-current="page"] { color: var(--accent); }
+.chrome a[aria-current="page"]::before { content: "*"; }
 
-/* ---- the three columns ---- */
-/* The text has the width of Kiln's, 900px, and the two columns beside it share the rest. */
+/* ---- a page of text ---- */
+/* The text has the width of Kiln's, 900px, and stands in the middle. What is left beside it
+   takes the table of contents, where that is wide enough for it. */
 .page {
   display: grid;
-  grid-template-columns: minmax(14rem, 1fr) minmax(0, 900px) minmax(11rem, 1fr);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 900px) minmax(0, 1fr);
   gap: 2rem;
   align-items: start;
   padding: calc(var(--row) + 0.6rem) calc(var(--inset) + 1.2rem) calc(var(--row) + 0.6rem);
 }
-.side, .toc { position: sticky; top: calc(var(--row) + 0.6rem); }
-.side { padding: 1.2rem 0 0; }
+.content { grid-column: 2; min-width: 0; padding: 0.6rem 0.8rem 1.2rem; }
 .toc {
+  grid-column: 3;
+  position: sticky; top: calc(var(--row) + 0.6rem);
   max-height: calc(100vh - 2 * var(--row) - 1.2rem);
   max-height: calc(100dvh - 2 * var(--row) - 1.2rem);
   overflow: auto;
@@ -155,52 +221,27 @@ body::before {
   padding: 1.2rem 0 0;
 }
 .toc::-webkit-scrollbar { display: none; }
-.content { min-width: 0; padding: 0.6rem 0.8rem 1.2rem; }
 
-/* ---- the word ---- */
-/* keep.js turns the word into a grid of characters, in the faint colour of Kiln's logo. Before
-   it has done so, and without it, the word stands as plain text in its typeface. Kiln's logo
-   has the width of its text column, cells of 0.5rem and about 120 of them across. This column
-   is half as wide, so the size of a cell follows the width of the column and the word keeps
-   as many cells across as Kiln's: with fewer the letters do not read. */
-.side { container-type: inline-size; }
-.logo {
-  display: grid;
-  place-items: center;
-  width: 100%;
-  aspect-ratio: 2 / 1;
-  overflow: hidden;
-  user-select: none;
-  cursor: default;
-}
-.logo pre {
-  margin: 0;
-  font: 400 0.27rem/1.2 var(--mono);
-  font-size: 1.36cqw;
-  letter-spacing: 0;
-  white-space: pre;
-  color: var(--faint);
-}
-.logo:not(.generated) pre { font: 400 4.6rem/1 "Keep Blackletter", serif; }
-
-/* ---- the text ---- */
-/* Headings stand in the first colour of the ladder, running text in the second. */
-.content section + section { margin-top: 1.9rem; padding-top: 0.2rem; border-top: 1px solid var(--border); }
+/* Headings stand in the first colour of the ladder, running text in the second. The first
+   heading alone has a line below it. */
 h1, h2, h3 { color: var(--text); font-weight: 700; letter-spacing: -0.01em; }
 h1 {
   font-size: 1.8rem; line-height: 1.3;
   margin: 0 0 0.4rem; padding-bottom: 0.75rem;
   border-bottom: 1px solid var(--border);
 }
-h2 { font-size: 1.2rem; line-height: 1.4; margin: 1.6em 0 0.64em; }
+h2 { font-size: 1.2rem; line-height: 1.4; margin: 2.2em 0 0.64em; }
 h3 { font-size: 0.95rem; line-height: 1.5; margin: 1.6em 0 0.8em; }
-p, li, td { color: var(--text-2); }
+p, li, td, dd { color: var(--text-2); }
 p { margin: 1em 0; }
 .lead { margin-top: 0.9rem; }
-ul { margin: 1em 0; padding: 0; }
+ul, ol { margin: 1em 0; padding: 0; }
 li { margin: 0 0 0.5em 1.25em; }
-strong { font-weight: 700; }
+.content ol li { margin-left: 2.2em; }
+strong { font-weight: 700; color: var(--text); }
 code { font: inherit; font-size: 0.85em; color: var(--text); background: var(--code-bg); border-radius: 3px; padding: 0 0.2941176471em; overflow-wrap: anywhere; }
+a code { color: inherit; }                  /* a file name that is a link has the colour of a link */
+sup { font-size: 0.75em; line-height: 0; }
 
 /* a block of code: a command with its copy button, or a sample of output */
 .code { position: relative; margin: 1em 0; background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px; }
@@ -209,6 +250,14 @@ code { font: inherit; font-size: 0.85em; color: var(--text); background: var(--c
 .code.cmd pre { padding-right: 2.6rem; }
 .code.cmd code::before { content: "$ "; color: var(--muted); }   /* the prompt is not copied */
 .code.sample pre { color: var(--text-2); }
+/* The screen of keep as a terminal shows it: titles bold, labels in the colour of a label, and
+   the word that says how far a key is in its tone (src/run.c). */
+.code.screen pre { color: var(--text-2); }
+.code.screen b { color: var(--text); }
+.code.screen i { font-style: normal; color: var(--s-label); }
+.reached { color: var(--s-reached); font-weight: 700; }
+.open { color: var(--s-open); font-weight: 700; }
+.not { color: var(--text); font-weight: 700; }
 .copy {
   position: absolute; top: 0.5em; right: 0.5em;
   width: 1.5rem; height: 1.5rem; padding: 0.2rem;
@@ -235,22 +284,41 @@ td { padding: 0.6rem 0.8rem; border-top: 1px solid var(--border); }
 tbody tr:first-child td { border-top: 0; }
 td:first-child { white-space: nowrap; }
 
-/* a verdict, with the class that keep-report.py gives it */
-.verdict { white-space: nowrap; }
-.verdict::before { content: ""; display: inline-block; width: 0.62em; height: 0.62em; margin-right: 0.7ch; border-radius: 50%; background: currentColor; }
-.verdict.ok { color: var(--ok); }
-.verdict.none { color: var(--text-2); }
-.verdict.warn { color: var(--warn); }
-.verdict.bad { color: var(--bad); }
+/* ---- cards ---- */
+/* Kiln's raised surface: the surface colour, a border of one pixel, corners of 4px, flat. A
+   card that is a link lifts under the pointer: its border turns to the accent, it rises by two
+   pixels and a shadow appears, and its text sharpens by one step of the ladder. A card of
+   facts is no link and lies still. */
+.cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.8rem; margin: 1.5rem 0 1rem; }
+.card {
+  display: block;
+  min-height: 6rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--border); border-radius: 4px;
+  background: var(--surface);
+  transition: border-color 200ms ease, box-shadow 200ms ease, transform 200ms ease;
+}
+a.card:hover { opacity: 1; border-color: var(--accent); transform: translateY(-2px); box-shadow: 0 4px 12px var(--shadow); }
+.card-title { display: block; margin: 0 0 0.5rem; color: var(--text); font-size: 0.78rem; font-weight: 700; line-height: 1.7; letter-spacing: 0; transition: color 200ms ease; }
+.card-text { display: block; margin: 0; color: var(--muted); line-height: 1.6; transition: color 200ms ease; }
+a.card:hover .card-title { color: var(--accent); }
+a.card:hover .card-text { color: var(--text-2); }
+/* The facts of a card, a label and its value in a line, as keep prints them. */
+.card dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); column-gap: 1.2ch; row-gap: 0.15rem; margin: 0; font-size: 0.72rem; line-height: 1.55; }
+.card dt { color: var(--muted); }
+.card dd { margin: 0; overflow-wrap: anywhere; }
+.card .card-text { margin-top: 0.6rem; font-size: 0.72rem; }
 
-/* The closing line, as the attribution line of Kiln's home page. */
-.content .colophon { margin: 2.6rem 0 0; color: var(--faint); font-size: 0.7rem; text-align: center; }
-.content .colophon a { color: var(--muted); transition: color 200ms ease; }
-.content .colophon a:hover { color: var(--accent); opacity: 1; }
+/* ---- the references ---- */
+.refs { counter-reset: ref; list-style: none; }
+.content ol.refs li { counter-increment: ref; position: relative; margin-left: 3.2em; }
+.refs li::before { content: "[" counter(ref) "]"; position: absolute; left: -3.2em; color: var(--muted); }
+.refs li:target { color: var(--text); }
+.keys td:first-child { color: var(--text); }
 
 /* ---- the table of contents ---- */
 /* In the grammar of Kiln's labels: muted at rest, the accent on hover, and the entry of the
-   text on screen in the accent with a star before it, as the current section of Kiln's header. */
+   text on screen in the accent with a star before it, as the section on the frame. */
 .toc h2 { font-size: 0.65rem; font-weight: 700; line-height: 1.4; color: var(--muted); letter-spacing: 0.06em; text-transform: uppercase; margin: 0 0 0.7rem; }
 .toc ol { list-style: none; margin: 0; padding: 0; }
 .toc li { margin: 0; }
@@ -260,15 +328,62 @@ td:first-child { white-space: nowrap; }
 .toc a[aria-current="true"] { color: var(--accent); }
 .toc a[aria-current="true"]::before { content: "*"; display: inline-block; width: 1.4ch; margin-left: -1.4ch; }
 
+/* ---- the home page ---- */
+/* Kiln's: the word in the middle of the pane, what the site is below it, and one closing line
+   that stands at the lower end of the pane. The pane does not scroll where the window has the
+   height for the three. */
+.home .page {
+  display: flex; flex-direction: column; align-items: center;
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+.home .content {
+  flex: 1;
+  display: flex; flex-direction: column; align-items: center;
+  width: 100%; max-width: 900px;
+  padding: 8vh 0 1.2rem;
+  container-type: inline-size;
+}
+/* keep.js turns the word into a grid of characters, in the faint colour of Kiln's logo. Before
+   it has done so, and without it, the word stands as plain text in its typeface. A cell is
+   0.5rem as in Kiln's logo, and smaller in a narrow window, so that the word keeps about 120
+   cells across: with fewer the letters do not read. */
+.logo {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  aspect-ratio: 2 / 1;
+  max-height: 46vh;
+  margin: 0;
+  overflow: hidden;
+  user-select: none;
+  cursor: default;
+}
+.logo pre {
+  margin: 0;
+  font: 400 0.5rem/1.2 var(--mono);
+  font-size: min(0.5rem, 1.36cqw);
+  letter-spacing: 0;
+  white-space: pre;
+  color: var(--faint);
+}
+.logo:not(.generated) pre { font: 400 4.6rem/1 "Keep Blackletter", serif; }
+.home .intro { margin: 1.4rem 0 0; max-width: 34rem; text-align: center; }
+.home .intro strong { display: block; margin-bottom: 0.3rem; font-weight: 700; }
+.home .colophon { margin: auto 0 0; padding-top: 2rem; color: var(--faint); font-size: 0.7rem; text-align: center; }
+.home .colophon a { color: var(--muted); transition: color 200ms ease; }
+.home .colophon a:hover { color: var(--accent); opacity: 1; }
+
 /* ---- narrower windows ---- */
-@media (max-width: 76.1875em) {
-  .page { grid-template-columns: minmax(9rem, 13rem) minmax(0, 1fr); gap: 1.4rem; }
+@media (max-width: 90em) {
+  .page { grid-template-columns: minmax(0, 900px); justify-content: center; }
+  .content { grid-column: 1; }
   .toc { display: none; }
 }
 @media (max-width: 44.9375em) {
-  .page { grid-template-columns: minmax(0, 1fr); gap: 0.4rem; padding-left: calc(var(--inset) + 0.2rem); padding-right: calc(var(--inset) + 0.2rem); }
-  .side { position: static; padding: 0.5rem 0 0; }
-  .logo { max-width: 16rem; margin: 0 auto; }
+  .page { padding-left: calc(var(--inset) + 0.2rem); padding-right: calc(var(--inset) + 0.2rem); }
+  .chrome { padding: 0 1rem; gap: 0.4rem; }
   h1 { font-size: 1.4rem; }
   td:first-child { white-space: normal; }
+  .cards { grid-template-columns: minmax(0, 1fr); }
 }

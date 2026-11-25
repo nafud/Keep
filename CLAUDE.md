@@ -37,7 +37,7 @@ README.
 | `tests/selftest.sh` | test, workstation and pipeline | Runs every check that needs neither root nor device-mapper, `keytriage.sh` included on stand-ins for the examined system, and ends with `RESULT: PASS` or `RESULT: FAIL` |
 | `tests/unit-check.sh` | test, workstation and pipeline | Builds the parts of the C program twice, statically and with the sanitizers of the compiler, and checks each against an independent source: `hashlib`, Python's `json`, `cryptsetup` |
 | `tests/keep-unit.c` | test | Runs one part of the C program at a time, for `unit-check.sh` and for a comparison with `dmsetup` on a guest, and counts the pages of a file that lie in the page cache |
-| `docs/` | GitHub Pages | The page of Keep: `index.html`, `assets/keep.css`, `assets/keep.js` and the fonts |
+| `docs/` | GitHub Pages | The pages of Keep: the home page `index.html`, the sections `installation/`, `usage/`, `systems/` and `about/`, each an `index.html`, and `assets/` with `keep.css`, `keep.js`, `theme.js` and the fonts |
 | `.github/workflows/` | GitHub | `checks.yml` runs the self-test, builds the medium and runs `compat-check.sh` on two runner images on every push. `distros.yml` runs it in guests of ten distribution releases. `pages.yml` publishes `docs/` from `main` |
 
 The five files at the root must stay siblings. `build-toolkit.sh` takes `keytriage.sh` and
@@ -951,7 +951,7 @@ it lockdown `integrity`. The screen and the report of each run were read:
    `offline-keyscan.sh`, `vkverify.py` and `kcore-keyscan.c`, and `KEEP_VERSION` in
    `src/triage.h` for the C program.
    The versions of `keytriage.sh` and `vkverify.py` are written into every report, that of the
-   scanner into its summary line, and that of `keytriage.sh` stands on the page.
+   scanner into its summary line, and that of the C program stands on the pages.
 9. A statement about behaviour on a kernel, a cryptsetup release or a distribution is checked
    against the source of that exact version or against a run, and is otherwise marked as not
    verified. A distribution counts as supported only after `tests/compat-check.sh` ended with
@@ -1171,33 +1171,69 @@ be opened and emulated otherwise, and starts the check over SSH through `sudo`.
 - Actions are pinned by commit hash with the release in a comment. `dependabot.yml` proposes
   their updates.
 - `pages.yml` publishes `docs/` as it is, with no build step, from `main` only.
-- The page states what the tools do today. A sentence on it follows rule 9 like any other, and
-  the version on the lower line of its frame is that of `keytriage.sh`, which the self-test
-  compares.
-- The page loads nothing from another host and has no inline script or style, which its
-  Content-Security-Policy enforces. The fonts are in `docs/assets/fonts/` with their licences.
-- The page follows the conventions of the page of Kiln (github.com/nafud/Kiln,
-  `docs/stylesheets/extra.css` on Material for MkDocs), written out in `keep.css` because this
-  page has no theme beneath it. A change of the look starts from what Kiln does.
+- The pages describe the C program, `keep`, in the version of `KEEP_VERSION`, which the
+  self-test compares with what the pages name. They go live when the branch that holds them
+  is `main`. A sentence on them follows rule 9 like any other: it comes from the source of
+  a version or from a run, and says which.
+- There are five pages, written by hand as HTML with no build step:
+  - The home page: the word Keep, two sentences on what Keep is, and one closing line.
+  - `installation/`: what the build needs, the build, its check and the way to the scene.
+  - `usage/`: the three runs with samples of the screen, the verdicts, the files of a run,
+    the options and the exit status.
+  - `systems/`: one card for each system on which Keep was run, with its kernel, its
+    cryptsetup, the XTS driver of the latest run and whether a `System.map` is kept there.
+    The program and its commands are the same on every distribution, so the distributions
+    have cards of what differs and no page of their own in the other sections.
+  - `about/`: what Keep does, the ideas behind it, safeguards, limits, how it is checked,
+    and the references, numbered and cited in the text.
+- A page loads nothing from another host and has no inline script or style, which its
+  Content-Security-Policy enforces. A link to another site is a link for the reader. The
+  fonts are in `docs/assets/fonts/` with their licences.
+- The self-test looks at every page: each link between and inside the pages has its target,
+  each file that a page loads is there and its own, each page has the same sections on its
+  frame with its own marked, and each reference is cited.
+- The pages take their design and what they do from the page of Kiln (github.com/nafud/Kiln,
+  `docs/stylesheets/extra.css` and `docs/javascripts/` there, on Material for MkDocs),
+  written out in `keep.css` and `keep.js` because these pages have no theme beneath them. A
+  change of the look starts from what Kiln does.
   - Sizes hang on the size of the root, which grows with the window: 20px, 22px from a width
     of 100em and 24px from 125em. Everything else is in rem: running text 0.78rem at a line
     height of 1.7, the first heading 1.8rem, the second 1.2rem, the third 0.95rem, code blocks
     0.72rem, the labels 0.65rem. The text column is 900px wide.
-  - Colours are those of Kiln's themes `system light` and `system dark`, chosen by the system's
-    setting: headings in the first colour of the ladder, running text in the second, labels in
-    the muted one, links in the accent without an underline.
-  - The window is one pane with a thin frame. On its upper line sit `[keep]` and `src`, the
-    link to the repository, on its lower line the version and the position in the page (`All`,
-    `Top`, a percentage, `100%`), which `keep.js` writes because the page has no scrollbar.
-  - Inside the frame the word Keep, the text and the table of contents stand as three columns
-    on the one background, with nothing drawn around them. The entry of the table of contents
-    that belongs to the text on screen stands in the accent with a star before it, as the
-    current section of Kiln's header does.
-- The word is drawn by `keep.js` in the manner of Kiln's logo: set in a blackletter typeface
-  and sampled into a grid of ASCII characters in the faint colour, which shimmer while the
-  pointer moves. Its column is half as wide as Kiln's, so the size of a cell follows the width
-  of the column and the word keeps as many cells across as Kiln's, about 120. Without
-  JavaScript the plain word stands in its place.
+  - Colours are Kiln's five themes in its order: `terminal`, which a reader gets first,
+    `system light`, `system dark`, `phosphor` and `nord`. Every colour of a page is one of
+    the names that a theme sets: headings in the first colour of the ladder, running text in
+    the second, labels in the muted one, links in the accent without an underline. The key
+    `t` goes to the next theme, and `theme.js`, loaded in the head, puts the reader's choice
+    on the root before the page is drawn.
+  - The window is one pane with a thin frame. On its upper line sit `[keep]`, the link to
+    the home page, the four sections, of which the one on screen stands in the accent with a
+    star before it, and `src`, the link to the repository. On its lower line sit the path of
+    the page (`~`, `~/usage`) and the position in it (`All`, `Top`, a percentage, `100%`),
+    which `keep.js` writes because a page has no scrollbar.
+  - A page of a section is one column of text in the middle of the pane, with its table of
+    contents beside it where the window is wide enough. The entry that belongs to the text
+    on screen has the star as well. Kiln has no table of contents: its palette lists the
+    headings, and these pages have no palette and no search.
+  - A card is Kiln's raised surface: the surface colour, a border of one pixel, corners of
+    4px. A card of facts lies still. A card that is a link would lift under the pointer.
+  - The keys are Kiln's: `j` and `k` a step, `gg` and `G` the start and the end, `h` and `l`
+    the heading before and after, `0` the home page, `1` to `4` the sections, `t` the theme.
+    The first heading of a page shimmers under the pointer, a command has a copy button,
+    and a link to another site opens in a tab of its own.
+  - A sample of the screen of `keep` has the look that a terminal gives it: titles bold,
+    labels in the colour of a label, and the word of a verdict in its tone, each a name of
+    the theme.
+- The word of the home page is drawn by `keep.js` in the manner of Kiln's logo: set in a
+  blackletter typeface and sampled into a grid of ASCII characters in the faint colour, which
+  shimmer while the pointer moves. A cell is 0.5rem as in Kiln's logo and smaller in a
+  narrow window, so that the word keeps about 120 cells across. Without JavaScript the plain
+  word stands in its place, and every page reads the same.
+- Not checked: the pages were looked at in Chromium alone, at widths from 390 to 1920
+  pixels. Of the references, the addresses on ecma-international.org, no-color.org and
+  musl.libc.org could not be fetched from where the pages were written, and the files of
+  the kernel are named by their release and path on GitHub and were not fetched there. The
+  others were fetched and their titles compared.
 
 ## Systems checked
 

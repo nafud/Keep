@@ -1,18 +1,24 @@
-/* keep.js: what the page of Keep does beyond its text. Without this file the page still reads
-   the same: the word in the left column stays plain, the commands have no copy button, the
-   table of contents does not follow the reader and the frame shows no position.
+/* keep.js: what the pages of Keep do beyond their text. Without this file a page still reads
+   the same: the word of the home page stays plain, the commands have no copy button, the
+   table of contents does not follow the reader, the frame shows no position and no key does
+   anything. The parts are those of the page of Kiln (docs/javascripts/ there), written for
+   pages without a theme beneath them.
 
    1. The word. "Keep" is drawn with its typeface onto a canvas that is never shown and turned
       into a grid of ASCII characters: the darker a cell, the denser its character. The word
       stands still by itself. Moving the pointer makes the characters shimmer, and the shimmer
-      fades out when the pointer rests. The method is that of the logo of Kiln
-      (docs/javascripts/ascii-logo.js there).
+      fades out when the pointer rests (ascii-logo.js of Kiln).
    2. A copy button on every command.
    3. The entry of the table of contents that belongs to the text on screen is marked.
-   4. The position in the page, on the lower line of the frame, as the ruler of vim gives it and
-      as the page of Kiln does (docs/javascripts/page-chrome.js there): All when the page fits
-      the window, Top at its start, else the percentage, and 100% only at its end. The page has
-      no scrollbar, so this is where the reader sees how far the page goes.
+   4. The position in the page, on the lower line of the frame, as the ruler of vim gives it
+      (page-chrome.js of Kiln): All when the page fits the window, Top at its start, else the
+      percentage, and 100% only at its end. The page has no scrollbar, so this is where the
+      reader sees how far the page goes.
+   5. The keys (key-nav.js of Kiln): j and k move the page a step, gg and G go to its start and
+      its end, h and l to the heading before and after, 0 to the home page, 1 to 4 to the
+      sections on the frame, and t to the next theme.
+   6. The first heading of a page shimmers under the pointer (heading-shimmer.js of Kiln).
+   7. A link to another site opens in a tab of its own (external-links.js of Kiln).
 
    The logo typeface, fonts/keep-blackletter.woff2, holds the glyphs K, e and p of
    UnifrakturMaguntia Book (SIL OFL 1.1, fonts/UnifrakturMaguntia-OFL.txt), taken from
@@ -389,8 +395,162 @@
     again();
   }
 
+  /* ---- 5. the keys ------------------------------------------------------------------------- */
+
+  /* The themes in Kiln's order. The first is the one the stylesheet gives the root by itself,
+     so it is the absence of the attribute. theme.js reads the same name at the next page. */
+  const THEMES = ["terminal", "light", "dark", "phosphor", "nord"];
+
+  function nextTheme() {
+    const root = document.documentElement;
+    const now = Math.max(0, THEMES.indexOf(root.getAttribute("data-theme")));
+    const next = THEMES[(now + 1) % THEMES.length];
+    if (next === THEMES[0]) root.removeAttribute("data-theme");
+    else root.setAttribute("data-theme", next);
+    try { localStorage.setItem("keep-theme", next); } catch (refused) { /* for this page only */ }
+  }
+
+  function typing(el) {
+    return !!el && !!el.tagName &&
+      (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable);
+  }
+
+  function startKeys() {
+    const STEP = 160;               /* pixels of one j or k */
+    const CHORD_MS = 600;           /* the second g of gg comes within this time */
+    const how = function () { return lessMotion.matches ? "auto" : "smooth"; };
+    /* The line below the frame at which a heading counts as the one on screen. */
+    const line = function () {
+      const top = document.querySelector(".chrome.top");
+      return (top ? top.offsetHeight : 0) + 16;
+    };
+    const toHeading = function (direction) {
+      const headings = document.querySelectorAll("main h2");
+      const at = line(), slack = 4;
+      let target = null;
+      for (const h of headings) {
+        const top = h.getBoundingClientRect().top;
+        if (direction > 0) {
+          if (top > at + slack) { target = h; break; }
+        } else if (top < at - slack) {
+          target = h;               /* the last one above the line */
+        }
+      }
+      if (target) window.scrollTo({ top: window.scrollY + target.getBoundingClientRect().top - at, behavior: how() });
+    };
+    const follow = function (selector, n) {
+      const link = document.querySelectorAll(selector)[n];
+      if (link) link.click();
+    };
+    let firstG = 0;
+    window.addEventListener("keydown", function (event) {
+      const other = event.ctrlKey || event.altKey || event.metaKey || typing(event.target);
+      if (other || event.key !== "g") firstG = 0;     /* g, another key, g is not gg */
+      if (other) return;
+      switch (event.key) {
+        case "g": {
+          const now = performance.now();
+          if (firstG && now - firstG < CHORD_MS) {
+            firstG = 0;
+            window.scrollTo({ top: 0, behavior: how() });
+          } else {
+            firstG = now;
+          }
+          break;
+        }
+        case "G": window.scrollTo({ top: document.documentElement.scrollHeight, behavior: how() }); break;
+        case "j": window.scrollBy({ top: STEP, behavior: how() }); break;
+        case "k": window.scrollBy({ top: -STEP, behavior: how() }); break;
+        case "h": toHeading(-1); break;
+        case "l": toHeading(1); break;
+        case "0": follow(".chrome.top .chrome-title", 0); break;
+        case "1": case "2": case "3": case "4": case "5": case "6": case "7": case "8": case "9":
+          follow(".chrome.top nav a", Number(event.key) - 1);
+          break;
+        case "t": nextTheme(); break;
+        default: return;
+      }
+      event.preventDefault();
+    });
+  }
+
+  /* ---- 6. the first heading shimmers under the pointer ------------------------------------ */
+
+  /* Each letter and digit moves along a ramp of letters and digits around its own place, by
+     the two waves of the word of the home page. Other characters stay, so the places where a
+     line may break stay too and the heading keeps its lines. When the pointer has left, the
+     shimmer fades and ends in the text as it was. */
+  function startHeading() {
+    const RAMP = "B8WMoahkbdpqwmZO0QLCJUYXzcvunxrjft1ilI";
+    const ATTACK_MS = 200;
+    const last = RAMP.length - 1;
+    const h1 = document.querySelector("main h1");
+    if (!h1 || h1.closest(".home") || !h1.firstChild) return;
+    /* the pointer counts on the text, not on the empty rest of the line */
+    const span = document.createElement("span");
+    while (h1.firstChild) span.appendChild(h1.firstChild);
+    h1.appendChild(span);
+    const nodes = [];
+    const walker = document.createTreeWalker(span, NodeFilter.SHOW_TEXT);
+    let g = 0;
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const text = node.nodeValue;
+      const base = new Int16Array(text.length), phase = new Float32Array(text.length);
+      for (let i = 0; i < text.length; i++, g++) {
+        const hash = cellHash(g, 1);
+        const own = RAMP.indexOf(text[i]);
+        base[i] = !/[0-9A-Za-z]/.test(text[i]) ? -1 : own >= 0 ? own : clamp(Math.round((0.25 + 0.5 * hash) * last), 0, last);
+        phase[i] = hash * Math.PI * 2;
+      }
+      nodes.push({ node: node, text: text, base: base, phase: phase });
+    }
+    let over = false, envelope = 0, frame = 0, lastTick = 0;
+    const tickHeading = function (now) {
+      frame = 0;
+      const dt = lastTick ? now - lastTick : 0;
+      lastTick = now;
+      envelope = clamp(envelope + (over ? dt / ATTACK_MS : -dt / LOGO.releaseMs), 0, 1);
+      if (!over && envelope === 0) {
+        for (const n of nodes) n.node.nodeValue = n.text;
+        lastTick = 0;
+        return;
+      }
+      const swing = LOGO.amplitude * last * smooth(envelope), angle = now * LOGO.radPerMs;
+      for (const n of nodes) {
+        let out = "";
+        for (let i = 0; i < n.text.length; i++) {
+          const move = n.base[i] < 0 ? 0 :
+            (0.7 * Math.sin(angle + n.phase[i]) + 0.3 * Math.sin(angle * LOGO.detune + n.phase[i] * 2)) * swing;
+          out += Math.abs(move) < 0.5 ? n.text[i] : RAMP[clamp(n.base[i] + Math.round(move), 0, last)];
+        }
+        n.node.nodeValue = out;
+      }
+      frame = requestAnimationFrame(tickHeading);
+    };
+    span.addEventListener("mouseenter", function () {
+      if (lessMotion.matches) return;
+      over = true;
+      if (!frame) frame = requestAnimationFrame(tickHeading);
+    });
+    span.addEventListener("mouseleave", function () { over = false; });
+  }
+
+  /* ---- 7. a link to another site opens in a tab of its own -------------------------------- */
+
+  function startLinks() {
+    document.querySelectorAll("a[href]").forEach(function (link) {
+      if (link.protocol !== "http:" && link.protocol !== "https:") return;
+      if (link.origin === location.origin) return;
+      if (!link.target) link.target = "_blank";
+      link.relList.add("noopener");
+    });
+  }
+
   startLogo();
   startCopy();
   startContents();
   startPosition();
+  startKeys();
+  startHeading();
+  startLinks();
 })();
