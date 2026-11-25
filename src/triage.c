@@ -16,6 +16,9 @@
  * luksHeaderBackup" copies it (luks.c), and the proof is the PBKDF2 digest of the header,
  * computed here (hash.c). Nothing is written outside the destination.
  *
+ * With a format of a memory image in the options, the memory of the machine is taken after the
+ * keys (memory.c).
+ *
  * No key is printed. A key is written only below keys/ of the folder of the run, by this
  * process with umask 077, counts as captured only after it is flushed, and is named by the first
  * 16 digits of its SHA-256.
@@ -24,6 +27,9 @@
 #include "dm.h"
 #include "keyscan.h"
 #include "luks.h"
+#include "memory.h"
+#include "run.h"
+#include "snappy.h"
 #include "sys.h"
 #include "util.h"
 #include "volume.h"
@@ -72,86 +78,6 @@ struct volume {
     size_t nkeys;
 };
 
-struct run {
-    char out[PATH_MAX];                 /* the folder of this run */
-    FILE *report;
-    int write_failed;
-    char **files;                       /* every file of the run, relative to the folder */
-    size_t nfiles;
-    char **stems;                       /* the names that files of volumes and keys have taken */
-    size_t nstems;
-    char lockdown[64];
-    unsigned budget;
-    int scanned, scan_ok, scan_refused;
-    char scan_error[256];
-};
-
-static void say(struct run *r, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
-static void say(struct run *r, const char *fmt, ...)
-{
-    va_list ap;
-
-    va_start(ap, fmt);
-    vprintf(fmt, ap);
-    va_end(ap);
-    putchar('\n');
-    fflush(stdout);
-    va_start(ap, fmt);
-    if (vfprintf(r->report, fmt, ap) < 0 || fputc('\n', r->report) == EOF)
-        r->write_failed = 1;
-    va_end(ap);
-}
-
-/* A new file of the run. It must not exist, so nothing of an earlier run is written over. */
-static int create(struct run *r, const char *rel, int flags, mode_t mode)
-{
-    char path[PATH_MAX], **grown, *copy;
-    int fd;
-
-    if (pathf(path, "%s/%s", r->out, rel)) {
-        errno = ENAMETOOLONG;
-        return -1;
-    }
-    if ((fd = open(path, flags | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, mode)) < 0)
-        return -1;
-    if (!(grown = realloc(r->files, (r->nfiles + 1) * sizeof *grown)) || !(copy = strdup(rel))) {
-        if (grown)
-            r->files = grown;
-        close(fd);
-        errno = ENOMEM;
-        return -1;
-    }
-    r->files = grown;
-    r->files[r->nfiles++] = copy;
-    return fd;
-}
-
-/* fsync of a file of the run and of the directory that names it. A failure is remembered: the
-   run then ends with status 1. */
-static int flush(struct run *r, int fd, const char *dir)
-{
-    char path[PATH_MAX];
-
-    if (fsync(fd) || pathf(path, "%s/%s", r->out, dir) || flush_path(path)) {
-        r->write_failed = 1;
-        return -1;
-    }
-    return 0;
-}
-
-/* The time now in UTC, for a line of the report or as part of the name of the folder. */
-static void utc(char out[32], int for_name)
-{
-    time_t now = time(NULL);
-    struct tm tm;
-
-    gmtime_r(&now, &tm);
-    if (for_name)
-        strftime(out, 32, "%Y%m%d_%H%M%S", &tm);
-    else
-        strftime(out, 32, "%Y-%m-%dT%H:%M:%SZ", &tm);
-}
-
 static void key_name(const uint8_t *key, size_t n, char out[17])
 {
     uint8_t digest[32];
@@ -198,10 +124,10 @@ static void verdict(struct run *r, struct volume *v, const char *what, const cha
     va_end(ap);
     v->verdict = what;
     if (v->note[0])
-        say(r, "  VERDICT: %s (%s)", what, v->note);
+        run_say(r, "  VERDICT: %s (%s)", what, v->note);
     else
-        say(r, "  VERDICT: %s", what);
-    say(r, "%s", "");
+        run_say(r, "  VERDICT: %s", what);
+    run_say(r, "%s", "");
 }
 
 /* Write a key to keys/ and flush it. Only then does it count as captured. */
@@ -210,11 +136,11 @@ static int keep_key(struct run *r, struct key_result *k, const uint8_t *key, siz
     char rel[PATH_MAX];
     int fd, ok;
 
-    if (pathf(rel, "keys/%s.vk", k->file) || (fd = create(r, rel, O_WRONLY, 0600)) < 0) {
+    if (pathf(rel, "keys/%s.vk", k->file) || (fd = run_create(r, rel, O_WRONLY, 0600)) < 0) {
         r->write_failed = 1;
         return -1;
     }
-    ok = !write_all(fd, key, n) && !flush(r, fd, "keys");
+    ok = !write_all(fd, key, n) && !run_flush(r, fd, "keys");
     if (close(fd) || !ok) {
         r->write_failed = 1;
         return -1;
@@ -256,16 +182,16 @@ static void scan_once(struct run *r)
 
     if (r->scanned) {
         if (!r->scan_ok)
-            say(r, "  R3 memory: the search of /proc/kcore failed, as above");
+            run_say(r, "  R3 memory: the search of /proc/kcore failed, as above");
         return;
     }
     r->scanned = 1;
-    say(r, "  R3 memory: searching /proc/kcore for AES key schedules");
-    kfd = create(r, "keys/kcore-candidates.txt", O_WRONLY, 0600);
-    mfd = create(r, "log/kcore-keyscan.txt", O_WRONLY, 0600);
+    run_say(r, "  R3 memory: searching /proc/kcore for AES key schedules");
+    kfd = run_create(r, "keys/kcore-candidates.txt", O_WRONLY, 0600);
+    mfd = run_create(r, "log/kcore-keyscan.txt", O_WRONLY, 0600);
     if (kfd < 0 || mfd < 0 || !(keys = fdopen(kfd, "w")) || !(msg = fdopen(mfd, "w"))) {
         snprintf(r->scan_error, sizeof r->scan_error, "the list of the schedules cannot be written: %s", strerror(errno));
-        say(r, "  the search failed: %s", r->scan_error);
+        run_say(r, "  the search failed: %s", r->scan_error);
         r->write_failed = 1;
         if (keys) fclose(keys); else if (kfd >= 0) close(kfd);
         if (msg) fclose(msg); else if (mfd >= 0) close(mfd);
@@ -277,9 +203,9 @@ static void scan_once(struct run *r)
     if (status == 0) {
         keyscan_hits(&n);
         r->scan_ok = 1;
-        say(r, "  %d schedules found, list in keys/kcore-candidates.txt", n);
-        if (flush(r, kfd, "keys"))
-            say(r, "  the list could not be flushed to the destination");
+        run_say(r, "  %d schedules found, list in keys/kcore-candidates.txt", n);
+        if (run_flush(r, kfd, "keys"))
+            run_say(r, "  the list could not be flushed to the destination");
     } else {
         r->scan_refused = failed == EPERM;
         if (!pathf(path, "%s/log/kcore-keyscan.txt", r->out) && (text = read_text(path, sizeof r->scan_error - 1, NULL))) {
@@ -287,7 +213,7 @@ static void scan_once(struct run *r)
             snprintf(r->scan_error, sizeof r->scan_error, "%s", text);
             free(text);
         }
-        say(r, "  the search failed: %s", r->scan_error[0] ? r->scan_error : "no message");
+        run_say(r, "  the search failed: %s", r->scan_error[0] ? r->scan_error : "no message");
     }
     fclose(keys);
     fclose(msg);
@@ -358,20 +284,20 @@ static void back_up_header(struct run *r, struct volume *v, int dev, const struc
     int out;
 
     if (on_device->secondary)
-        say(r, "  the first copy of the LUKS2 header is damaged and the second one is in use. Both are copied as they are");
-    if (pathf(rel, "headers/%s.hdr", v->file) || (out = create(r, rel, O_RDWR, 0400)) < 0) {
-        say(r, "  header backup FAILED for %s: %s", v->device, strerror(errno));
+        run_say(r, "  the first copy of the LUKS2 header is damaged and the second one is in use. Both are copied as they are");
+    if (pathf(rel, "headers/%s.hdr", v->file) || (out = run_create(r, rel, O_RDWR, 0400)) < 0) {
+        run_say(r, "  header backup FAILED for %s: %s", v->device, strerror(errno));
         r->write_failed = 1;
         return;
     }
     if (luks_backup(dev, on_device, out, &written, err)) {
-        say(r, "  header backup FAILED for %s: %s", v->device, err);
+        run_say(r, "  header backup FAILED for %s: %s", v->device, err);
     } else {
-        say(r, "  header backed up: %s (%llu bytes)", rel, (unsigned long long)written);
-        if (flush(r, out, "headers"))
-            say(r, "  the header backup could not be flushed to the destination");
+        run_say(r, "  header backed up: %s (%llu bytes)", rel, (unsigned long long)written);
+        if (run_flush(r, out, "headers"))
+            run_say(r, "  the header backup could not be flushed to the destination");
         if (luks_read(out, h, err))
-            say(r, "  the header backup cannot be read back: %s", err);
+            run_say(r, "  the header backup cannot be read back: %s", err);
         else
             v->has_header = 1;
     }
@@ -396,7 +322,7 @@ static void memory_route(struct run *r, struct key_result *k, const struct luks_
     hits = keyscan_hits(&n);
     for (i = 0; i < n; i++)
         count += hits[i].nk == nk;
-    say(r, "  %d schedules of AES-%u", count, bits);
+    run_say(r, "  %d schedules of AES-%u", count, bits);
     for (i = 0; i < n && tried < r->budget && !proven && !uncomputed; i++) {
         size_t len = (size_t)nk * 4;
         int result;
@@ -424,25 +350,25 @@ static void memory_route(struct run *r, struct key_result *k, const struct luks_
             proven = 1;
             *taken |= 1u << (result - 1);
             if (keep_key(r, k, key, len)) {
-                say(r, "  the key could not be written to the destination");
+                run_say(r, "  the key could not be written to the destination");
                 settle(k, V_MEMORY, NULL, "the write of the key to the destination failed");
             } else {
-                say(r, "  recovered a volume key of %zu bytes, sha256 %s", len, k->hash);
+                run_say(r, "  recovered a volume key of %zu bytes, sha256 %s", len, k->hash);
                 if (xts)
-                    say(r, "  the tweak schedule is at 0x%016llx and the data schedule 496 bytes after it at 0x%016llx",
+                    run_say(r, "  the tweak schedule is at 0x%016llx and the data schedule 496 bytes after it at 0x%016llx",
                         (unsigned long long)hits[i].phys, (unsigned long long)hits[i].phys + XTS_DISTANCE);
                 else
-                    say(r, "  its schedule is at 0x%016llx", (unsigned long long)hits[i].phys);
+                    run_say(r, "  its schedule is at 0x%016llx", (unsigned long long)hits[i].phys);
                 settle(k, V_PROVEN, R_MEMORY, "opens the header");
             }
         }
     }
     explicit_bzero(key, sizeof key);
     if (uncomputed) {
-        say(r, "  the digest of the header uses %s, which this program does not compute", hash ? hash : "no known function");
+        run_say(r, "  the digest of the header uses %s, which this program does not compute", hash ? hash : "no known function");
         settle(k, V_MEMORY, NULL, "no proof on scene, the candidate list is kept for the lab verifier");
     } else if (!proven) {
-        say(r, "  no candidate proved within %u test(s) of budget %u", tried, r->budget);
+        run_say(r, "  no candidate proved within %u test(s) of budget %u", tried, r->budget);
         settle(k, V_MEMORY, NULL, "the candidate list is kept for the lab verifier");
     }
 }
@@ -490,7 +416,7 @@ static void log_tables(struct run *r, const struct volume *v, const struct vol *
         str_add(&text, "\n");
         table_text(&text, f->below);
     }
-    if (text.failed || pathf(rel, "log/%s.table.txt", v->file) || (fd = create(r, rel, O_WRONLY, 0600)) < 0) {
+    if (text.failed || pathf(rel, "log/%s.table.txt", v->file) || (fd = run_create(r, rel, O_WRONLY, 0600)) < 0) {
         r->write_failed = 1;
     } else {
         if (write_all(fd, str_text(&text), text.len))
@@ -540,7 +466,7 @@ static void one_key(struct run *r, const struct volume *v, struct key_result *k,
 
     if (keylen == 1 && field[0] == '-') {
         /* dm-crypt writes "-" for a key of size 0 (crypt_status), which is the null cipher */
-        say(r, "  R1 table: the mapping has no key (key size 0), the device holds the data as they are");
+        run_say(r, "  R1 table: the mapping has no key (key size 0), the device holds the data as they are");
         settle(k, V_NO_KEY, R_TABLE, "key size 0 in the table, cipher %s", k->cipher);
     } else if (field[0] != ':') {
         uint8_t *key = keylen % 2 ? NULL : malloc(keylen / 2 + 1);
@@ -548,13 +474,13 @@ static void one_key(struct run *r, const struct volume *v, struct key_result *k,
         int result;
 
         if (!key || hex_decode(field, keylen, key)) {
-            say(r, "  R1 table: the key field of the table line is neither a key in hexadecimal nor a keyring reference");
+            run_say(r, "  R1 table: the key field of the table line is neither a key in hexadecimal nor a keyring reference");
             settle(k, V_MEMORY, NULL, "the key field of the table line is not understood");
         } else if (keep_key(r, k, key, keylen / 2)) {
-            say(r, "  R1 table: the key is in the table and could not be written to the destination");
+            run_say(r, "  R1 table: the key is in the table and could not be written to the destination");
             settle(k, V_MEMORY, NULL, "the write of the key to the destination failed");
         } else {
-            say(r, "  R1 table: key of %zu bytes, sha256 %s", keylen / 2, k->hash);
+            run_say(r, "  R1 table: key of %zu bytes, sha256 %s", keylen / 2, k->hash);
             if (!v->has_header && luks) {
                 settle(k, V_NOT_PROVEN, R_TABLE, "no header backup to prove against");
             } else if (!v->has_header) {
@@ -574,18 +500,18 @@ static void one_key(struct run *r, const struct volume *v, struct key_result *k,
             free(key);
         }
     } else {
-        say(r, "  R1 table: keyring reference %.*s (no key in the table)", (int)keylen, field);
+        run_say(r, "  R1 table: keyring reference %.*s (no key in the table)", (int)keylen, field);
         if (!strncmp(k->cipher, "capi:authenc(", 13)) {
             /* crypt_copy_authenckey in dm-crypt.c: the key of the cipher and the key of the
                authentication, which is no AES key */
-            say(r, "  R3 memory: the volume key of %s holds a key of the authentication beside the key of the cipher, "
+            run_say(r, "  R3 memory: the volume key of %s holds a key of the authentication beside the key of the cipher, "
                 "and the AES schedule search finds no such key", k->cipher);
             settle(k, V_LIVE, NULL, "a memory image keeps another method open");
         } else if (!aes) {
-            say(r, "  R3 memory: the cipher %s is not AES, so the AES schedule search does not apply", k->cipher);
+            run_say(r, "  R3 memory: the cipher %s is not AES, so the AES schedule search does not apply", k->cipher);
             settle(k, V_LIVE, NULL, "a memory image keeps another method open");
         } else if (!strcmp(r->lockdown, "confidentiality")) {
-            say(r, "  R3 memory: /proc/kcore is blocked under lockdown confidentiality");
+            run_say(r, "  R3 memory: /proc/kcore is blocked under lockdown confidentiality");
             settle(k, V_LIVE, NULL, "lockdown confidentiality");
         } else {
             scan_once(r);
@@ -594,7 +520,7 @@ static void one_key(struct run *r, const struct volume *v, struct key_result *k,
             } else if (!r->scan_ok) {
                 settle(k, V_MEMORY, NULL, "the search of /proc/kcore failed");
             } else if (!v->has_header || !k->has_bits) {
-                say(r, "  R3 memory: no header backup or no key size to prove against");
+                run_say(r, "  R3 memory: no header backup or no key size to prove against");
                 settle(k, V_MEMORY, NULL, "no proof on scene, the candidate list is kept for the lab verifier");
             } else {
                 int named = named_digest(header, field, keylen);
@@ -603,7 +529,7 @@ static void one_key(struct run *r, const struct volume *v, struct key_result *k,
                 /* the key that the reference names, and where it names none, one that no other
                    key of the volume has given */
                 if (named >= 0 && v->nkeys > 1)
-                    say(r, "  the reference names the key of digest %u of the header", header->digests[named].number);
+                    run_say(r, "  the reference names the key of digest %u of the header", header->digests[named].number);
                 memory_route(r, k, header, xts, taken, others);
             }
         }
@@ -618,7 +544,7 @@ static void one_volume(struct run *r, struct volume *v, const struct vol *f)
     size_t i;
     int have_device, luks, dev = -1;
 
-    say(r, "==== %s", v->shown);
+    run_say(r, "==== %s", v->shown);
     log_tables(r, v, f);
     type_of_uuid(f->top->uuid, v->type);
     for (i = 0; i < f->nkeys; i++) {
@@ -647,19 +573,19 @@ static void one_volume(struct run *r, struct volume *v, const struct vol *f)
         str_addf(&why, "header backup FAILED: the table names no device");
 
     if (f->nkeys == 1 && v->keys[0].has_bits)
-        say(r, "  type %s, cipher %s, keysize %u bits, key location %s", v->type, v->keys[0].cipher, v->keys[0].bits,
+        run_say(r, "  type %s, cipher %s, keysize %u bits, key location %s", v->type, v->keys[0].cipher, v->keys[0].bits,
             v->keys[0].location);
     else if (f->nkeys == 1)
-        say(r, "  type %s, cipher %s, keysize ? bits, key location %s", v->type, v->keys[0].cipher, v->keys[0].location);
+        run_say(r, "  type %s, cipher %s, keysize ? bits, key location %s", v->type, v->keys[0].cipher, v->keys[0].location);
     else
-        say(r, "  type %s, %zu keys in its tables. A volume in re-encryption has two, one for the part that is done "
+        run_say(r, "  type %s, %zu keys in its tables. A volume in re-encryption has two, one for the part that is done "
             "and one for the rest", v->type, f->nkeys);
-    say(r, "  backing device %s", have_device ? v->device : "?");
+    run_say(r, "  backing device %s", have_device ? v->device : "?");
     if (f->below)
-        say(r, "  integrity: %s with tags of %u bytes, kept by the dm-integrity device %s between the volume and its device",
+        run_say(r, "  integrity: %s with tags of %u bytes, kept by the dm-integrity device %s between the volume and its device",
             f->auth, f->tag_size, f->below->name);
     else if (f->tag_size)
-        say(r, "  integrity: %s with tags of %u bytes", f->auth, f->tag_size);
+        run_say(r, "  integrity: %s with tags of %u bytes", f->auth, f->tag_size);
     if (f->nparts) {
         struct str names = { 0 };
 
@@ -667,21 +593,21 @@ static void one_volume(struct run *r, struct volume *v, const struct vol *f)
             str_addf(&names, "%s%s", i ? ", " : "", f->parts[i]->name);
         if (names.s)
             name_clean(names.s);
-        say(r, "  in re-encryption: cryptsetup works on it with the helper devices %s", str_text(&names));
+        run_say(r, "  in re-encryption: cryptsetup works on it with the helper devices %s", str_text(&names));
         str_free(&names);
     } else if (!strncmp(f->top->uuid, "CRYPT-SUBDEV-", 13)) {
-        say(r, "  a device that cryptsetup sets up below a volume while it re-encrypts it. That volume is not among the "
+        run_say(r, "  a device that cryptsetup sets up below a volume while it re-encrypts it. That volume is not among the "
             "mapped devices");
     }
     v->in_use = sys_in_use("/sys", "/proc/self/mountinfo", "/proc/swaps", f->top->major, f->top->minor);
     if (v->in_use)
         name_clean(v->in_use);
-    say(r, "  in use: %s", v->in_use && v->in_use[0] ? v->in_use
+    run_say(r, "  in use: %s", v->in_use && v->in_use[0] ? v->in_use
         : "not mounted and not swap, also nothing that stands on it");
 
     /* a key is useless without the header, so the header comes first */
     if (why.len)
-        say(r, "  %s", str_text(&why));
+        run_say(r, "  %s", str_text(&why));
     str_free(&why);
     if (dev >= 0) {
         back_up_header(r, v, dev, &on_device, &header);
@@ -689,22 +615,22 @@ static void one_volume(struct run *r, struct volume *v, const struct vol *f)
     }
 
     if (f->not_understood)
-        say(r, "  R1 table: the kernel gave %s table line of a crypt target that is understood",
+        run_say(r, "  R1 table: the kernel gave %s table line of a crypt target that is understood",
             f->nkeys ? "a further" : "no");
     for (i = 0; i < f->nkeys; i++) {
         struct key_result *k = &v->keys[i];
 
         if (f->nkeys > 1) {
             if (k->has_bits)
-                say(r, "  key %zu of %zu: cipher %s, keysize %u bits, key location %s, for %llu sectors of 512 bytes",
+                run_say(r, "  key %zu of %zu: cipher %s, keysize %u bits, key location %s, for %llu sectors of 512 bytes",
                     i + 1, f->nkeys, k->cipher, k->bits, k->location, (unsigned long long)f->keys[i].sectors);
             else
-                say(r, "  key %zu of %zu: cipher %s, keysize ? bits, key location %s, for %llu sectors of 512 bytes",
+                run_say(r, "  key %zu of %zu: cipher %s, keysize ? bits, key location %s, for %llu sectors of 512 bytes",
                     i + 1, f->nkeys, k->cipher, k->location, (unsigned long long)f->keys[i].sectors);
         }
         one_key(r, v, k, &f->keys[i], &header, &taken);
         if (f->nkeys > 1)
-            say(r, "  key %zu: %s%s%s%s", i + 1, k->verdict, k->note[0] ? " (" : "", k->note, k->note[0] ? ")" : "");
+            run_say(r, "  key %zu: %s%s%s%s", i + 1, k->verdict, k->note[0] ? " (" : "", k->note, k->note[0] ? ")" : "");
     }
 
     if (f->nkeys == 1 && !f->not_understood) {
@@ -768,6 +694,30 @@ static void json_value(FILE *f, const char *s)
 
 /* The fields of a key in verdict.json, in the three places where they stand in the line of a
    volume: the cipher, the size and the location, then the route, then the name of the key. */
+/* One memory image as an object of the report, without its closing brace. The first of a run
+   has the fields that keytriage.sh has for the image that AVML wrote, in their order. */
+static void json_image(FILE *f, const struct memory_image *m, const struct memory_result *first)
+{
+    fputs("{\"status\": ", f); json_value(f, m->status);
+    fputs(", \"file\": ", f); json_value(f, m->file);
+    fputs(", \"format\": ", f);
+    json_value(f, !m->file[0] ? "" : m->format == IMAGE_AVML ? "avml compressed" : image_name(m->format));
+    if (m->file[0])
+        fprintf(f, ", \"bytes\": %llu", (unsigned long long)m->bytes);
+    else
+        fputs(", \"bytes\": null", f);
+    if (first && m->file[0])
+        fprintf(f, ", \"seconds\": %u", first->seconds);
+    else if (first)
+        fputs(", \"seconds\": null", f);
+    fputs(", \"sha256\": ", f); json_value(f, m->sha256);
+    if (first) {
+        fputs(", \"tool\": \"keep " KEEP_VERSION "\", \"system_map\": ", f);
+        json_value(f, first->system_map);
+    }
+    fputs(", \"note\": ", f); json_value(f, m->note);
+}
+
 static void json_key(FILE *f, const struct key_result *k, int part)
 {
     if (part == 0) {
@@ -782,50 +732,6 @@ static void json_key(FILE *f, const struct key_result *k, int part)
     } else {
         fputs(", \"key_sha256_16\": ", f); json_value(f, k->hash);
     }
-}
-
-static int by_text(const void *a, const void *b)
-{
-    return strcmp(*(char *const *)a, *(char *const *)b);
-}
-
-/* manifest.sha256: every file of the run with its SHA-256, in the form of sha256sum, by name. */
-static void write_manifest(struct run *r)
-{
-    char path[PATH_MAX], hex[65];
-    uint8_t buf[65536], digest[32];
-    struct hash_ctx ctx;
-    FILE *f;
-    size_t i, count = r->nfiles;
-    ssize_t got;
-    int fd, mfd;
-
-    qsort(r->files, count, sizeof r->files[0], by_text);
-    if ((mfd = create(r, "manifest.sha256", O_WRONLY, 0600)) < 0 || !(f = fdopen(mfd, "w"))) {
-        r->write_failed = 1;
-        if (mfd >= 0)
-            close(mfd);
-        return;
-    }
-    for (i = 0; i < count; i++) {
-        if (pathf(path, "%s/%s", r->out, r->files[i]) || (fd = open(path, O_RDONLY | O_CLOEXEC)) < 0) {
-            r->write_failed = 1;
-            continue;
-        }
-        hash_init(&ctx, hash_by_name("sha256"));
-        while ((got = read(fd, buf, sizeof buf)) > 0)
-            hash_update(&ctx, buf, (size_t)got);
-        hash_final(&ctx, digest);
-        close(fd);
-        if (got < 0)
-            r->write_failed = 1;
-        hex_encode(digest, 32, hex);
-        fprintf(f, "%s  %s\n", hex, r->files[i]);
-    }
-    explicit_bzero(buf, sizeof buf);
-    if (fflush(f) || fsync(mfd))
-        r->write_failed = 1;
-    fclose(f);
 }
 
 /*
@@ -874,19 +780,6 @@ static void free_tables(struct dm_table *tabs, size_t ntabs)
     free(tabs);
 }
 
-static int die(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
-static int die(const char *fmt, ...)
-{
-    va_list ap;
-
-    fputs("keep: ", stderr);
-    va_start(ap, fmt);
-    vfprintf(stderr, fmt, ap);
-    va_end(ap);
-    fputc('\n', stderr);
-    return 1;
-}
-
 int triage_run(const struct triage_options *o)
 {
     char dest[PATH_MAX], path[PATH_MAX], host[256], hostfile[256], started[32], finished[32], stamp[32];
@@ -900,6 +793,7 @@ int triage_run(const struct triage_options *o)
     struct statvfs vfs;
     struct utsname un;
     struct str medium = { 0 };
+    struct memory_result mem = { 0 };
     const char *bad;
     size_t ntabs = 0, nvols = 0, i, k;
     FILE *json;
@@ -909,77 +803,77 @@ int triage_run(const struct triage_options *o)
        space of the examined system. */
     lock_errno = mlockall(MCL_CURRENT | MCL_FUTURE) ? errno : 0;
     umask(077);
-    if ((bad = hash_selftest()))
-        return die("%s does not compute the example of its standard, so a proof would not be reliable", bad);
+    if ((bad = hash_selftest()) || (bad = snappy_selftest()))
+        return run_die("%s does not compute the example of its standard, so a proof or an image would not be reliable", bad);
     if (geteuid() != 0)
-        return die("must run as root (sudo)");
+        return run_die("must run as root (sudo)");
     if (!realpath(o->dest, dest))
-        return die("the destination directory %s: %s", o->dest, strerror(errno));
+        return run_die("the destination directory %s: %s", o->dest, strerror(errno));
     /* the file system that holds the destination, for the report. Where the destination lies is
        the examiner's decision and is not tested. */
     if (sys_mount_of("/proc/self/mountinfo", dest, &mount))
-        return die("no mount that holds %s in /proc/self/mountinfo", dest);
+        return run_die("no mount that holds %s in /proc/self/mountinfo", dest);
     str_addf(&medium, "%s (%s) mounted at %s", mount.source, mount.type, mount.point);
     if (medium.failed)
-        return die("no memory");
+        return run_die("no memory");
     if (mount.readonly)
-        return die("%s is on a file system that is mounted read-only: %s", dest, medium.s);
+        return run_die("%s is on a file system that is mounted read-only: %s", dest, medium.s);
     sys_mount_free(&mount);
     if (access(dest, W_OK))
-        return die("%s is not writable", dest);
+        return run_die("%s is not writable", dest);
 
     uname(&un);
     snprintf(host, sizeof host, "%s", un.nodename);
     name_clean(host);
     name_file(host, hostfile, sizeof hostfile);
-    utc(stamp, 1);
-    utc(started, 0);
+    run_utc(stamp, 1);
+    run_utc(started, 0);
     if (pathf(r->out, "%s/triage_%s_%s", dest, hostfile, stamp) || mkdir(r->out, 0700))
-        return die("cannot create %s/triage_%s_%s: %s", dest, hostfile, stamp, strerror(errno));
+        return run_die("cannot create %s/triage_%s_%s: %s", dest, hostfile, stamp, strerror(errno));
     for (i = 0; i < 3; i++)
         if (pathf(path, "%s/%s", r->out, i == 0 ? "headers" : i == 1 ? "keys" : "log") || mkdir(path, 0700))
-            return die("cannot create %s: %s", path, strerror(errno));
-    if ((fd = create(r, "triage.txt", O_WRONLY, 0600)) < 0 || !(r->report = fdopen(fd, "w")))
-        return die("cannot create %s/triage.txt: %s", r->out, strerror(errno));
+            return run_die("cannot create %s: %s", path, strerror(errno));
+    if ((fd = run_create(r, "triage.txt", O_WRONLY, 0600)) < 0 || !(r->report = fdopen(fd, "w")))
+        return run_die("cannot create %s/triage.txt: %s", r->out, strerror(errno));
 
     sys_lockdown("/sys/kernel/security/lockdown", r->lockdown, sizeof r->lockdown);
     sys_secure_boot("/sys/firmware/efi/efivars", secure_boot, sizeof secure_boot);
     sys_os_name("/etc/os-release", "/usr/lib/os-release", os, sizeof os);
     name_clean(os);
 
-    say(r, "keep %s", KEEP_VERSION);
-    say(r, "host %s, %s, kernel %s", host, started, un.release);
-    say(r, "system: %s", os[0] ? os : "unknown");
-    say(r, "kernel lockdown: %s", r->lockdown[0] ? r->lockdown : "unknown");
+    run_say(r, "keep %s", KEEP_VERSION);
+    run_say(r, "host %s, %s, kernel %s", host, started, un.release);
+    run_say(r, "system: %s", os[0] ? os : "unknown");
+    run_say(r, "kernel lockdown: %s", r->lockdown[0] ? r->lockdown : "unknown");
     if (secure_boot[0])
-        say(r, "secure boot: %s (1 enabled)", secure_boot);
+        run_say(r, "secure boot: %s (1 enabled)", secure_boot);
     else
-        say(r, "secure boot: no SecureBoot variable");
+        run_say(r, "secure boot: no SecureBoot variable");
     if (sys_memory("/proc/meminfo", &kib))
-        say(r, "memory: unknown");
+        run_say(r, "memory: unknown");
     else
-        say(r, "memory: %llu MiB", kib / 1024);
-    say(r, "output: %s", r->out);
+        run_say(r, "memory: %llu MiB", kib / 1024);
+    run_say(r, "output: %s", r->out);
     if (statvfs(r->out, &vfs))
-        say(r, "destination: %s", medium.s);
+        run_say(r, "destination: %s", medium.s);
     else
-        say(r, "destination: %s, %llu MiB free", medium.s,
+        run_say(r, "destination: %s, %llu MiB free", medium.s,
             (unsigned long long)vfs.f_bavail * vfs.f_frsize / 1048576);
     if (lock_errno)
-        say(r, "the memory of this program could not be locked (%s), so a part of it can reach the swap space",
+        run_say(r, "the memory of this program could not be locked (%s), so a part of it can reach the swap space",
             strerror(lock_errno));
-    say(r, "%s", "");
+    run_say(r, "%s", "");
 
     /* The open crypt volumes: every mapped device with a crypt target in its table, which is
        what "dmsetup ls --target crypt" lists, and a device whose crypt targets cryptsetup has
        put into a helper device below it (volume.c). */
     if (load_tables(&tabs, &ntabs, &present, err)) {
-        say(r, "the mapped devices cannot be listed: %s", err);
+        run_say(r, "the mapped devices cannot be listed: %s", err);
         r->write_failed = 1;
     } else if (!present) {
-        say(r, "this kernel has no device-mapper loaded, so there is no dm-crypt volume");
+        run_say(r, "this kernel has no device-mapper loaded, so there is no dm-crypt volume");
     } else if (vol_find(tabs, ntabs, &found, &nvols, err)) {
-        say(r, "%s", err);
+        run_say(r, "%s", err);
         r->write_failed = 1;
     }
     if (nvols && !(vols = calloc(nvols, sizeof *vols)))
@@ -1008,24 +902,24 @@ int triage_run(const struct triage_options *o)
     }
     if (no_memory) {
         free_tables(tabs, ntabs);               /* they can hold keys, and this wipes them */
-        return die("no memory");
+        return run_die("no memory");
     }
     if (!nvols) {
-        say(r, "no open dm-crypt volumes");
+        run_say(r, "no open dm-crypt volumes");
     } else {
         struct str names = { 0 };
 
         for (i = 0; i < nvols; i++)
             str_addf(&names, "%s%s", i ? " " : "", vols[i].shown);
-        say(r, "%zu open dm-crypt volume(s): %s", nvols, str_text(&names));
+        run_say(r, "%zu open dm-crypt volume(s): %s", nvols, str_text(&names));
         str_free(&names);
     }
     /* mounted file systems that can carry their own encryption. They are not dm-crypt, so they
        are named, so that their absence from the verdicts is not read as "clear". */
     other = sys_other_filesystems("/proc/mounts");
     if (other && other[0])
-        say(r, "mounted and not examined here (file systems that can encrypt by themselves): %s", other);
-    say(r, "%s", "");
+        run_say(r, "mounted and not examined here (file systems that can encrypt by themselves): %s", other);
+    run_say(r, "%s", "");
 
     for (i = 0; i < nvols; i++)
         one_volume(r, &vols[i], &found[i]);
@@ -1033,24 +927,30 @@ int triage_run(const struct triage_options *o)
     free_tables(tabs, ntabs);
     keyscan_wipe();
 
-    say(r, "==== verdicts");
+    /* The keys are done, so the image no longer competes with them for time. */
+    if (o->nformats)
+        memory_run(r, o->formats, o->nformats, &mem);
+
+    run_say(r, "==== verdicts");
     for (i = 0; i < nvols; i++) {
-        say(r, "  %-16s  %s", vols[i].shown, vols[i].verdict ? vols[i].verdict : "unknown");
+        run_say(r, "  %-16s  %s", vols[i].shown, vols[i].verdict ? vols[i].verdict : "unknown");
         /* the keys that are held, each by its file, its length and the start of its SHA-256 */
         for (k = 0; k < vols[i].nkeys; k++)
             if (vols[i].keys[k].bytes)
-                say(r, "  %-16s  keys/%s.vk, %zu bytes, sha256 %s", "", vols[i].keys[k].file, vols[i].keys[k].bytes,
+                run_say(r, "  %-16s  keys/%s.vk, %zu bytes, sha256 %s", "", vols[i].keys[k].file, vols[i].keys[k].bytes,
                     vols[i].keys[k].hash);
     }
-    say(r, "%s", "");
-    utc(finished, 0);
-    say(r, "finished %s", finished);
+    for (i = 0; i < mem.nimages; i++)
+        run_say(r, "  %-16s  %s, %s", "memory image", image_name(mem.images[i].format), mem.images[i].status);
+    run_say(r, "%s", "");
+    run_utc(finished, 0);
+    run_say(r, "finished %s", finished);
     if (fflush(r->report) || fsync(fileno(r->report)))
         r->write_failed = 1;
     fclose(r->report);
 
     /* the same verdicts for a program, schema keep-report/1. No key is in this file. */
-    if ((fd = create(r, "verdict.json", O_WRONLY, 0600)) < 0 || !(json = fdopen(fd, "w"))) {
+    if ((fd = run_create(r, "verdict.json", O_WRONLY, 0600)) < 0 || !(json = fdopen(fd, "w"))) {
         r->write_failed = 1;
     } else {
         fprintf(json, "{\n  \"schema\": \"keep-report/1\",\n  \"tool\": \"keep %s\",\n  \"host\": ", KEEP_VERSION);
@@ -1062,7 +962,21 @@ int triage_run(const struct triage_options *o)
         json_value(json, r->lockdown);
         fputs(",\n  \"secure_boot\": ", json); json_value(json, secure_boot);
         fputs(",\n  \"source\": \"/proc/kcore\",\n  \"evidence_medium\": ", json); json_value(json, medium.s);
-        fputs(",\n  \"memory\": null,\n  \"binaries\": [\n  ],\n  \"volumes\": [", json);
+        fputs(",\n  \"memory\": ", json);
+        if (!mem.nimages) {
+            fputs("null", json);
+        } else {
+            /* The image, with the fields that keytriage.sh has for the one that AVML wrote.
+               Of several from one read, the further ones follow in further_images. */
+            json_image(json, &mem.images[0], &mem);
+            for (i = 1; i < mem.nimages; i++) {
+                fputs(i == 1 ? ", \"further_images\": [" : ", ", json);
+                json_image(json, &mem.images[i], NULL);
+                fputs(i + 1 == mem.nimages ? "}]" : "}", json);
+            }
+            fputc('}', json);
+        }
+        fputs(",\n  \"binaries\": [\n  ],\n  \"volumes\": [", json);
         for (i = 0; i < nvols; i++) {
             static const struct key_result none;
             const struct volume *v = &vols[i];
@@ -1102,7 +1016,7 @@ int triage_run(const struct triage_options *o)
             r->write_failed = 1;
         fclose(json);
     }
-    write_manifest(r);
+    run_manifest(r);
 
     /* Everything of this run to the destination: the folder by fsync, which reports a failure,
        and then the whole file system that holds it by syncfs. */
@@ -1114,12 +1028,7 @@ int triage_run(const struct triage_options *o)
         free(vols[i].in_use);
         free(vols[i].keys);
     }
-    for (i = 0; i < r->nfiles; i++)
-        free(r->files[i]);
-    free(r->files);
-    for (i = 0; i < r->nstems; i++)
-        free(r->stems[i]);
-    free(r->stems);
+    run_free(r);
     free(vols);
     free(other);
     str_free(&medium);
@@ -1128,5 +1037,10 @@ int triage_run(const struct triage_options *o)
         return 1;
     }
     printf("keep: every file of this run is flushed to the destination\n");
+    if (mem.captured < mem.nimages) {
+        fflush(stdout);
+        fprintf(stderr, "keep: a memory image that was asked for is not there\n");
+        return 1;
+    }
     return 0;
 }

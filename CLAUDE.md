@@ -245,6 +245,9 @@ SHA-256.
   `verdict`, `key_sha256_16` and `note` for each key after the first. The fields of the volume
   itself are then those of its first key, and its `verdict` is that of the key that is least
   far.
+- With `-F` the C program writes three images from one read. `memory` is then the first, with
+  the fields above, and has `further_images`, a list with `status`, `file`, `format`,
+  `bytes`, `sha256` and `note` for each of the others.
 - No tool of Keep reads the report back. It is for the examiner's own programs and for the
   checks, and `triage.txt` beside it says the same for a reader. A change of a field name is a
   change of the schema string.
@@ -371,7 +374,8 @@ stay in Python.
 ```bash
 sudo apt install make musl-tools
 make                                    # keep and tests/keep-unit, static against musl
-sudo ./keep [-d DIR] [-b N]             # the keys of the running system: the work of keytriage.sh, without -m
+sudo ./keep [-d DIR] [-b N]             # the keys of the running system: the work of keytriage.sh
+sudo ./keep -m [-f FORMAT | -F]         # the keys, then a memory image: lime (default), raw or avml, -F all three
 ./keep -s DUMP [-d DIR]                 # the key schedules of a memory dump that exists
 ./keep -h                               # the help, -V the version
 ```
@@ -380,10 +384,15 @@ sudo ./keep [-d DIR] [-b N]             # the keys of the running system: the wo
   lockdown, Secure Boot, memory, destination) and one verdict per open volume, and under the
   verdicts each key it holds by its file in `keys/`, its length and the first 16 digits of
   its SHA-256.
+- `-m` takes a memory image after the keys, into `memory/` of the folder of the run, as
+  `memory.lime`. `-f` names another format: `raw`, where each byte lies at the file offset
+  that is its physical address, or `avml`, the compressed format of AVML. `-F` writes all
+  three from one read of the memory. An image that was asked for and is not there ends the
+  run with status 1.
 - `-s DUMP` searches a dump as `kcore-keyscan` does and writes `scan_<dump>_<time>/` into the
   destination, with `keys/candidates.txt` and `scan.txt`. It makes no proof yet.
 - `-d DIR` is the destination of either run, by default the directory of the start. `-b N`
-  is for the running system only.
+  is for the running system only, and so are `-m`, `-f` and `-F`.
 - A wrong option, an option without its value, an argument that belongs to no option and
   options that do not go together end with status 2 and the usage. The commands `triage` and
   `scan` and the dialogue of the versions before 2.0-pre4 are gone.
@@ -398,7 +407,7 @@ sudo ./keep [-d DIR] [-b N]             # the keys of the running system: the wo
 | `cryptsetup open --test-passphrase` | `src/luks.c` and `src/hash.c`: PBKDF2 of the key against the digest of the header backup | `cryptsetup` 2.7.0 on the same headers and keys, and Python's `hashlib` |
 | `kcore-keyscan` | `kcore-keyscan.c` linked in without its `main` | the scanner before the change: the same output, messages and status on every format |
 | bash and the applets of busybox | C, with the standard library only | `tests/unit-check.sh` |
-| AVML | not written yet | |
+| AVML | `src/image.c`, `src/snappy.c` and `src/memory.c`: the RAM ranges of `/proc/iomem` read through `/proc/kcore`, written as a LiME image, a raw image or the compressed format of AVML | AVML 0.21.0 itself: it converts the compressed image to the LiME image of its blocks and the LiME image to the raw one, byte for byte the files that Python writes from the formats. On a guest, the image that AVML took of the same machine: the same amount of memory, and the key schedules at the same addresses |
 
 ### What the sources say
 
@@ -448,6 +457,35 @@ Read in Linux 4.18, 5.10, 6.12 and 6.18, cryptsetup 2.0.6, 2.3.7, 2.7.0 and 2.8.
   state has the crypt targets of both keys in the table of `NAME`
   (`LUKS2_assembly_multisegment_dmd`). Its header has a digest for each key and a third digest
   that names no data segment.
+- `/proc/kcore` is an ELF64 core. A `PT_LOAD` segment of RAM and the one of the kernel text
+  state the physical address they begin at, and every other segment the address -1
+  (`kcore.c`). This is so in Linux 4.12, 4.18, 5.14 and 6.18; Linux 4.9 states 0 for every
+  segment. The text of the kernel is offered twice, by its own segment and by the RAM
+  segment that holds it.
+- In Linux 5.14 and 6.18 a page of a RAM segment that is not in use as RAM, that is offline
+  or that has a hardware error is handed out as zeros, with no error (`read_kcore`,
+  `read_kcore_iter`). An image cannot tell such a page from one that holds zeros.
+- Opening `/proc/kcore` needs `CAP_SYS_RAWIO` and is refused under lockdown in the mode
+  `confidentiality` (`LOCKDOWN_KCORE` stands behind `LOCKDOWN_INTEGRITY_MAX` in
+  `security.h`). `/dev/mem` is refused from the mode `integrity` on, and with
+  `STRICT_DEVMEM` it hands out no page that is RAM (`devmem_is_allowed`), so it is no source.
+- `/proc/iomem` names the ranges of physical addresses, each as `start-end : name` with the
+  end included, and shows 0 for every address to a reader without `CAP_SYS_ADMIN` (`r_show`
+  in `kernel/resource.c`). RAM is named `System RAM`. RAM that a driver added to the running
+  system is named `System RAM (driver)`, from Linux 5.8 on (`add_memory_driver_managed`).
+- AVML 0.21.0 takes the lines that end with ` : System RAM`, so not the RAM of a driver, and
+  reads each range through the segments of `/proc/kcore` by their physical addresses
+  (`iomem.rs`, `snapshot.rs`). It cuts a range into blocks of 16 MiB and leaves out a block
+  that is all zeros, in both of its formats (`image.rs`). Its compressed format is, for each
+  block, a header like that of LiME with the magic `AVML` and the version 2, a framed Snappy
+  stream, and the length of that stream in 8 bytes (`io/snappy.rs`).
+- A LiME image is a chain of ranges, each behind a header of 32 bytes: the magic
+  `0x4C694D45`, the version 1, the first and the last address, and 8 bytes of zeros
+  (`lime.h` of LiME).
+- A framed Snappy stream is a chain of chunks of at most 64 KiB of data, each with the masked
+  CRC-32C of its data, compressed or as it is. Which copies a compressor finds is its own
+  matter, so two compressors write different streams of the same data
+  (`format_description.txt` and `framing_format.txt` of Snappy 1.2.1).
 - cryptsetup gives the key of digest N the keyring description `cryptsetup:<UUID>-d<N>`
   (`get_key_description_by_digest`, the same in 2.0.6, 2.7.0 and 2.8.1), so the reference in a
   table says which digest of the header its key gives.
@@ -458,6 +496,10 @@ Read in Linux 4.18, 5.10, 6.12 and 6.18, cryptsetup 2.0.6, 2.3.7, 2.7.0 and 2.8.
 |---|---|
 | `src/main.c` | The options. Makes the process not dumpable |
 | `src/dump.c` | The search of a memory dump that exists, into a folder of the destination |
+| `src/run.c` | The folder of a run: its report, its files, their flushing and the manifest |
+| `src/memory.c` | The memory image of a run: the room it needs, its files, and what the lab needs beside it to name the kernel |
+| `src/image.c` | What an image holds, from `/proc/iomem` and `/proc/kcore`, and the three formats. The memory is read once for all files |
+| `src/snappy.c` | The framed Snappy format, written, with CRC-32C |
 | `src/triage.c` | The run: destination, system, volumes, the ladder for each key, verdicts, `triage.txt`, `verdict.json`, `manifest.sha256`. Locks the memory of the process |
 | `src/dm.c` | The list of the mapped devices and the table of one, from the kernel |
 | `src/volume.c` | Which mapped devices are a volume, which further devices are part of it, which keys it has and where its header lies, read off the tables |
@@ -506,7 +548,32 @@ Read in Linux 4.18, 5.10, 6.12 and 6.18, cryptsetup 2.0.6, 2.3.7, 2.7.0 and 2.8.
   volume. A header that cryptsetup writes at that moment is read from the copy that holds.
 - The search of a dump is made in its own process and flushed to the destination, with no
   proof yet: the proof against a disk image is the work of `vkverify.py`.
-- It takes no memory image yet.
+- The memory image is read as AVML reads it, the RAM ranges of `/proc/iomem` through
+  `/proc/kcore`, with these differences:
+  - A LiME image has one record for each range of memory, also where the range is all
+    zeros. AVML writes a record for each block of 16 MiB and leaves out a block of zeros,
+    which a reader cannot tell from memory that is not there. The compressed image is
+    written as AVML writes it, blocks of zeros left out.
+  - RAM that a driver added (`System RAM (driver)`) is in the image. AVML leaves it out.
+  - The raw format is offered: each byte at the offset that is its address, with what lies
+    between the ranges not written. It is as long as the highest address of RAM.
+  - `-F` writes all three formats from one read, so the files hold the same memory and one
+    that is damaged later does not take the others with it. They lie on one medium, need
+    about three times the room of the memory, and the read lasts as long as the slowest of
+    them is written.
+  - The SHA-256 of an image is computed while it is written, and the file is not read
+    again. `keytriage.sh` reads it again for that.
+  - An image is started where the destination has room for it and 64 MiB more. A compressed
+    image is started whatever room there is, as with `keytriage.sh`, except beside other
+    images, where it must not take their room and needs room for the most it can take.
+  - The run ends with status 1 where an image that was asked for is not there.
+    `keytriage.sh` ends with 0.
+  - What `/proc/iomem` names as RAM and `/proc/kcore` does not offer is counted on the
+    screen. On a machine with BIOS it is the last part of the first range, which ends inside
+    a page: 3072 bytes on the guest of the first run.
+  - A line on the screen every quarter of a minute says how far the read is.
+  - The report names the format of a compressed image `avml compressed`, as `keytriage.sh`
+    does, and has the further images of one read in `further_images` of `memory`.
 
 ### What the checks have found
 
@@ -577,6 +644,15 @@ among them. The outputs of the guest are not kept.
   sources from 4.18 on, which is the kernel of RHEL 8, and are not run there.
 - A LUKS2 header whose second copy is the one in use is read in `unit-check.sh` from a file,
   not from a device of a mapping.
+- A memory image under kernel lockdown is not run. In the mode `integrity` the kernel offers
+  `/proc/kcore`, and in the mode `confidentiality` it refuses it, which the run then says.
+- RAM that a driver added is a case of `unit-check.sh`. No machine with such RAM was run.
+- An image goes through the page cache of the examined system, like every file of a run.
+  What writing a file as long as the memory does to the memory that is read is not measured.
+- A destination with FAT32 takes no file of 4 GiB, so an image of a machine with that much
+  memory fails there and is removed. A raw image on a file system that keeps no holes, as
+  FAT and exFAT, has what lies between the ranges written as zeros. Neither is run.
+- Volatility 3 has not read an image of the C program. The scanner and AVML have.
 
 ## Rules that every change keeps
 
@@ -662,7 +738,18 @@ of two keys, one that is encrypted in part, helpers of another volume, and then 
 bytes changed. A header in re-encryption, which `cryptsetup reencrypt --init-only` makes there
 from two known keys, must be copied as `luksHeaderBackup` copies it, and each key must give
 its own digest, the old one the first and the new one the second, as `hashlib` computes them:
-cryptsetup accepts neither key alone for such a header. The options are given to both
+cryptsetup accepts neither key alone for such a header. The memory image is written from
+texts like `/proc/iomem` and cores like `/proc/kcore` that the check writes with the memory
+they stand for: a LiME and a raw image must be the files that Python writes from the
+definitions of the formats, with the SHA-256 of `hashlib`, and a compressed image is read
+back by a decoder that is written there from the two documents of Snappy, with every
+checksum. The cases are RAM that a driver added, a range in two segments, memory that the
+core offers twice, a range that reaches beyond its segment, blocks of zeros, a stretch that
+cannot be read and a file that cannot be written. With `AVML=/path/to/avml` AVML itself
+converts the compressed image to a LiME image and the LiME image to a raw one, which must be
+the files of Python byte for byte. What cannot be placed is refused: a text without
+addresses, a core of a kernel before 4.12. Cores and texts with changed bytes must give no
+fault, 600 times. The options are given to both
 builds of the program: what does not go together must end with status 2 and write nothing,
 the search of a dump must write the list of the scanner into `keys/` of its folder with no
 key on the screen, and a cut image must end the run with the status of the search.
@@ -674,8 +761,14 @@ The whole program is checked on real device-mapper by `tests/compat-check.sh`, b
 `keytriage.sh` (see the pipeline). With `KEEP_SAN` set to a build with the sanitizers (`make
 keep-san`), that build is run at the same places and must end with status 0.
 
-Three parts of `compat-check.sh` are there for what the C program does beyond the four
-mappings. It is run once with `-d` and the FAT file system as the destination, where its
+Four parts of `compat-check.sh` are there for what the C program does beyond the four
+mappings. With a memory image in the run (`-m` or `-c`), the C program takes its own while
+the two containers are open, once for each word of `KEEP_IMAGES`: a format, or `all` for
+`-F`. The report must name each file with its size and its SHA-256, the scanner must read
+each image to its end, and the schedule of each half of both volume keys must lie in it at
+an address at which it lies in the image that AVML took in the main run. The images of one
+read must give the same list of schedules, and AVML must convert the compressed image to a
+LiME image that gives that list too. It is run once with `-d` and the FAT file system as the destination, where its
 screen must name the system, the open volumes and each key it holds by its file, its length
 and the start of its SHA-256. Before the two parts that follow, the two volumes with their keys in the
 keyring are closed, because every run with one of them open searches the whole memory once
@@ -759,7 +852,11 @@ be opened and emulated otherwise, and starts the check over SSH through `sudo`.
   `unit-check.sh`, on the fixture in its four formats and on a cut and a damaged image.
 - A green `compat` job says something about the kernel and the cryptsetup of that runner image
   (rule 9). The output of each run is kept as an artifact for 30 days. One runner image takes
-  the memory image in LiME format and the other compressed.
+  the memory image in LiME format and the other compressed. The C program takes its image
+  there in the same format, and on the second also the raw one. All three from one read
+  need three times the memory of a runner as room, so `-F` runs in the guests only.
+- `selftest` fetches AVML by the SHA-256 that `build-toolkit.sh` pins and hands it to
+  `unit-check.sh`, which gives it the images of the C program to convert.
 - `distros.yml` runs `tests/compat-guest.sh -m` for the ten names of `tests/compat-images.txt`
   when a file changes that the check depends on, and by hand. Each job states the kernel and the
   cryptsetup of its guest. An image is a dated build, pinned like any downloaded binary (rule

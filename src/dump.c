@@ -15,13 +15,13 @@
  */
 #include "dump.h"
 #include "keyscan.h"
+#include "run.h"
 #include "triage.h"
 #include "util.h"
 
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
-#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,19 +29,6 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
-
-static int die(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
-static int die(const char *fmt, ...)
-{
-    va_list ap;
-
-    fputs("keep: ", stderr);
-    va_start(ap, fmt);
-    vfprintf(stderr, fmt, ap);
-    va_end(ap);
-    fputc('\n', stderr);
-    return 1;
-}
 
 /* A new file of the run. It must not exist. */
 static FILE *new_file(const char *dir, const char *name, int *fd)
@@ -78,15 +65,15 @@ int dump_run(const struct dump_options *o)
                 strerror(errno));
     umask(077);
     if (!realpath(o->dump, dump))
-        return die("the memory dump %s: %s", o->dump, strerror(errno));
+        return run_die("the memory dump %s: %s", o->dump, strerror(errno));
     if (stat(dump, &st) || !S_ISREG(st.st_mode) || access(dump, R_OK))
-        return die("%s is not a file that can be read", dump);
+        return run_die("%s is not a file that can be read", dump);
     if (!realpath(o->dest, dest))
-        return die("the destination directory %s: %s", o->dest, strerror(errno));
+        return run_die("the destination directory %s: %s", o->dest, strerror(errno));
     if (stat(dest, &st) || !S_ISDIR(st.st_mode))
-        return die("%s is not a directory", dest);
+        return run_die("%s is not a directory", dest);
     if (access(dest, W_OK))
-        return die("%s is not writable", dest);
+        return run_die("%s is not writable", dest);
 
     base = strrchr(dump, '/');
     name_file(base ? base + 1 : dump, name, sizeof name);
@@ -94,14 +81,14 @@ int dump_run(const struct dump_options *o)
     strftime(stamp, sizeof stamp, "%Y%m%d_%H%M%S", &tm);
     if (pathf(out, "%s/scan_%s_%s", dest, name, stamp) || pathf(keysdir, "%s/keys", out) ||
         pathf(path, "%s/scan.txt", out) || strlen(keysdir) + sizeof "/candidates.txt" > PATH_MAX)
-        return die("the path of the folder of this run is too long: %s/scan_%s_%s", dest, name, stamp);
+        return run_die("the path of the folder of this run is too long: %s/scan_%s_%s", dest, name, stamp);
     if (mkdir(out, 0700) || mkdir(keysdir, 0700))
-        return die("cannot create %s: %s", out, strerror(errno));
+        return run_die("cannot create %s: %s", out, strerror(errno));
     if (!(keys = new_file(keysdir, "candidates.txt", &kfd)))
-        return die("cannot create %s/candidates.txt: %s", keysdir, strerror(errno));
+        return run_die("cannot create %s/candidates.txt: %s", keysdir, strerror(errno));
     if (!(msg = new_file(out, "scan.txt", &mfd))) {
         fclose(keys);
-        return die("cannot create %s: %s", path, strerror(errno));
+        return run_die("cannot create %s: %s", path, strerror(errno));
     }
 
     printf("keep %s\n", KEEP_VERSION);

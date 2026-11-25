@@ -33,7 +33,7 @@ concurrency:
 jobs:
   selftest:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -51,8 +51,16 @@ jobs:
           cryptsetup --version
       - name: Self-test
         run: tests/selftest.sh -a
+      # The compressed memory image of the C program is given to AVML itself. Its release
+      # binary is the one that build-toolkit.sh pins, fetched and refused as that script does.
+      - name: Fetch AVML by its pinned SHA-256
+        run: |
+          eval "$(grep -E '^AVML_(URL|SHA)=' build-toolkit.sh)"
+          curl -sS -L --fail --retry 3 -o "$RUNNER_TEMP/avml" "$AVML_URL"
+          echo "$AVML_SHA  $RUNNER_TEMP/avml" | sha256sum -c -
+          chmod 755 "$RUNNER_TEMP/avml"
       - name: The parts of the C program
-        run: tests/unit-check.sh -a
+        run: AVML="$RUNNER_TEMP/avml" tests/unit-check.sh -a
 
   medium:
     runs-on: ubuntu-24.04
@@ -94,11 +102,13 @@ jobs:
       matrix:
         include:
           - os: ubuntu-24.04
-            image: -c       # the compressed memory image
+            image: -c       # AVML: the compressed memory image
+            formats: raw avml   # the C program: the raw image, then the compressed one
           - os: ubuntu-22.04
-            image: -m       # the memory image in LiME format
+            image: -m       # AVML: the memory image in LiME format
+            formats: lime   # the C program: the same format
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -126,7 +136,7 @@ jobs:
         run: make keep-san
       - name: compat-check.sh
         run: |
-          sudo KEEP_SAN="$PWD/keep-san" bash tests/compat-check.sh ${{ matrix.image }} "$RUNNER_TEMP/work/tools" | tee "$RUNNER_TEMP/compat.txt"
+          sudo KEEP_SAN="$PWD/keep-san" KEEP_IMAGES="${{ matrix.formats }}" bash tests/compat-check.sh ${{ matrix.image }} "$RUNNER_TEMP/work/tools" | tee "$RUNNER_TEMP/compat.txt"
           grep -q '^RESULT: PASS$' "$RUNNER_TEMP/compat.txt"
           # on these runners no part may be skipped
           ! grep '^SKIP' "$RUNNER_TEMP/compat.txt"

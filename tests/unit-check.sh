@@ -27,6 +27,20 @@
 #              builds them: one device, LUKS2 with integrity on its dm-integrity device, a
 #              volume in re-encryption with its helper devices, one interrupted in it, and
 #              the same with bytes changed
+#   image      the memory image, from texts like /proc/iomem and cores like /proc/kcore that
+#              are written here with the memory they stand for: the LiME and the raw image
+#              must be the files that Python writes from the definitions of the two formats,
+#              with the SHA-256 of hashlib. The compressed image is read back by a decoder
+#              that is written here from the two documents of Snappy: its blocks must be
+#              those of AVML, each chunk must have its checksum, and the memory must be the
+#              same. With AVML=/path/to/avml that program converts the compressed image to a
+#              LiME image and the LiME image to a raw one, which must be the files that
+#              Python writes. Streams of zeros, of random bytes and of text that repeats at
+#              every distance are decoded as well. RAM that a driver added, a range that two segments
+#              offer, memory that the core offers twice, a range that reaches beyond its
+#              segment, a stretch that cannot be read and a file that cannot be written. What
+#              cannot be placed is refused, and cores with changed bytes give no fault. The
+#              image of the fixture of the scanner gives the schedules of that fixture
 #   system     the mount that holds a path, what a volume carries by a tree like /sys with
 #              logical volumes on it, the file systems that encrypt by themselves, the
 #              lockdown mode, the variable SecureBoot, the name of the system and the names of
@@ -41,7 +55,8 @@
 #
 # It needs neither root nor device-mapper, and writes only below a temporary directory, which
 # is removed at the end. The test keys are drawn from /dev/urandom there and are never printed.
-# Programs: make, musl-gcc, cc with the sanitizer libraries, python3 and cryptsetup.
+# Programs: make, musl-gcc, cc with the sanitizer libraries, python3 and cryptsetup, and for the
+# check against AVML its release binary, named in AVML.
 # Ends with "RESULT: PASS" and status 0, or with "RESULT: FAIL" and status 1.
 set -u
 umask 077
@@ -155,13 +170,20 @@ options() {
     refused "-b that is no number" -b many
     refused "-b 0" -b 0
     refused "-b with -s" -s fx.lime -b 3
+    refused "-f without -m" -f raw
+    refused "-f without a format" -m -f
+    refused "a format that does not exist" -m -f elf
+    refused "-m with -s" -s fx.lime -m
+    refused "-F without -m" -F
+    refused "-F with -f" -m -f lime -F
+    refused "-F with -s" -s fx.lime -F
     refused "the command triage of an earlier version" triage
     refused "the command scan of an earlier version" scan fx.lime
     refused "the option -n of an earlier version" -n
 
     start "$k" -h; rc=$?
     [ "$rc" = 0 ] || { echo "-h: status $rc"; r=1; }
-    for o in '-s DUMP' '-d DIR' '-b N' '-h ' '-V '; do said "^ *$o" "-h"; done
+    for o in '-m ' '-f FORMAT' '-F ' '-s DUMP' '-d DIR' '-b N' '-h ' '-V '; do said "^ *$o" "-h"; done
     said 'No key is printed' "-h"
     start "$k" -V; rc=$?
     [ "$rc" = 0 ] && grep -q '^keep [0-9][^ ]* ([0-9-]*)$' "$T/opt.txt" || { echo "-V: status $rc, $(cat "$T/opt.txt")"; r=1; }
@@ -207,6 +229,9 @@ options() {
         start "$k"; rc=$?
         [ "$rc" = 1 ] || { echo "the running system without root: status $rc"; r=1; }
         said '^keep: must run as root (sudo)$' "the running system without root"
+        start "$k" -m -f raw -d out; rc=$?
+        [ "$rc" = 1 ] || { echo "a memory image without root: status $rc"; r=1; }
+        said '^keep: must run as root (sudo)$' "a memory image without root"
         chmod 500 "$T/opt/out"
         start "$k" -s fx.lime -d out; rc=$?
         chmod 700 "$T/opt/out"
@@ -569,6 +594,390 @@ EOF
 for u in "${UNITS[@]}"; do
     check "kernel: ${u##*/} reads the answers of device-mapper and refuses damaged ones without a fault" python3 -I "$T/kernel.py" "$u" "$T" answers
     check "kernel: ${u##*/} finds the volumes among tables: one device, with integrity, in re-encryption, with changed bytes" python3 -I "$T/kernel.py" "$u" "$T" volumes
+done
+
+# ---- image ---------------------------------------------------------------------------------------
+# The memory image. A case is a text like /proc/iomem, a core like /proc/kcore, the memory
+# that the core stands for, and the records that the image must have, which are written down
+# here by hand. Python writes the two image files from the definitions of the formats: a LiME
+# record is a header of 32 bytes (magic, version 1, first and last address, 8 zeros) and the
+# memory, and a raw image has each byte at the offset that is its address.
+cat > "$T/image.py" <<'EOF'
+import hashlib, os, random, re, struct, subprocess, sys
+unit, tmp, part, bad = sys.argv[1], sys.argv[2], sys.argv[3], 0
+avml = sys.argv[4] if len(sys.argv) > 4 else ""
+rnd = random.Random(3)
+NONE = 2**64 - 1
+os.makedirs(tmp + "/image", exist_ok=True)
+
+def core(segments, memory, size=None, ident=b"\x7fELF\x02\x01\x01", phentsize=56):
+    """An ELF64 core: a note, then the segments (address, bytes, offset or None for the next
+    free one, with the virtual address a kernel would state). memory maps address to bytes."""
+    phnum = 1 + len(segments)
+    data_at = 64 + 56 * phnum + 16
+    out = bytearray(ident + bytes(16 - len(ident)) + struct.pack("<HHIQQQIHHHHHH", 4, 62, 1, 0, 64, 0, 0, 64, phentsize, phnum, 0, 0, 0))
+    out += struct.pack("<IIQQQQQQ", 4, 0, 64 + 56 * phnum, 0, 0, 16, 16, 0)
+    body, at = bytearray(), data_at
+    for addr, length, offset in segments:
+        if offset is None:
+            offset = at
+            if addr != NONE:
+                body += content(memory, addr, length)
+                at += length
+        out += struct.pack("<IIQQQQQQ", 1, 7, offset, 0xffff888000000000 + (addr & 0xffffffffff), addr, length, length, 0)
+    out += bytes(16) + body
+    return bytes(out if size is None else out[:size])
+
+def content(memory, addr, length):
+    """The bytes of a stretch of memory, zeros where the case has none."""
+    out = bytearray(length)
+    for start, data in memory.items():
+        a, b = max(start, addr), min(start + len(data), addr + length)
+        if a < b:
+            out[a - addr:b - addr] = data[a - start:b - start]
+    return bytes(out)
+
+def lime(memory, records):
+    return b"".join(struct.pack("<IIQQ8x", 0x4C694D45, 1, a, b - 1) + content(memory, a, b - a) for a, b in records)
+
+def raw(memory, records):
+    out = bytearray(records[-1][1])
+    for a, b in records:
+        out[a:b] = content(memory, a, b - a)
+    return bytes(out)
+
+def run(*args, data=None):
+    r = subprocess.run([unit] + list(args), capture_output=True, input=data)
+    return r.returncode, (r.stdout if data is not None else r.stdout.decode("latin-1")), r.stderr.decode("latin-1")
+
+# A reader of the framed Snappy format, from format_description.txt and framing_format.txt.
+CRC = []
+for i in range(256):
+    c = i
+    for _ in range(8):
+        c = c >> 1 ^ 0x82F63B78 if c & 1 else c >> 1
+    CRC.append(c)
+
+def masked_crc32c(data):
+    c = 0xFFFFFFFF
+    for b in data:
+        c = c >> 8 ^ CRC[(c ^ b) & 0xFF]
+    c ^= 0xFFFFFFFF
+    return ((c >> 15 | c << 17) + 0xA282EAD8) & 0xFFFFFFFF
+
+def unsnappy(data):
+    """Compressed data as its literals and copies say."""
+    want, shift, i = 0, 0, 0
+    while True:
+        want |= (data[i] & 0x7F) << shift; shift += 7; i += 1
+        if not data[i - 1] & 0x80: break
+    out = bytearray()
+    while i < len(data):
+        tag = data[i]; i += 1
+        if tag & 3 == 0:
+            n = tag >> 2
+            if n >= 60:
+                size = n - 59
+                n = int.from_bytes(data[i:i + size], "little"); i += size
+            n += 1
+            assert i + n <= len(data), "a literal reaches beyond the data"
+            out += data[i:i + n]; i += n
+            continue
+        if tag & 3 == 1:
+            n, back = 4 + (tag >> 2 & 7), (tag >> 5) << 8 | data[i]; i += 1
+        elif tag & 3 == 2:
+            n, back = 1 + (tag >> 2), int.from_bytes(data[i:i + 2], "little"); i += 2
+        else:
+            n, back = 1 + (tag >> 2), int.from_bytes(data[i:i + 4], "little"); i += 4
+        assert 0 < back <= len(out), "a copy from before the data"
+        while n:                                # a copy can reach into what it writes
+            piece = out[len(out) - back:len(out) - back + n]
+            out += piece; n -= len(piece)
+    assert len(out) == want, "the data is not as long as its length says"
+    return bytes(out)
+
+def unframe(data, at, length=None):
+    """The chunks of a stream from AT: until LENGTH bytes are decoded, or to the end of the
+    data. Returns the decoded bytes and the place behind the last chunk."""
+    assert data[at:at + 10] == b"\xff\x06\x00\x00sNaPpY", "no stream identifier"
+    at += 10
+    out = bytearray()
+    while at < len(data) and (length is None or len(out) < length):
+        kind, size = data[at], int.from_bytes(data[at + 1:at + 4], "little")
+        body = data[at + 8:at + 4 + size]
+        assert kind in (0, 1) and size >= 4 and at + 4 + size <= len(data), "a chunk of type %d and length %d" % (kind, size)
+        plain = unsnappy(body) if kind == 0 else body
+        assert kind == 1 or len(body) < len(plain), "a compressed chunk that is not shorter than its data"
+        assert 0 < len(plain) <= 65536, "a chunk of %d bytes" % len(plain)
+        assert int.from_bytes(data[at + 4:at + 8], "little") == masked_crc32c(plain), "a chunk with a wrong checksum"
+        out += plain; at += 4 + size
+    return bytes(out), at
+
+BLOCK = 16 << 20
+def blocks(memory, records):
+    """What the compressed format of AVML holds: blocks of 16 MiB, without those of zeros."""
+    out = []
+    for a, b in records:
+        for start in range(a, b, BLOCK):
+            data = content(memory, start, min(b, start + BLOCK) - start)
+            if any(data):
+                out.append((start, data))
+    return out
+
+def read_avml(data):
+    """The blocks of a compressed image of AVML, version 2."""
+    out, at = [], 0
+    while at < len(data):
+        magic, version, start, last, pad = struct.unpack("<IIQQQ", data[at:at + 32])
+        assert (magic, version, pad) == (0x4C4D5641, 2, 0), "a header %x %d %d" % (magic, version, pad)
+        plain, end = unframe(data, at + 32, last + 1 - start)
+        assert len(plain) == last + 1 - start, "a block shorter than its header says"
+        assert int.from_bytes(data[end:end + 8], "little") == end - at - 32, "the length behind the stream is not its length"
+        out.append((start, plain)); at = end + 8
+    return out
+
+def write(name, data):
+    path = tmp + "/image/" + name
+    with open(path, "wb") as f:
+        f.write(data)
+    return path
+
+def case(what, iomem, segments, memory, records, unread=0, size=None):
+    """The source and the images of one case, against the records written down for it."""
+    global bad
+    io, co = write("iomem", iomem.encode()), write("core", core(segments, memory, size))
+    want_lime, want_raw = lime(memory, records), raw(memory, records)
+    ram = sum(int(l.split("-")[1].split()[0], 16) + 1 - int(l.split("-")[0], 16)
+              for l in iomem.splitlines() if re.match(r"[0-9a-f]+-[0-9a-f]+ : System RAM($| \()", l))
+    rc, out, err = run("image-source", io, co)
+    lines = out.splitlines()
+    want = ["0x%x-0x%x" % r for r in records]
+    got = [l.split(" at ")[0] for l in lines[:-1]]
+    total = "%d bytes of %d, lime %d, raw %d, avml at most " % (sum(b - a for a, b in records), ram, len(want_lime), len(want_raw))
+    if rc != 0 or got != want or not lines[-1].startswith(total):
+        bad += 1; print(what, ": the source is", rc, lines, err[-300:], "expected", want, total)
+        return
+    most = int(lines[-1][len(total):])
+    rc, out, err = run("image", io, co, "lime", tmp + "/image/out.lime", "raw", tmp + "/image/out.raw", "avml", tmp + "/image/out.avml")
+    packed = open(tmp + "/image/out.avml", "rb").read()
+    said = ["lime %d bytes, sha256 %s" % (len(want_lime), hashlib.sha256(want_lime).hexdigest()),
+            "raw %d bytes, sha256 %s" % (len(want_raw), hashlib.sha256(want_raw).hexdigest()),
+            "avml %d bytes, sha256 %s" % (len(packed), hashlib.sha256(packed).hexdigest()),
+            "%d bytes not read" % unread]
+    if rc != 0 or out.splitlines() != said:
+        bad += 1; print(what, ": status", rc, out, err[-300:], "expected", said)
+        return
+    if open(tmp + "/image/out.lime", "rb").read() != want_lime or open(tmp + "/image/out.raw", "rb").read() != want_raw:
+        bad += 1; print(what, ": an image is not the file that its format defines")
+    want_blocks = blocks(memory, records)
+    try:
+        if read_avml(packed) != want_blocks:
+            bad += 1; print(what, ": the compressed image does not hold the blocks of the memory")
+        if len(packed) > most:
+            bad += 1; print(what, ": the compressed image has", len(packed), "bytes, more than the", most, "it can take at most")
+    except (AssertionError, IndexError, struct.error) as e:
+        bad += 1; print(what, ": the compressed image is not read:", e)
+    if avml:
+        # AVML itself: its reader of the compressed format, and its writer of the raw one
+        as_lime = b"".join(struct.pack("<IIQQ8x", 0x4C694D45, 1, a, a + len(d) - 1) + d for a, d in want_blocks)
+        for src, fmt, dst, want_file in (("out.avml", "lime_compressed", "lime", as_lime), ("out.lime", "lime", "raw", want_raw)):
+            r = subprocess.run([avml, "convert", "--source-format", fmt, "--format", dst, tmp + "/image/" + src, tmp + "/image/conv"], capture_output=True)
+            if r.returncode != 0 or open(tmp + "/image/conv", "rb").read() != want_file:
+                bad += 1; print(what, ": avml convert of", src, "to", dst, "ends with status", r.returncode, "or gives another file", r.stderr[-300:])
+            os.unlink(tmp + "/image/conv")
+
+def refused(what, iomem, core_bytes, word):
+    global bad
+    rc, out, err = run("image-source", write("iomem", iomem.encode()), write("core", core_bytes))
+    if rc != 1 or not out.startswith("refused: ") or word not in out:
+        bad += 1; print(what, ": status", rc, out, err[-300:], "expected a refusal that says:", word)
+
+MiB = 1 << 20
+low, high = rnd.randbytes(0x9e000), rnd.randbytes(3 * MiB + 0x3000)
+mem = {0x1000: low, 0x100000: high}
+IOMEM = """00000000-00000fff : Reserved
+00001000-0009efff : System RAM
+0009f000-000fffff : Reserved
+  000a0000-000bffff : PCI Bus 0000:00
+00100000-00402fff : System RAM
+  00200000-002fffff : Kernel code
+  00300000-0033ffff : Kernel data
+fec00000-fec003ff : IOAPIC 0
+"""
+segs = [(NONE, 1 << 30, 1 << 40), (0x1000, 0x9e000, None), (0x100000, 3 * MiB + 0x3000, None)]
+
+if part == "formats":
+    case("two ranges with a gap, a segment that is not physical memory", IOMEM, segs, mem, [(0x1000, 0x9f000), (0x100000, 0x403000)])
+    # the text of the kernel is a second view of memory that a RAM segment offers as well
+    text = [(0x200000, MiB, None)]
+    case("memory that two segments offer is taken once", IOMEM, segs + text, mem, [(0x1000, 0x9f000), (0x100000, 0x403000)])
+    case("the second view first among the segments", IOMEM, [segs[0]] + text + segs[1:], mem, [(0x1000, 0x9f000), (0x100000, 0x403000)])
+    # a firmware ends a RAM range inside a page, and the kernel offers whole pages
+    case("a RAM range that reaches beyond its segment",
+         IOMEM.replace("00001000-0009efff : System RAM", "00001000-0009fbff : System RAM"), segs, mem, [(0x1000, 0x9f000), (0x100000, 0x403000)])
+    case("a RAM range that begins before its segment",
+         IOMEM.replace("00100000-00402fff", "000ff000-00402fff").replace("0009f000-000fffff", "0009f000-000fefff"), segs, mem,
+         [(0x1000, 0x9f000), (0x100000, 0x403000)])
+    # one range in two segments: one record where the second goes on in the core, else two
+    two = [segs[1], (0x100000, MiB, None), (0x200000, 2 * MiB + 0x3000, None)]
+    case("a RAM range in two segments that follow each other in the core", IOMEM, two, mem, [(0x1000, 0x9f000), (0x100000, 0x403000)])
+    apart = [(0x200000, 2 * MiB + 0x3000, None), segs[1], (0x100000, MiB, None)]
+    case("a RAM range in two segments that lie apart in the core", IOMEM, apart, mem,
+         [(0x1000, 0x9f000), (0x100000, 0x200000), (0x200000, 0x403000)])
+    case("a RAM range with a stretch that no segment offers", IOMEM, [segs[1], (0x100000, MiB, None), (0x300000, MiB + 0x3000, None)], mem,
+         [(0x1000, 0x9f000), (0x100000, 0x200000), (0x300000, 0x403000)])
+    # RAM that a driver added has its name behind "System RAM", and a part of a range is no range
+    added = rnd.randbytes(MiB)
+    case("RAM that a driver added",
+         IOMEM + "08000000-080fffff : System RAM (virtio_mem)\n  08000000-080fffff : virtio0\n0c000000-0c0fffff : System RAMDISK\n",
+         segs + [(0x8000000, MiB, None), (0xc000000, MiB, None)], {**mem, 0x8000000: added},
+         [(0x1000, 0x9f000), (0x100000, 0x403000), (0x8000000, 0x8100000)])
+    case("ranges that touch are one, in any order of the lines",
+         "00200000-00402fff : System RAM\n00001000-0009efff : System RAM\n00100000-001fffff : System RAM\n", segs, mem,
+         [(0x1000, 0x9f000), (0x100000, 0x403000)])
+    # more than one block of 16 MiB, and a length that is no multiple of anything
+    big = rnd.randbytes(33 * MiB + 0x1234)
+    case("a range of more than two blocks", "00100000-%08x : System RAM\n" % (0x100000 + len(big) - 1),
+         [(0x100000, len(big), None)], {0x100000: big}, [(0x100000, 0x100000 + len(big))])
+    # a block of zeros is left out of the compressed image, and memory with zeros in it is not
+    holes = bytearray(rnd.randbytes(40 * MiB)); holes[16 * MiB:32 * MiB] = bytes(16 * MiB); holes[33 * MiB:35 * MiB] = bytes(2 * MiB)
+    case("a block of zeros between two blocks", "00100000-%08x : System RAM\n" % (0x100000 + len(holes) - 1),
+         [(0x100000, len(holes), None)], {0x100000: bytes(holes)}, [(0x100000, 0x100000 + len(holes))])
+    case("memory that is all zeros", "00100000-002fffff : System RAM\n", [(0x100000, 2 * MiB, None)], {}, [(0x100000, 0x300000)])
+    # a core that ends inside a segment: what is missing is zeros and is counted
+    cut = dict(mem); cut[0x100000] = high[:2 * MiB + 0x800]
+    case("a stretch that cannot be read", IOMEM, segs, cut, [(0x1000, 0x9f000), (0x100000, 0x403000)],
+         unread=len(high) - 2 * MiB - 0x800, size=64 + 56 * 4 + 16 + len(low) + 2 * MiB + 0x800)
+
+    # a file that cannot be written: the other image is complete all the same
+    io, co = write("iomem", IOMEM.encode()), write("core", core(segs, mem))
+    want = raw(mem, [(0x1000, 0x9f000), (0x100000, 0x403000)])
+    rc, out, err = run("image", io, co, "lime", "/dev/full", "raw", tmp + "/image/out.raw")
+    if rc != 0 or out.splitlines()[:2] != ["lime failed: No space left on device", "raw %d bytes, sha256 %s" % (len(want), hashlib.sha256(want).hexdigest())]:
+        bad += 1; print("one file that cannot be written: status", rc, out, err[-300:])
+    rc, out, err = run("image", io, co, "avml", "/dev/full", "raw", tmp + "/image/out.raw")
+    if rc != 0 or out.splitlines()[0] != "avml failed: No space left on device":
+        bad += 1; print("a compressed image that cannot be written: status", rc, out, err[-300:])
+    rc, out, err = run("image", io, co, "raw", "/dev/full", "lime", "/dev/full")
+    if rc != 1 or "failed: no image could be written to its end" not in out:
+        bad += 1; print("no file that can be written: status", rc, out, err[-300:])
+    rc, out, err = run("image", io, co, "elf", tmp + "/image/out.elf")
+    if rc != 2:
+        bad += 1; print("a format that does not exist: status", rc, out)
+
+elif part == "streams":
+    # the compressor alone: every stream must decode to its data
+    def stream(what, data, most=None):
+        global bad
+        rc, out, err = run("snappy", data=data)
+        try:
+            plain, end = unframe(out, 0)
+            if rc != 0 or plain != data or end != len(out):
+                bad += 1; print(what, ": status", rc, "or the stream does not decode to its data")
+            elif len(out) > (most if most is not None else 10 + len(data) + 8 * ((len(data) + 65535) // 65536)):
+                bad += 1; print(what, ":", len(out), "bytes for", len(data))
+        except (AssertionError, IndexError) as e:
+            bad += 1; print(what, ": the stream is not read:", e)
+    for n in (1, 2, 3, 4, 5, 59, 60, 61, 62, 255, 256, 257, 65535, 65536, 65537, 300000):
+        stream("%d random bytes" % n, rnd.randbytes(n))
+        stream("%d zeros" % n, bytes(n), most=10 + 8 * ((n + 65535) // 65536) + n // 16 + 12)
+        stream("%d bytes of one text" % n, (b"the quick brown fox jumps over the lazy dog. " * (n // 45 + 1))[:n])
+    for period in (1, 2, 3, 4, 5, 7, 11, 12, 63, 64, 65, 67, 68, 100, 2047, 2048, 2049, 3000, 32768, 65531, 65532, 65535):
+        unit_text = rnd.randbytes(period)
+        stream("a period of %d" % period, (unit_text * (200000 // period + 1))[:200000], most=200000 // 2 if period <= 3000 else None)
+    for n in range(200):
+        # literals and copies of every length next to each other
+        parts, text = [], rnd.randbytes(3000)
+        while sum(map(len, parts)) < 70000:
+            a = rnd.randrange(len(text) - 80)
+            parts.append(text[a:a + rnd.randrange(1, 80)] if rnd.randrange(3) else rnd.randbytes(rnd.randrange(1, 70)))
+        stream("a mix of pieces", b"".join(parts))
+
+elif part == "refused":
+    good = core(segs, mem)
+    refused("a reader that is not root sees no addresses", "00000000-00000000 : System RAM\n00000000-00000000 : Reserved\n", good, "not root")
+    refused("no RAM range", "00000000-00000fff : Reserved\n  00001000-0009efff : System RAM\n", good, "no RAM range")
+    refused("an empty text", "", good, "no RAM range")
+    refused("a range that ends before it begins", "00100000-000fffff : System RAM\n", good, "ends before it begins")
+    refused("a range to the last address", "00100000-ffffffffffffffff : System RAM\n", good, "last address")
+    refused("RAM that no segment offers", "200000000-2000fffff : System RAM\n", good, "offers none")
+    refused("no segment with an address", IOMEM, core([segs[0]], mem), "no segment with a physical address")
+    # before Linux 4.12 every segment of /proc/kcore states the address 0
+    old = bytearray(good)
+    for i in (2, 3):
+        old[64 + 56 * i + 24:64 + 56 * i + 32] = bytes(8)
+    refused("a kernel that states no physical addresses", IOMEM, bytes(old), "states no physical addresses")
+    refused("a file that is no core", IOMEM, rnd.randbytes(4096), "not an ELF64 core")
+    refused("an empty core", IOMEM, b"", "header")
+    refused("a core of 32 bits", IOMEM, core(segs, mem, ident=b"\x7fELF\x01\x01\x01"), "not an ELF64 core")
+    refused("a core in the other byte order", IOMEM, core(segs, mem, ident=b"\x7fELF\x02\x02\x01"), "not an ELF64 core")
+    refused("segments of another size", IOMEM, core(segs, mem, phentsize=32), "not an ELF64 core")
+    refused("a core that ends inside its segments", IOMEM, good[:64 + 56 * 2 + 10], "cannot be read")
+    far = bytearray(good); far[64 + 56 * 2 + 32:64 + 56 * 2 + 40] = struct.pack("<Q", NONE - 0x10)
+    refused("a segment that reaches beyond the last address", IOMEM, bytes(far), "beyond the last address")
+
+elif part == "changed":
+    # cores with bytes of their headers changed, and texts with bytes changed: read or
+    # refused, with status 0 or 1. The memory that such a core can stand for is that of the
+    # text, so the images stay small.
+    good = core(segs, mem)
+    heads = 64 + 56 * 4 + 16
+    io = write("iomem", IOMEM.encode())
+    for n in range(300):
+        b = bytearray(good)
+        how = rnd.randrange(4)
+        if how == 0: del b[rnd.randrange(heads + 4096):]
+        elif how == 1:
+            for _ in range(rnd.randrange(1, 4)): b[rnd.randrange(heads)] = rnd.randrange(256)
+        elif how == 2:                          # the words that say where things lie and how long they are
+            i = 64 + 56 * rnd.randrange(4) + rnd.choice((8, 24, 32))
+            b[i:i + 8] = struct.pack("<Q", rnd.choice((0, 1, 0xfff, 0x1000, 0x100000, len(b), len(b) + 1, 2**47, 2**63, NONE - 1, NONE)))
+        else:
+            off = rnd.choice((32, 54, 56))
+            b[off:off + 2] = struct.pack("<H", rnd.choice((0, 1, 4, 5, 56, 64, 0xffff)))
+        rc, out, err = run("image", io, write("core", bytes(b)), "lime", tmp + "/image/out.lime", "raw", tmp + "/image/out.raw", "avml", tmp + "/image/out.avml")
+        if rc not in (0, 1):
+            bad += 1; print("a changed core ended with status", rc, ":", err[-400:])
+    co = write("core", good)
+    for n in range(300):
+        t = bytearray(IOMEM.encode())
+        for _ in range(rnd.randrange(1, 4)):
+            how = rnd.randrange(3)
+            if len(t) < 2: break
+            if how == 0: t[rnd.randrange(len(t))] = rnd.choice(b"0123456789abcdef- :\nS")
+            elif how == 1: del t[rnd.randrange(len(t)):]
+            else: t[rnd.randrange(len(t)):rnd.randrange(len(t))] = bytes(rnd.choice(b"0f- :\n") for _ in range(rnd.randrange(20)))
+        rc, out, err = run("image-source", write("iomem", bytes(t)), co)
+        if rc not in (0, 1):
+            bad += 1; print("a changed text ended with status", rc, ":", err[-400:])
+sys.exit(1 if bad else 0)
+EOF
+# The fixture of the scanner as a core: the scanner must find in the image of it the schedules
+# that it finds in the core itself, at the same addresses. The core offers a part of its
+# memory twice, as /proc/kcore offers the text of the kernel, so each schedule counts once.
+image_fixture() {
+    local u=$1
+    printf '100000000-1007fffff : System RAM\n' > "$T/fx.iomem"
+    "$u" image "$T/fx.iomem" "$T/fx.elf" lime "$T/fx.out.lime" > "$T/fx.out.txt" || { cat "$T/fx.out.txt"; return 1; }
+    cmp <(tests/keyscan "$T/fx.elf" 2> /dev/null | sed 's/ virt .* key / key /' | sort -u) <(tests/keyscan "$T/fx.out.lime" 2> /dev/null | sed 's/ virt .* key / key /' | sort -u) ||
+        { echo "the LiME image of the fixture gives other schedules than the fixture"; return 1; }
+    [ "$(tests/keyscan "$T/fx.out.lime" 2> /dev/null | wc -l)" -ge 6 ] || { echo "too few schedules"; return 1; }
+}
+for u in "${UNITS[@]}"; do
+    check "image: ${u##*/} writes the LiME and the raw image that the formats define, each byte of RAM once, and a compressed image that reads as the same memory" python3 -I "$T/image.py" "$u" "$T" formats
+    check "image: ${u##*/} writes Snappy streams that decode to their data, of zeros, random bytes and text that repeats" python3 -I "$T/image.py" "$u" "$T" streams
+    if [ -n "${AVML:-}" ] && [ -x "$AVML" ]; then
+        check "image: AVML converts what ${u##*/} wrote: the compressed image to the LiME image of its blocks, the LiME image to the raw one" python3 -I "$T/image.py" "$u" "$T" formats "$AVML"
+    else
+        skip "image: against AVML itself (AVML=/path/to/avml, the release binary that build-toolkit.sh pins)"
+    fi
+    check "image: ${u##*/} refuses what it cannot place: no addresses, no RAM, no core, a kernel before 4.12" python3 -I "$T/image.py" "$u" "$T" refused
+    check "image: ${u##*/} reads cores and texts with changed bytes without a fault" python3 -I "$T/image.py" "$u" "$T" changed
+    if [ -x tests/keyscan ] && [ -f "$T/fx.elf" ]; then
+        check "image: ${u##*/} writes a LiME image of the fixture that holds its schedules at their addresses" image_fixture "$u"
+    else
+        skip "image: the fixture of the scanner (make, musl-gcc and cc)"
+    fi
 done
 
 # ---- system --------------------------------------------------------------------------------------

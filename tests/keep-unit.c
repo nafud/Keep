@@ -15,6 +15,12 @@
  *   keep-unit secure-boot DIR                   the value of the variable SecureBoot in DIR
  *   keep-unit os-name FILE FILE                 PRETTY_NAME of the first file that can be read
  *   keep-unit names NAME                        NAME for the screen and as a file name
+ *   keep-unit image-source IOMEM CORE           the ranges of memory that an image holds, from
+ *                                               a text like /proc/iomem and a core like
+ *                                               /proc/kcore
+ *   keep-unit image IOMEM CORE FORMAT OUT [FORMAT OUT]...    that memory, read once and written
+ *                                               to each file OUT in its format
+ *   keep-unit snappy                            standard input as a framed Snappy stream
  *   keep-unit dm-answer list|table FILE         FILE as an answer of the kernel to one of the two
  *                                               requests, printed like the two lines below
  *   keep-unit dm-list                           the mapped devices, as "dmsetup ls" prints them
@@ -28,8 +34,10 @@
  */
 #include "../src/dm.h"
 #include "../src/hash.h"
+#include "../src/image.h"
 #include "../src/json.h"
 #include "../src/luks.h"
+#include "../src/snappy.h"
 #include "../src/sys.h"
 #include "../src/util.h"
 #include "../src/volume.h"
@@ -515,12 +523,103 @@ static int cmd_dm_volumes(void)
     return print_volumes(tabs, n);
 }
 
+/* The source of an image from two files of the checks. Returns the descriptor of the core. */
+static int open_source(const char *iomem_path, const char *core_path, struct image_source *src)
+{
+    char err[IMAGE_ERR_LEN], *iomem = read_text(iomem_path, 1 << 20, NULL);
+    int core = open(core_path, O_RDONLY);
+
+    if (!iomem || core < 0) {
+        fprintf(stderr, "keep-unit: %s or %s cannot be read\n", iomem_path, core_path);
+    } else if (image_source(iomem, core, src, err)) {
+        printf("refused: %s\n", err);
+    } else {
+        free(iomem);
+        return core;
+    }
+    free(iomem);
+    if (core >= 0)
+        close(core);
+    return -1;
+}
+
+/* Standard input as a framed Snappy stream, in chunks of the most that a chunk holds. */
+static int cmd_snappy(void)
+{
+    static uint8_t in[SNAPPY_CHUNK], out[SNAPPY_CHUNK_MAX];
+    size_t n;
+
+    fwrite(snappy_stream_start, 1, sizeof snappy_stream_start, stdout);
+    while ((n = fread(in, 1, sizeof in, stdin)) > 0)
+        fwrite(out, 1, snappy_chunk(in, n, out), stdout);
+    return ferror(stdin) || fflush(stdout) ? 1 : 0;
+}
+
+static int cmd_image_source(const char *iomem_path, const char *core_path)
+{
+    struct image_source src;
+    size_t i;
+    int exact, core = open_source(iomem_path, core_path, &src);
+
+    if (core < 0)
+        return 1;
+    for (i = 0; i < src.nranges; i++)
+        printf("0x%llx-0x%llx at 0x%llx\n", (unsigned long long)src.ranges[i].start,
+               (unsigned long long)src.ranges[i].end, (unsigned long long)src.ranges[i].offset);
+    printf("%llu bytes of %llu, lime %llu, raw %llu, avml at most %llu\n", (unsigned long long)src.bytes,
+           (unsigned long long)src.ram, (unsigned long long)image_size(IMAGE_LIME, &src, &exact),
+           (unsigned long long)image_size(IMAGE_RAW, &src, &exact), (unsigned long long)image_size(IMAGE_AVML, &src, &exact));
+    image_source_free(&src);
+    close(core);
+    return 0;
+}
+
+static int cmd_image(int argc, char **argv)
+{
+    struct image_file files[8];
+    struct image_source src;
+    char err[IMAGE_ERR_LEN];
+    uint64_t unread;
+    size_t n = (size_t)(argc - 2) / 2, i;
+    int core, r;
+
+    if (n > sizeof files / sizeof files[0])
+        return 2;
+    memset(files, 0, sizeof files);
+    for (i = 0; i < n; i++)
+        if (image_by_name(argv[2 + 2 * i], &files[i].format))
+            return 2;
+    if ((core = open_source(argv[0], argv[1], &src)) < 0)
+        return 1;
+    for (i = 0; i < n; i++)
+        if ((files[i].fd = open(argv[3 + 2 * i], O_WRONLY | O_CREAT | O_TRUNC, 0600)) < 0) {
+            fprintf(stderr, "keep-unit: %s cannot be written\n", argv[3 + 2 * i]);
+            return 1;
+        }
+    r = image_write(core, &src, files, n, NULL, NULL, &unread, err);
+    for (i = 0; i < n; i++) {
+        if (files[i].failed) {
+            printf("%s failed: %s\n", image_name(files[i].format), strerror(files[i].failed));
+        } else {
+            printf("%s %llu bytes, sha256 ", image_name(files[i].format), (unsigned long long)files[i].bytes);
+            print_hex(files[i].sha256, 32);
+        }
+        close(files[i].fd);
+    }
+    printf("%llu bytes not read\n", (unsigned long long)unread);
+    if (r)
+        printf("failed: %s\n", err);
+    image_source_free(&src);
+    close(core);
+    return r ? 1 : 0;
+}
+
 int main(int argc, char **argv)
 {
     const char *bad;
 
     if (argc == 2 && !strcmp(argv[1], "selftest")) {
-        if ((bad = hash_selftest())) {
+        if ((bad = hash_selftest()) || (bad = snappy_selftest())) {
             fprintf(stderr, "keep-unit: %s does not compute the example of its standard\n", bad);
             return 1;
         }
@@ -571,6 +670,12 @@ int main(int argc, char **argv)
         printf("[%llu]\n", kib);
         return 0;
     }
+    if (argc == 2 && !strcmp(argv[1], "snappy"))
+        return cmd_snappy();
+    if (argc == 4 && !strcmp(argv[1], "image-source"))
+        return cmd_image_source(argv[2], argv[3]);
+    if (argc >= 6 && argc % 2 == 0 && !strcmp(argv[1], "image"))
+        return cmd_image(argc - 2, argv + 2);
     if (argc == 3 && !strcmp(argv[1], "names"))
         return cmd_names(argv[2]);
     if (argc == 4 && !strcmp(argv[1], "dm-answer") && (!strcmp(argv[2], "list") || !strcmp(argv[2], "table")))
@@ -585,7 +690,8 @@ int main(int argc, char **argv)
         return cmd_dm_table(argv[2]);
     fprintf(stderr, "usage: keep-unit selftest | hash NAME | pbkdf2 NAME KEY SALT ITERATIONS LENGTH | json | luks FILE | "
             "luks-backup FILE OUT | luks-prove FILE KEYFILE | mount-of MOUNTINFO PATH | in-use SYSFS MOUNTINFO SWAPS MAJOR MINOR | other-fs MOUNTS | "
-            "lockdown FILE | secure-boot DIR | os-name FILE FILE | memory FILE | names NAME | dm-answer list|table FILE | volumes FILE... | "
+            "lockdown FILE | secure-boot DIR | os-name FILE FILE | memory FILE | names NAME | image-source IOMEM CORE | "
+            "image IOMEM CORE FORMAT OUT... | snappy | dm-answer list|table FILE | volumes FILE... | "
             "dm-list | dm-table NAME | dm-volumes\n");
     return 2;
 }

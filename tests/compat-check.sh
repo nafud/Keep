@@ -35,6 +35,16 @@
 #             also run once with -d and the FAT file system as the destination, where its
 #             screen must name each key that it holds by its file, its length and the start
 #             of its SHA-256.
+#             With -m or -c it also takes the memory image, once for each word of
+#             KEEP_IMAGES (default "lime raw avml all"), while the two containers are open.
+#             A word is a format, or "all" for every format from one read (-F). The report
+#             must name each file with its size and its SHA-256, the scanner must read
+#             each image to its end, and the schedule of each half of both volume keys
+#             must lie in it at an address at which it lies in the image that AVML wrote
+#             in the main run. That image is removed before, for the room it takes. A
+#             compressed image is also converted by AVML itself, and the scanner must find
+#             in the result what it finds in the image. The images of one read must give
+#             the same list of schedules, each at the same address.
 #             With KEEP_SAN=/path/to/keep-san in the environment, that build of the program
 #             with the sanitizers of the compiler is run at the same places as well and must
 #             end with status 0, which it does not where a sanitizer finds a fault
@@ -247,6 +257,68 @@ beside() {
     fi
 }
 beside "$O" "$W/cdest" "the same mappings"
+
+# The memory image of the C program. AVML took its image of the same machine in the main run,
+# with the same containers open, and the scanner listed what it holds in image-candidates.txt.
+# The kernel keeps the schedules of an open volume where they are, so each must lie in the new
+# image at an address at which it lies in that one. Memory that a program gave back can hold
+# further copies in one image and not in the other, which is why one common address counts.
+# cimage PROGRAM WORD LABEL : one run with -m and the format WORD, or with -m -F for the word
+# "all". Its images are examined and then removed.
+cimage() {
+    local k=$1 word=$2 label=$3 d=$W/cimage-$3 c img rc rcs n o key f formats said=""
+    local -a how
+    case $word in all) formats="lime raw avml"; how=(-F) ;; *) formats=$word; how=(-f "$word") ;; esac
+    mkdir "$d"
+    "$k" -m "${how[@]}" -d "$d" > "$d/screen.txt" 2>&1; rc=$?
+    c=$(ls -d "$d"/triage_* 2>/dev/null | tail -n 1)
+    : > "$d/why.txt"
+    [ "$rc" = 0 ] || echo "status $rc" >> "$d/why.txt"
+    (cd "$c" 2>/dev/null && sha256sum -c --quiet manifest.sha256 > "$d/manifest.txt" 2>&1) || echo "the manifest does not verify" >> "$d/why.txt"
+    for f in $formats; do
+        img=$c/memory/memory.$f
+        [ -s "$img" ] || { echo "no image memory.$f" >> "$d/why.txt"; continue; }
+        # the report names the file with its size and with the SHA-256 that the manifest verifies
+        grep -q "{\"status\": \"captured\", \"file\": \"memory/memory.$f\", \"format\": \"${f}[a-z ]*\", \"bytes\": $(stat -c%s "$img"), [^}]*\"sha256\": \"$(sed -n "s|  memory/memory.$f\$||p" "$c/manifest.sha256")\"" "$c/verdict.json" ||
+            echo "verdict.json does not name memory.$f with its size and its SHA-256" >> "$d/why.txt"
+        "$KIT/bin/kcore-keyscan" "$img" > "$d/candidates-$f.txt" 2> "$d/scan-$f.txt"; rcs=$?
+        [ "$rcs" = 0 ] || echo "the scanner ended with status $rcs on memory.$f" >> "$d/why.txt"
+        for n in kc_l2 kc_l1; do
+            for o in 0 32; do
+                key=$(od -An -v -tx1 -j "$o" -N 32 "$n.vk" | tr -d ' \n')
+                grep " key $key\$" "$W/image-candidates.txt" | grep -q -x -F -f - "$d/candidates-$f.txt" ||
+                    echo "a schedule of $n lies in memory.$f at no address at which it lies in the image of AVML" >> "$d/why.txt"
+            done
+        done
+        # what one read wrote is the same memory in every file
+        cmp -s "$d/candidates-$f.txt" "$d/candidates-${formats%% *}.txt" || echo "memory.$f gives other schedules than memory.${formats%% *} of the same read" >> "$d/why.txt"
+        if [ "$f" = avml ]; then
+            # AVML reads the compressed image: its LiME image of it must hold the same
+            "$KIT/bin/avml" convert "$img" "$d/converted.lime" > "$d/convert.txt" 2>&1 && "$KIT/bin/kcore-keyscan" "$d/converted.lime" 2> /dev/null | cmp -s - "$d/candidates-$f.txt" ||
+                echo "AVML does not convert memory.avml, or its LiME image of it gives other schedules" >> "$d/why.txt"
+            rm -f "$d/converted.lime"
+        fi
+        said="$said, memory.$f $(stat -c%s "$img") bytes"
+    done
+    if [ ! -s "$d/why.txt" ]; then
+        echo "PASS   the memory image of the C program, $label:${said#,}, $(sed -n 's/^kcore-keyscan [^,]*, [^,]*, [0-9]* segments*, \([0-9]* bytes\).*/\1 of memory/p' "$d/scan-${formats%% *}.txt"), read in $(sed -n 's/.*"seconds": \([0-9]*\),.*/\1/p' "$c/verdict.json") s. The report names each size and SHA-256, the scanner reads each to its end, and the schedules of both containers lie where they lie in the image of AVML$(case " $formats " in *" avml "*) echo ". AVML converts the compressed image to the same memory" ;; esac)"
+        echo "       $(grep -m 1 'source /proc/kcore' "$d/screen.txt" | sed 's/^ *//')"
+        echo "       $(grep -m 1 'System.map' "$d/screen.txt" | sed 's/^ *//')"
+    else
+        echo "FAIL   the memory image of the C program, $label"; sed 's/^/       /' "$d/why.txt" "$d/screen.txt"; PASS=0
+    fi
+    rm -f "$c"/memory/memory.lime "$c"/memory/memory.raw "$c"/memory/memory.avml
+}
+if [ -n "$MEM" ] && [ -s "$W/image-candidates.txt" ]; then
+    rm -f "$O/memory/$IMAGE"
+    first=1
+    for f in ${KEEP_IMAGES:-lime raw avml all}; do
+        cimage "$KIT/c/keep" "$f" "$f"
+        # the build with the sanitizers takes the image once: the formats are its unit checks
+        if [ -n "${KEEP_SAN:-}" ] && [ "$first" = 1 ]; then cimage "$KEEP_SAN" "$f" "$f, with the sanitizers"; fi
+        first=0
+    done
+fi
 # A destination with FAT, named with -d. Every name must be taken by FAT.
 mkdir "$W/fat"; truncate -s 96M fat.img
 if command -v mkfs.vfat >/dev/null && mkfs.vfat fat.img >/dev/null 2>&1 && mount -o loop fat.img "$W/fat" 2>/dev/null; then
