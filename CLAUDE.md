@@ -644,15 +644,17 @@ with integrity. It is corrected in 1.5.1, with its check in `selftest.sh`.
 
 ### Where it has run
 
-`keep` 2.0-pre5 is run beside `keytriage.sh` 1.5.1 by `compat-check.sh`: before any mapping is
+`keep` 2.0-pre6 is run beside `keytriage.sh` 1.5.1 by `compat-check.sh`: before any mapping is
 made, on the four mappings of the main run, with `-d` and a destination on FAT, on LVM on LUKS and on
 LUKS2 with integrity, and alone on a volume in re-encryption. Beside `keytriage.sh` it gave the
 same line of `verdict.json` for every volume, on the table route, the memory route, a mapping
 without a type and the null cipher, and header backups and keys that are the same byte for
 byte. On the volume in re-encryption it proved both keys, from memory and from the table, each
 for its part. It took the memory image of each system, and the schedules of both volume keys
-lay in every image at an address at which they lay in the image that AVML had taken. The
-output of each of these runs was read line by line:
+lay in every image at an address at which they lay in the image that AVML had taken. Searched
+as a dump that exists, the first image of each run gave both volume keys, proven against the
+headers in the images of the two containers. The output of each of these runs was read line
+by line:
 
 | System | Kernel | cryptsetup | Where |
 |---|---|---|---|
@@ -666,7 +668,8 @@ output of each of these runs was read line by line:
 | Rocky Linux 10.3 | 6.12.0-264.16.1.el10_3.x86_64 | 2.8.6 | `distros.yml` |
 | openSUSE Leap 16.1 | 6.12.0-160100.9-default | 2.8.4 | `distros.yml`, without the part with integrity |
 | Arch Linux | 7.3.4-arch1-2 | 2.8.9 | `distros.yml` |
-| Ubuntu 24.04.5, runner image | 7.0.0-1017-azure | 2.7.0 | `checks.yml`, also the build with the sanitizers |
+| Ubuntu 24.04.5, runner image | 7.0.0-1014-aws | 2.7.0 | `checks.yml`, also the build with the sanitizers |
+| Ubuntu 24.04.5, runner image | 7.0.0-1017-azure | 2.7.0 | `checks.yml`, with 2.0-pre5, also the build with the sanitizers |
 | Ubuntu 22.04.5, runner image | 6.8.0-1070-azure | 2.4.3 | `checks.yml`, also the build with the sanitizers |
 
 On openSUSE Leap 16.1 cryptsetup could not make the container with integrity: the kernel
@@ -683,14 +686,22 @@ The memory image in these runs:
   one image took 2 to 11 seconds and that of all three 15 to 30.
 - AVML converted every compressed image, and the scanner found in its LiME image what it
   found in the compressed one.
-- The two runner images have 16 GiB, in 6 ranges of RAM. On one the LiME image had
-  17174331584 bytes and was read in 70 s. On the other the raw image had 20401094656 bytes,
-  as the ranges reach up to the address of 19 GiB, and was read in 56 s, and the compressed
-  image had 10101456970 bytes and was read in 44 s.
+- The runner images have 16 GiB, in 5 or 6 ranges of RAM by the machine behind them. The
+  LiME image of one had 17174331584 bytes and was read in 39 s in one run and in 70 s in
+  another. The raw image had 17951621120 bytes on one machine and 20401094656 on another,
+  where the ranges reach up to the address of 19 GiB, read in 64 s and 56 s. The compressed
+  image had 7641445743 and 10101456970 bytes, read in 46 s and 44 s.
 - AVML's own images of the same machines held less memory by whole blocks of 16 MiB, which
   are the blocks of zeros that it leaves out: one block on one guest, ten on another, and 56
-  on the runner with the LiME image. On the other runner its compressed image held 83 blocks
-  less than that of the C program, which leaves out such blocks as well.
+  and 59 on the runner with the LiME image in two runs. On the other runner its compressed
+  image held 83 blocks less than that of the C program in one run, which leaves out such
+  blocks as well.
+- Searched with no file, the image of every guest and of both runners held 2 headers or
+  digests of a header, and
+  both volume keys were proven from them. This says little about a real machine: the
+  containers of the check lie in files, and the cache of those files holds their headers.
+  What a machine holds by itself was seen on the guest of the workstation (see "What the
+  sources say").
 - The C program took its images after AVML had written one. That the later images hold fewer
   blocks of zeros fits a file that is written through the page cache: the cache takes free
   memory, and what lay there is overwritten. This was not measured by itself.
@@ -1015,12 +1026,12 @@ kept as artifacts of the pipeline.
 | Debian 12 | 6.1.0-56-amd64 | 2.6.1 | `--volume-key-file` | `xts-aes-aesni` | 1.5.1 |
 | Ubuntu 26.04.1 | 7.0.0-43-generic | 2.8.4 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.5.1 |
 | Ubuntu 24.04.5 | 6.8.0-147-generic | 2.7.0 | `--volume-key-file` | `xts-aes-aesni` | 1.5.1 |
-| Fedora 45 | 7.2.11-300.fc45.x86_64 | 2.8.8 | `--volume-key-file` | `xts-aes-vaes-avx2` | 1.5.1 |
+| Fedora 45 | 7.2.11-300.fc45.x86_64 | 2.8.8 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.5.1 |
 | AlmaLinux 10.3 | 6.12.0-264.16.1.el10_3.x86_64 | 2.8.6 | `--volume-key-file` | `xts-aes-vaes-avx10_512` | 1.5.1 |
 | AlmaLinux 9.9 | 5.14.0-741.22.1.el9_9.x86_64 | 2.8.6 | `--volume-key-file` | `xts-aes-aesni` | 1.5.1 |
 | Rocky Linux 10.3 | 6.12.0-264.16.1.el10_3.x86_64 | 2.8.6 | `--volume-key-file` | `xts-aes-vaes-avx10_512` | 1.5.1 |
-| openSUSE Leap 16.1, Build3.23 | 6.12.0-160100.9-default | 2.8.4 | `--volume-key-file` | `xts-aes-vaes-avx2` | 1.5.1 |
-| Arch Linux, image of 2026-11-15 | 7.3.4-arch1-2 | 2.8.9 | `--volume-key-file` | `xts-aes-vaes-avx2` | 1.5.1 |
+| openSUSE Leap 16.1, Build3.23 | 6.12.0-160100.9-default | 2.8.4 | `--volume-key-file` | `xts-aes-vaes-avx10_512` | 1.5.1 |
+| Arch Linux, image of 2026-11-15 | 7.3.4-arch1-2 | 2.8.9 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.5.1 |
 | Ubuntu 24.04.5, runner image | 7.0.0-1014-aws | 2.7.0 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.5.1 |
 | Ubuntu 24.04.5, runner image | 7.0.0-1017-azure | 2.7.0 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.5.1 |
 | Ubuntu 22.04.5, runner image | 6.8.0-1070-azure | 2.4.3 | `--master-key-file` | `xts-aes-aesni` | 1.5.1 |
