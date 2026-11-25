@@ -747,7 +747,7 @@ with integrity. It is corrected in 1.5.1, with its check in `selftest.sh`.
 
 ### Where it has run
 
-`keep` 2.0-pre8 is run beside `keytriage.sh` 1.5.1 by `compat-check.sh`: before any mapping is
+`keep` 2.0-pre9 is run beside `keytriage.sh` 1.5.1 by `compat-check.sh`: before any mapping is
 made, on the four mappings of the main run, with `-d` and a destination on FAT, on LVM on LUKS and on
 LUKS2 with integrity, and alone on a volume in re-encryption. Beside `keytriage.sh` it gave the
 same line of `verdict.json` for every volume, on the table route, the memory route, a mapping
@@ -773,7 +773,8 @@ by line:
 | Arch Linux | 7.3.4-arch1-2 | 2.8.9 | `distros.yml` |
 | Ubuntu 24.04.5, runner image | 7.0.0-1014-aws | 2.7.0 | `checks.yml`, also the build with the sanitizers |
 | Ubuntu 24.04.5, runner image | 7.0.0-1017-azure | 2.7.0 | `checks.yml`, with 2.0-pre5 and in part with 2.0-pre7, also the build with the sanitizers |
-| Ubuntu 22.04.5, runner image | 6.8.0-1070-azure | 2.4.3 | `checks.yml`, also the build with the sanitizers |
+| Ubuntu 22.04.5, runner image | 6.8.0-1070-azure | 2.4.3 | `checks.yml`, up to 2.0-pre8, also the build with the sanitizers |
+| Ubuntu 22.04.5, runner image | 6.8.0-1073-azure | 2.4.3 | `checks.yml`, also the build with the sanitizers |
 
 On openSUSE Leap 16.1 cryptsetup could not make the container with integrity: the kernel
 refused the table that the format loads (`reload ioctl ... failed: Invalid argument`). That
@@ -820,6 +821,13 @@ The memory image in these runs:
   cache after the run: on the ten guests for each format and for the three of one read, on
   the runners for the LiME image of 17174331584 bytes (read in 42 s), the raw image of
   17951621120 bytes (73 s) and the compressed image of 10096333254 bytes (50 s).
+- With 2.0-pre9, whose screen is another one, the same held on the ten guests and both
+  runners, with images of the same sizes but the compressed one of a runner, 10117846686
+  bytes. Every screen and every report that the C program wrote in the check, 38 files on a
+  guest, 36 on openSUSE Leap 16.1 and 36 and 42 on the runners, held no escape byte and no
+  line of more than 80 columns without a word that needs them. These screens went to
+  files: what a terminal is given was looked at by `unit-check.sh` alone (see "Not handled
+  or not checked").
 
 The tables of both kinds of volume were first seen on a guest emulated on the workstation
 (Ubuntu 24.04.5, kernel 6.8.0-147-generic, cryptsetup 2.7.0), and `compat-check.sh` passed
@@ -1215,11 +1223,11 @@ kept as artifacts of the pipeline.
 | AlmaLinux 10.3 | 6.12.0-264.16.1.el10_3.x86_64 | 2.8.6 | `--volume-key-file` | `xts-aes-vaes-avx10_512` | 1.5.1 |
 | AlmaLinux 9.9 | 5.14.0-741.22.1.el9_9.x86_64 | 2.8.6 | `--volume-key-file` | `xts-aes-aesni` | 1.5.1 |
 | Rocky Linux 10.3 | 6.12.0-264.16.1.el10_3.x86_64 | 2.8.6 | `--volume-key-file` | `xts-aes-vaes-avx10_512` | 1.5.1 |
-| openSUSE Leap 16.1, Build3.23 | 6.12.0-160100.9-default | 2.8.4 | `--volume-key-file` | `xts-aes-vaes-avx10_512` | 1.5.1 |
-| Arch Linux, image of 2026-11-15 | 7.3.4-arch1-2 | 2.8.9 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.5.1 |
+| openSUSE Leap 16.1, Build3.23 | 6.12.0-160100.9-default | 2.8.4 | `--volume-key-file` | `xts-aes-vaes-avx2` | 1.5.1 |
+| Arch Linux, image of 2026-11-15 | 7.3.4-arch1-2 | 2.8.9 | `--volume-key-file` | `xts-aes-vaes-avx2` | 1.5.1 |
 | Ubuntu 24.04.5, runner image | 7.0.0-1014-aws | 2.7.0 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.5.1 |
 | Ubuntu 24.04.5, runner image | 7.0.0-1017-azure | 2.7.0 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.5.1 |
-| Ubuntu 22.04.5, runner image | 6.8.0-1070-azure | 2.4.3 | `--master-key-file` | `xts-aes-aesni` | 1.5.1 |
+| Ubuntu 22.04.5, runner image | 6.8.0-1073-azure | 2.4.3 | `--master-key-file` | `xts-aes-aesni` | 1.5.1 |
 
 On every one of the ten guests the on-scene pairing of the XTS halves found the key, with each of
 the four XTS drivers that the runs met: `xts-aes-aesni`, `xts-aes-vaes-avx2`,
