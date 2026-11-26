@@ -72,7 +72,8 @@ else
     if [ ! -f "$IMG" ]; then
         command -v curl >/dev/null || die "curl is not installed"
         echo "fetching $URL"
-        curl -s -S -L --fail --retry 3 -o "$IMG.part" "$URL" || { rm -f "$IMG.part"; die "cannot fetch $URL (a build that the distribution has removed is replaced in compat-images.txt)"; }
+        # a transfer that the server ends in the middle is begun again as well (curl 7.71 and later)
+        curl -s -S -L --fail --retry 3 --retry-all-errors -o "$IMG.part" "$URL" || { rm -f "$IMG.part"; die "cannot fetch $URL (a build that the distribution has removed is replaced in compat-images.txt)"; }
         mv "$IMG.part" "$IMG"
     fi
     GOT=$("$HASH" < "$IMG"); GOT=${GOT%% *}

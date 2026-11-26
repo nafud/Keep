@@ -148,7 +148,8 @@ static int keep_key(struct run *r, struct key_result *k, const uint8_t *key, siz
 static void scan_once(struct run *r)
 {
     FILE *keys = NULL, *msg = NULL;
-    char path[PATH_MAX], held[BUFSIZ], *text;
+    const char *const *said;
+    char held[BUFSIZ];
     int kfd, mfd, failed = 0, status, n;
 
     if (r->scanned) {
@@ -180,12 +181,9 @@ static void scan_once(struct run *r)
             run_mark(r, "search", RUN_NOT, "FAILED", "the list could not be flushed to the destination");
     } else {
         r->scan_refused = failed == EPERM;
-        if (!pathf(path, "%s/log/kcore-keyscan.txt", r->out) && (text = read_text(path, sizeof r->scan_error - 1, NULL))) {
-            text[strcspn(text, "\n")] = 0;
-            snprintf(r->scan_error, sizeof r->scan_error, "%s", text);
-            free(text);
-        }
-        run_mark(r, "search", RUN_NOT, "FAILED", "%s", r->scan_error[0] ? r->scan_error : "no message");
+        said = keyscan_said(&n);
+        snprintf(r->scan_error, sizeof r->scan_error, "%s", n ? said[0] : "no message");
+        run_mark(r, "search", RUN_NOT, "FAILED", "%s", r->scan_error);
     }
     fclose(keys);
     fclose(msg);

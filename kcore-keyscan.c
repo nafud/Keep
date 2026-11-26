@@ -49,6 +49,7 @@
 #include <elf.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -73,6 +74,43 @@ static int nhit, dropped;
 static unsigned long long nbytes, nfail;
 static unsigned step = 1;
 static FILE *keys_out, *msg_out;        /* the schedules, and the counts and messages */
+
+/*
+ * What a search says beyond its two lines of counts: what it warns of, or why it read nothing.
+ * Each goes to the messages as a line with the name of the scanner before it, and is kept
+ * without that name for the program that links the search (keyscan_said).
+ */
+#define MAXSAID 8
+static char said[MAXSAID][640];
+static const char *said_list[MAXSAID];
+static int nsaid;
+
+static void say(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static void say(const char *fmt, ...)
+{
+    char line[sizeof said[0]];
+    va_list ap;
+    size_t len;
+
+    va_start(ap, fmt);
+    vsnprintf(line, sizeof line, fmt, ap);
+    va_end(ap);
+    len = strlen(line);
+    if (len && line[len - 1] == '\n')
+        line[len - 1] = 0;
+    fprintf(msg_out, "kcore-keyscan: %s\n", line);
+    if (nsaid < MAXSAID) {
+        memcpy(said[nsaid], line, sizeof line);
+        said_list[nsaid] = said[nsaid];
+        nsaid++;
+    }
+}
+
+const char *const *keyscan_said(int *n)
+{
+    *n = nsaid;
+    return said_list;
+}
 
 static void init_sbox(void)
 {
@@ -143,7 +181,7 @@ static int selftest(void)
     if (memcmp(s + 236, last256, 4) || !is_schedule(s, 8)) goto bad;
     return 0;
 bad:
-    fprintf(msg_out, "kcore-keyscan: self-test failed, the result would not be reliable\n");
+    say("self-test failed, the result would not be reliable\n");
     return -1;
 }
 
@@ -493,6 +531,7 @@ int keyscan_run(const char *path, int raw, unsigned every, FILE *keys, FILE *msg
     keys_out = keys; msg_out = msg; step = every;
     nhit = dropped = 0; nbytes = nfail = nbadcrc = 0; have = 0;
     summarised = 0;
+    nsaid = 0;
     *failed = 0;
     init_sbox();
     init_crc();
@@ -501,7 +540,7 @@ int keyscan_run(const char *path, int raw, unsigned every, FILE *keys, FILE *msg
     fd = open(path, O_RDONLY);
     if (fd < 0 || fstat(fd, &st)) {
         *failed = errno;
-        fprintf(msg_out, "kcore-keyscan: %s: %s\n", path, strerror(errno));
+        say("%s: %s\n", path, strerror(errno));
         if (fd >= 0) close(fd);
         return 1;
     }
@@ -509,13 +548,13 @@ int keyscan_run(const char *path, int raw, unsigned every, FILE *keys, FILE *msg
     memset(head, 0, sizeof head);
     if ((headlen = pread(fd, head, sizeof head, 0)) < 0) {
         *failed = errno;
-        fprintf(msg_out, "kcore-keyscan: %s: %s\n", path, strerror(errno));
+        say("%s: %s\n", path, strerror(errno));
         close(fd);
         return 1;
     }
     for (i = 0; !raw && i < (int)(sizeof packed / sizeof packed[0]); i++)
         if (!memcmp(head, packed[i].mark, packed[i].len) && memcmp(head, "AVML\2\0\0\0", 8)) {
-            fprintf(msg_out, "kcore-keyscan: %s begins like %s. Such a file holds memory in another form, and a "
+            say("%s begins like %s. Such a file holds memory in another form, and a "
                     "search of its bytes misses key schedules, so it is not searched: %s.%s\n",
                     path, packed[i].name, packed[i].advice,
 #ifdef KEYSCAN_LIBRARY
@@ -538,13 +577,13 @@ int keyscan_run(const char *path, int raw, unsigned every, FILE *keys, FILE *msg
 
         format = "ELF64 core";
         if ((size_t)headlen < sizeof eh) {   /* by what was read: a file of /proc need not state its size */
-            fprintf(msg_out, "kcore-keyscan: %s ends inside its ELF header\n", path);
+            say("%s ends inside its ELF header\n", path);
             goto out;
         }
         memcpy(&eh, head, sizeof eh);
         for (i = 0; i < eh.e_phnum; i++) {
             if (!full_read(fd, &ph, sizeof ph, eh.e_phoff + (uint64_t)i * eh.e_phentsize)) {
-                fprintf(msg_out, "kcore-keyscan: cannot read program header %d\n", i);
+                say("cannot read program header %d\n", i);
                 goto out;
             }
             if (ph.p_type != PT_LOAD || !ph.p_filesz || ph.p_paddr == NONE)
@@ -612,13 +651,13 @@ int keyscan_run(const char *path, int raw, unsigned every, FILE *keys, FILE *msg
     fprintf(msg_out, "kcore-keyscan: AES-128 schedules: %d (%d different keys), "
             "AES-256 schedules: %d (%d different keys)\n", n128, u128, n256, u256);
     if (nfail)
-        fprintf(msg_out, "kcore-keyscan: %llu bytes could not be read and count as zeros\n", nfail);
+        say("%llu bytes could not be read and count as zeros\n", nfail);
     if (nbadcrc)
-        fprintf(msg_out, "kcore-keyscan: chunks that differ from their checksum: %llu. Their data is searched as it is\n", nbadcrc);
+        say("chunks that differ from their checksum: %llu. Their data is searched as it is\n", nbadcrc);
     if (unwritten)
-        fprintf(msg_out, "kcore-keyscan: the list of the schedules could not be written to its end\n");
+        say("the list of the schedules could not be written to its end\n");
     if (why) {
-        fprintf(msg_out, "kcore-keyscan: the image is damaged or ends early at file offset %llu: %s. "
+        say("the image is damaged or ends early at file offset %llu: %s. "
                 "%llu bytes of the file from there on are not searched.\n",
                 (unsigned long long)stopped, why, (unsigned long long)(file_size > stopped ? file_size - stopped : 0));
         goto out;
@@ -626,7 +665,7 @@ int keyscan_run(const char *path, int raw, unsigned every, FILE *keys, FILE *msg
     if (unwritten)
         goto out;
     if (dropped)
-        fprintf(msg_out, "kcore-keyscan: %d further schedules were not listed (more than %d)\n",
+        say("%d further schedules were not listed (more than %d)\n",
                 dropped, MAXHIT);
     status = 0;
 out:

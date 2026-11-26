@@ -1655,22 +1655,26 @@ header_ramfs() {
 # A block device, which is what the program reads the header of a volume from. The kernel
 # drops the cache of a device when its last opener closes it (blkdev_flush_mapping in
 # block/bdev.c of Linux 6.12, __blkdev_put in fs/block_dev.c of 4.18), and dm-crypt holds the
-# device of an open volume. So this shell holds a loop device on the container open: after
-# direct reads the cache holds no page of it, and after reads in the usual way the pages of the
-# header.
+# device of an open volume. So this shell holds a loop device on the container open: direct
+# reads add no page of it to the cache, and reads in the usual way the pages of the header.
+# A device that is new is read by the system itself, which looks at what it holds (udev), and
+# a page that is in use at that moment stays: on a runner of the pipeline one page of 8192
+# did. So the system is given time to end that, and the pages are counted before and after.
 LOOPDEV=
 header_device() {
-    local u=$1 r=0 n
+    local u=$1 r=0 n before
     rm -f "$T/ours.hdr" "$T/theirs.hdr"
     cryptsetup luksHeaderBackup "$T/l2.img" --header-backup-file "$T/theirs.hdr" || return 1
     LOOPDEV=$($SUDO losetup -f --show "$T/l2.img") && $SUDO chmod 666 "$LOOPDEV" && exec 9< "$LOOPDEV" ||
         { echo "no loop device on the container"; return 1; }
+    if have udevadm; then $SUDO udevadm settle 2> /dev/null; fi
     "$u" forget "$LOOPDEV" || r=1
-    n=$("$u" cached "$LOOPDEV"); [ "${n%% *}" = 0 ] || { echo "the device is not let go from the page cache: $n"; r=1; }
+    n=$("$u" cached "$LOOPDEV"); before=${n%% *}
+    [ "$before" -le 16 ] || { echo "the device is not let go from the page cache: $n"; r=1; }
     "$u" luks-backup "$LOOPDEV" "$T/ours.hdr" > "$T/way.txt" || r=1
     grep -qx 'read with direct reads' "$T/way.txt" || { echo "the device was not read with direct reads:"; cat "$T/way.txt"; r=1; }
     "$u" luks-prove "$LOOPDEV" "$T/k64" || r=1
-    n=$("$u" cached "$LOOPDEV"); [ "${n%% *}" = 0 ] || { echo "the device after the direct reads: $n"; r=1; }
+    n=$("$u" cached "$LOOPDEV"); [ "${n%% *}" -le "$before" ] || { echo "the device after the direct reads: $n, and $before pages before them"; r=1; }
     cmp "$T/ours.hdr" "$T/theirs.hdr" || { echo "the copy differs from the file of luksHeaderBackup"; r=1; }
     rm -f "$T/ours.hdr"
     KEEP_UNIT_CACHE=1 "$u" luks-backup "$LOOPDEV" "$T/ours.hdr" > "$T/way.txt" || r=1
@@ -2151,8 +2155,9 @@ disturbed() {
     return $r
 }
 # What the search of a dump must say and not pass over. A file that cannot be read: the place
-# is named and the run ends with status 1 (the memory of the process itself is such a file:
-# its first page cannot be read). A key that gives the digest and whose file cannot be
+# is named and the run ends with status 1. Such a file is one of /sys that every system has:
+# the speed of the loopback interface, a regular file that any user may open and whose read
+# the kernel refuses (speed_show in net/core/net-sysfs.c). A key that gives the digest and whose file cannot be
 # written, here for a name that is too long: named as such, and not as a key that was not
 # found. A name that is no UTF-8, with a longer form of "/" in it: verdict.json must be JSON
 # that Python reads.
@@ -2160,8 +2165,11 @@ dump_says() {
     local k=$1 r=0 rc d long
     case $k in /*) ;; *) k=$R/$k ;; esac
     rm -rf "$T/says"; mkdir "$T/says" "$T/says/1" "$T/says/2" "$T/says/3" || return 1
-    "$k" -n -s "$T/dump.lime" -d "$T/says/1" /proc/self/mem > "$T/says/1.txt" 2>&1; rc=$?
-    [ "$rc" = 1 ] && tr -s '\n ' '  ' < "$T/says/1.txt" | grep -q 'headers FAILED, /proc/[0-9]*/mem cannot be read at offset 512 (.*): what lies behind that place is not searched for headers' ||
+    if head -c 1 /sys/class/net/lo/speed > /dev/null 2>&1 || [ ! -f /sys/class/net/lo/speed ]; then
+        echo "no file here whose read fails: /sys/class/net/lo/speed is not one"; r=1
+    fi
+    "$k" -n -s "$T/dump.lime" -d "$T/says/1" /sys/class/net/lo/speed > "$T/says/1.txt" 2>&1; rc=$?
+    [ "$rc" = 1 ] && tr -s '\n ' '  ' < "$T/says/1.txt" | grep -q 'headers FAILED, /sys/[^ ]*/lo/speed cannot be read at offset 512 (.*): what lies behind that place is not searched for headers' ||
         { echo "a file that cannot be read: status $rc"; cat "$T/says/1.txt"; r=1; }
     long=$(printf 'n%.0s' $(seq 1 253))
     cp "$T/l2.img" "$T/says/$long" && "$k" -n -s "$T/dump.lime" -d "$T/says/2" "$T/says/$long" > "$T/says/2.txt" 2>&1; rc=$?

@@ -33,4 +33,9 @@ struct keyscan_summary {
 };
 const struct keyscan_summary *keyscan_summary(void);
 
+/* What the last search said beyond its two lines of counts, N lines: what it warns of (bytes
+   that could not be read, an image that ends early, a list that could not be written), or
+   why it read nothing. Each is a line of its messages without the name of the scanner. */
+const char *const *keyscan_said(int *n);
+
 #endif

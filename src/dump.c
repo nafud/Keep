@@ -756,7 +756,8 @@ static int give_up(struct run *r, const char *why)
 int dump_run(const struct dump_options *o)
 {
     char dump[PATH_MAX], dest[PATH_MAX], path[PATH_MAX], name[NAME_MAX + 1], stamp[32], started[32], finished[32];
-    char real[PATH_MAX], size_of[32], label[32], held[BUFSIZ], *said, *line, *next;
+    char real[PATH_MAX], size_of[32], label[32], held[BUFSIZ];
+    const char *const *said;
     const struct keyscan_summary *sum;
     struct str headers = { 0 };
     struct run run = { 0 }, *r = &run;
@@ -769,7 +770,7 @@ int dump_run(const struct dump_options *o)
     struct stat st;
     size_t ntargets = 0, nfiles_targets, npairs = 0, further = 0, i, k, proven = 0, in_memory = 0, more_in_memory;
     char unlocked[160] = "";
-    int kfd, mfd, fd, failed = 0, status, found = 0, names = 0, words = 0, nline = 0, unread = 0;
+    int kfd, mfd, fd, failed = 0, status, found = 0, names = 0, words = 0, nline, nsaid, unread = 0;
 
     /* Keys pass through the memory of this process. Locked memory is not written to the swap
        space, and the files of the run are for their owner alone. */
@@ -850,7 +851,7 @@ int dump_run(const struct dump_options *o)
         free(w);
         return give_up(r, "no memory");
     }
-    /* What the search read, from its own count. Its first two messages say the same and stay
+    /* What the search read, from its own count. Its two lines of counts say the same and stay
        in scan.txt. What it says beyond them is said here as well: bytes that could not be
        read, an image that ends early, a file that it refuses. */
     if ((sum = keyscan_summary())) {
@@ -861,21 +862,12 @@ int dump_run(const struct dump_options *o)
                   (unsigned)(sum->seconds + 0.5));
         run_field(r, "keys", "%d of AES-128, %d of AES-256, in keys/candidates.txt", keys.aes128, keys.aes256);
     }
-    if (!pathf(path, "%s/scan.txt", r->out) && (said = read_text(path, 1 << 20, NULL))) {
-        static const char prefix[] = "kcore-keyscan: ";
-
-        for (line = said; *line; line = next, nline++) {
-            next = line + strcspn(line, "\n");
-            if (*next)
-                *next++ = 0;
-            if (!strncmp(line, prefix, sizeof prefix - 1))
-                line += sizeof prefix - 1;
-            if (!sum)
-                run_mark(r, "search", RUN_NOT, "FAILED", "%s", line);
-            else if (nline >= 2)
-                run_field(r, "warning", "%s", line);
-        }
-        free(said);
+    said = keyscan_said(&nsaid);
+    for (nline = 0; nline < nsaid; nline++) {
+        if (!sum)
+            run_mark(r, "search", RUN_NOT, "FAILED", "%s", said[nline]);
+        else
+            run_field(r, "warning", "%s", said[nline]);
     }
 
     /* the headers of the files, and the proof against each */

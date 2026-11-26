@@ -882,7 +882,7 @@ had not written it, with the analyzers of gcc 13.3 (`-fanalyzer`), clang 18.1 an
 2.13, with valgrind 3.22, with every allocation of a search of a dump made to fail in its
 turn, with a destination of 4 KiB to 40 KiB, and with the screen taken away. No read or
 write outside a buffer and no fault was found: what the analyzers named was looked at and
-is none. With one allocation failed, or every one from a place on, no run of 450 crashed,
+is none. With one allocation failed, or every one from a place on, no run of 888 crashed,
 and none ended with status 0 with a key, a report or a manifest missing. With a
 destination that ran full every run ended with status 1 and said so. What was found, and
 is corrected in 2.0-pre11 and 2.0-pre12, each with its check:
@@ -938,6 +938,9 @@ is corrected in 2.0-pre11 and 2.0-pre12, each with its check:
   the list of the schedules.
 - A run that could not go on for lack of memory after its folder was made left its report
   without a word of that.
+- What the scanner warns of, and why a search read nothing, reached the screen by a second
+  reading of the file that the scanner had written them to. The program now takes them from
+  the search itself.
 
 One defect of `keytriage.sh` was found on the way: it stated no key size for a LUKS2 volume
 with integrity. It is corrected in 1.5.1, with its check in `selftest.sh`.
@@ -1197,9 +1200,6 @@ image of its own:
 - A read of one copy of a LUKS2 header that fails ends the reading of that header, where
   cryptsetup goes on with the other copy. The copy for the evidence would fail at the same
   place.
-- What the scanner warns of reaches the screen of a search of a dump by a second reading of
-  `scan.txt`, from its third line on. Where that file cannot be read again, the warnings are
-  in it and not on the screen.
 - The parts of `/sys` and `/proc` that say what a volume carries are asked with `stat` for
   the source of a mount and for each swap space. A path on a network mount that does not
   answer would hold the run. Not run.
@@ -1347,8 +1347,10 @@ was read for the proof, and after reads and writes in the usual way the pages of
 root, or with `sudo` that asks no password, the same is done on a ramfs, which has neither
 and must give the same copy through the cache, on a tmpfs of 1 MiB, where the copy must be
 named as one that failed at a write, and on a loop device that the check holds open as
-dm-crypt holds the device of a volume: after direct reads no page of the device may lie in
-the cache, and after reads in the usual way the pages of the header. A request for a table
+dm-crypt holds the device of a volume: direct reads may add no page of the device to the
+cache, counted before and after, and reads in the usual way add the pages of the header.
+The count before need not be none: the system reads a device that is new by itself, and on
+a runner of the pipeline one page of 8192 stayed in use. A request for a table
 that a device refuses must be taken as a table that cannot be read, and not as a mapped
 device that is gone. A digest of 4294967295 iterations must be named as not computed, at
 once, and the copy of its header made. The table of a crypt target and of a dm-integrity
