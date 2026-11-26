@@ -894,6 +894,25 @@ image of its own:
   - 16384 bytes of RAM were in no segment of `/proc/kcore`: the four pages in which one
     range of `/proc/iomem` ends and the next begins, around three ranges that begin and end
     inside a page (see "What the sources say").
+- Red Hat Enterprise Linux 9.9, a Minimal Install, kernel 5.14.0-741.20.1.el9_9.x86_64,
+  cryptsetup 2.8.6, lockdown `integrity`, kdump on.
+  - The root volume, laid out as on RHEL 8.10, got `captured and proven` on the memory
+    route, with `rhel-root at /, rhel-swap as swap` and the driver `xts-aes-aesni`.
+  - Before any tool had read the partition, the cache of the partition held the same
+    blocks as on RHEL 8.10, the block of the metadata among them. The image of AVML held
+    the digests at one place, 474 bytes after the start of a page as in that block, and
+    the key was proven from them at the first attempt: the key of the triage. udisks2
+    2.9.4 is installed, and its daemon was not running.
+  - The triage named another address for the two schedules than the search of the image
+    of AVML had, and the search of `/proc/kcore` listed 86 schedules where that image had
+    58, as it had listed 85 for 56 on RHEL 8.10. This fits copies of the image in the
+    memory of the machine: AVML writes its file through the page cache, and the search of
+    a dump reads the file through it. The key is the same and is proven. The address that
+    a run names for a schedule is one at which the schedule lies, and not always the one
+    that the kernel works with.
+  - The LiME image of the program had 4274356544 bytes in 10 ranges, written with direct
+    writes to xfs in 6 s, with the `System.map` of `/boot`. 16384 bytes of RAM were in no
+    segment of `/proc/kcore`, four pages as on RHEL 8.10.
 
 ### Not handled or not checked
 
@@ -916,8 +935,8 @@ image of its own:
   key run on one LUKS2 volume with its key in the keyring, a LiME image and the search of
   a dump. A key in the table, LUKS1, a volume with integrity and one in re-encryption are
   not run there.
-- A memory image under lockdown `integrity` is taken by hand, on one machine and on one
-  guest (see above), and not by the check. In the mode `confidentiality` the kernel refuses
+- A memory image under lockdown `integrity` is taken by hand, on one machine and on two
+  guests (see above), and not by the check. In the mode `confidentiality` the kernel refuses
   `/proc/kcore`, which the run then says, and that is not run.
 - RAM that a driver added is a case of `unit-check.sh`. No machine with such RAM was run.
 - The small files of a run, the report, the header backups and the keys, go through the
@@ -941,10 +960,11 @@ image of its own:
   was given to it.
 - The proof from a dump alone is seen on one guest, with udisks2 2.10.1, and on the machine
   with Linux Mint 22.3, whose udisks2 was not noted, each time for a container on a loop
-  device that was opened by hand, and on the guest with RHEL 8.10 for the root volume,
-  opened at boot, where the daemon of udisks2 was not running and the page cache held the
-  block of the metadata. That is one guest, minutes after its start: how long such a block
-  stays in the cache of a machine in use is not known, and what reads it at boot neither.
+  device that was opened by hand, and on the guests with RHEL 8.10 and 9.9 for the root
+  volume, opened at boot, where the daemon of udisks2 was not running and the page cache
+  held the block of the metadata. These are guests, minutes after their start: how long
+  such a block stays in the cache of a machine in use is not known, and what reads it at
+  boot neither.
   Not known either is what a machine holds of metadata with several keyslots or tokens,
   where the object `digests` can lie across two pages that do not follow each other in
   memory.
@@ -1325,8 +1345,8 @@ cryptsetup 2.8.4), Ubuntu 22.04.5 with kernel 5.15 and cryptsetup 2.4.3, and Deb
 kernel 5.10 and cryptsetup 2.3.7.
 
 Linux Mint has no cloud image and is not in the list: `compat-check.sh` has not run there.
-The C program was run by hand on Linux Mint 22.3 and on a guest installed from Red Hat
-Enterprise Linux 8.10, under Secure Boot (see "Where it has run"). openSUSE
+The C program was run by hand on Linux Mint 22.3 and on guests installed from Red Hat
+Enterprise Linux 8.10 and 9.9, under Secure Boot (see "Where it has run"). openSUSE
 Tumbleweed has no dated build to pin and is not checked. `compat-check.sh` has run on no
 system with Secure Boot on, where lockdown is `integrity`, with a version from 1.3 on.
 
@@ -1345,7 +1365,7 @@ system with Secure Boot on, where lockdown is `integrity`, with a version from 1
   `vkverify.py` takes the first digest of such a header, so it proves one of the two keys.
 - LVM on LUKS is checked with a volume group on a loop device. A root file system on LVM on
   LUKS, as an installer lays it out, is not checked by `compat-check.sh`. The C program was
-  run by hand on one, a guest with RHEL 8.10.
+  run by hand on two, guests with RHEL 8.10 and 9.9.
 - A mapping whose name holds a line break is not listed. A mapping whose name begins with `-` is
   not tested.
 - The memory image is taken in every run of the pipeline, to the disk of the runner or guest.
