@@ -904,12 +904,15 @@ image of its own:
     the key was proven from them at the first attempt: the key of the triage. udisks2
     2.9.4 is installed, and its daemon was not running.
   - The triage named another address for the two schedules than the search of the image
-    of AVML had, and the search of `/proc/kcore` listed 86 schedules where that image had
-    58, as it had listed 85 for 56 on RHEL 8.10. This fits copies of the image in the
-    memory of the machine: AVML writes its file through the page cache, and the search of
-    a dump reads the file through it. The key is the same and is proven. The address that
-    a run names for a schedule is one at which the schedule lies, and not always the one
-    that the kernel works with.
+    of AVML had, a lower one, at which that image had no such pair. The search of
+    `/proc/kcore` listed 86 schedules where the image had 58, as it had listed 85 for 56
+    on RHEL 8.10. So the memory held more copies of the schedules after AVML had written
+    its image and that image had been searched than before. Where they come from is not
+    known. A page of the file of the image in the page cache was looked at and is not it:
+    such a page would hold the pair 3280 bytes after its start, and the pair lay 2512
+    bytes after the start of its page. The key is the same and is proven. The address
+    that a run names for a schedule is one at which the schedule lies, and not always the
+    one that the kernel works with.
   - The LiME image of the program had 4274356544 bytes in 10 ranges, written with direct
     writes to xfs in 6 s, with the `System.map` of `/boot`. 16384 bytes of RAM were in no
     segment of `/proc/kcore`, four pages as on RHEL 8.10.
