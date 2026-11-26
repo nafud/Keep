@@ -904,18 +904,36 @@ image of its own:
     the key was proven from them at the first attempt: the key of the triage. udisks2
     2.9.4 is installed, and its daemon was not running.
   - The triage named another address for the two schedules than the search of the image
-    of AVML had, a lower one, at which that image had no such pair. The search of
-    `/proc/kcore` listed 86 schedules where the image had 58, as it had listed 85 for 56
-    on RHEL 8.10. So the memory held more copies of the schedules after AVML had written
-    its image and that image had been searched than before. Where they come from is not
-    known. A page of the file of the image in the page cache was looked at and is not it:
-    such a page would hold the pair 3280 bytes after its start, and the pair lay 2512
-    bytes after the start of its page. The key is the same and is proven. The address
-    that a run names for a schedule is one at which the schedule lies, and not always the
-    one that the kernel works with.
+    of AVML had, a lower one, and the search of `/proc/kcore` listed 86 schedules where
+    the image had 58, as it had listed 85 for 56 on RHEL 8.10. The key is the same and is
+    proven. What added the schedules was asked on RHEL 10.3 (below).
   - The LiME image of the program had 4274356544 bytes in 10 ranges, written with direct
     writes to xfs in 6 s, with the `System.map` of `/boot`. 16384 bytes of RAM were in no
     segment of `/proc/kcore`, four pages as on RHEL 8.10.
+- Red Hat Enterprise Linux 10.3, a Minimal Install, kernel 6.12.0-264.14.1.el10_3.x86_64,
+  cryptsetup 2.8.6, lockdown `integrity`, kdump on. Here the keys were taken once before
+  AVML ran and once after it, then the image of AVML was searched, then the keys were
+  taken with an image.
+  - The root volume, laid out as on the other two, got `captured and proven` on the memory
+    route in each of the three runs, with the same key. The kernel offers three XTS
+    drivers there, and the one of the highest priority is `xts-aes-vaes-avx2`.
+  - The cache of the partition held the same blocks before any tool had read it, the
+    image of AVML held the digests 474 bytes after the start of a page, and the key was
+    proven from them at the first attempt. udisks2 2.11.1 is installed, and its daemon
+    was not running.
+  - Before AVML ran, the search of `/proc/kcore` listed 24 schedules. The image of AVML
+    held 26. After AVML had run the search listed 50, and it listed 50 again after a key
+    run and a search of the image had ended. So it is the run of AVML that leaves the
+    schedules in the memory a second time, and the runs of the program leave none. After
+    AVML the triage named the lower address of such a copy for the pair, and before it
+    the address at which the image of AVML has the pair. Which memory holds the copies
+    was not found out: AVML reads each block into a buffer of its own before it writes
+    it, and it writes through the page cache (`copy_if_nonzero` in `image.rs` of AVML
+    0.21.0). The address that a run names for a schedule is one at which the schedule
+    lies, and not always the one that the kernel works with.
+  - The LiME image of the program had 4274372832 bytes in 7 ranges, written with direct
+    writes to xfs in 6 s, with the `System.map` of `/boot`. `/proc/iomem` names no range
+    there that begins or ends inside a page, and `/proc/kcore` offered all of the RAM.
 
 ### Not handled or not checked
 
@@ -938,7 +956,7 @@ image of its own:
   key run on one LUKS2 volume with its key in the keyring, a LiME image and the search of
   a dump. A key in the table, LUKS1, a volume with integrity and one in re-encryption are
   not run there.
-- A memory image under lockdown `integrity` is taken by hand, on one machine and on two
+- A memory image under lockdown `integrity` is taken by hand, on one machine and on three
   guests (see above), and not by the check. In the mode `confidentiality` the kernel refuses
   `/proc/kcore`, which the run then says, and that is not run.
 - RAM that a driver added is a case of `unit-check.sh`. No machine with such RAM was run.
@@ -963,8 +981,8 @@ image of its own:
   was given to it.
 - The proof from a dump alone is seen on one guest, with udisks2 2.10.1, and on the machine
   with Linux Mint 22.3, whose udisks2 was not noted, each time for a container on a loop
-  device that was opened by hand, and on the guests with RHEL 8.10 and 9.9 for the root
-  volume, opened at boot, where the daemon of udisks2 was not running and the page cache
+  device that was opened by hand, and on the guests with RHEL 8.10, 9.9 and 10.3 for the
+  root volume, opened at boot, where the daemon of udisks2 was not running and the page cache
   held the block of the metadata. These are guests, minutes after their start: how long
   such a block stays in the cache of a machine in use is not known, and what reads it at
   boot neither.
@@ -1349,7 +1367,7 @@ kernel 5.10 and cryptsetup 2.3.7.
 
 Linux Mint has no cloud image and is not in the list: `compat-check.sh` has not run there.
 The C program was run by hand on Linux Mint 22.3 and on guests installed from Red Hat
-Enterprise Linux 8.10 and 9.9, under Secure Boot (see "Where it has run"). openSUSE
+Enterprise Linux 8.10, 9.9 and 10.3, under Secure Boot (see "Where it has run"). openSUSE
 Tumbleweed has no dated build to pin and is not checked. `compat-check.sh` has run on no
 system with Secure Boot on, where lockdown is `integrity`, with a version from 1.3 on.
 
@@ -1368,7 +1386,7 @@ system with Secure Boot on, where lockdown is `integrity`, with a version from 1
   `vkverify.py` takes the first digest of such a header, so it proves one of the two keys.
 - LVM on LUKS is checked with a volume group on a loop device. A root file system on LVM on
   LUKS, as an installer lays it out, is not checked by `compat-check.sh`. The C program was
-  run by hand on two, guests with RHEL 8.10 and 9.9.
+  run by hand on three, guests with RHEL 8.10, 9.9 and 10.3.
 - A mapping whose name holds a line break is not listed. A mapping whose name begins with `-` is
   not tested.
 - The memory image is taken in every run of the pipeline, to the disk of the runner or guest.
