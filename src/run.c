@@ -107,12 +107,74 @@ static void part(struct run *r, const char *text, size_t at, size_t len, const s
     fwrite(text + from, 1, end - from, stdout);
 }
 
+/* The last space of TEXT at or before FROM and behind LOW, the first of its run, or LOW. */
+static size_t space_back(const char *text, size_t low, size_t from)
+{
+    size_t e = from;
+
+    while (e > low && text[e] != ' ')
+        e--;
+    while (e > low && text[e - 1] == ' ')
+        e--;
+    return e;
+}
+
+/* Whether the word that ends at END is a number: digits, with points or without. */
+static int number_ends(const char *text, size_t low, size_t end)
+{
+    size_t w = end, digits = 0;
+
+    for (; w > low && text[w - 1] != ' '; w--) {
+        if (text[w - 1] >= '0' && text[w - 1] <= '9')
+            digits++;
+        else if (text[w - 1] != '.')
+            return 0;
+    }
+    return digits > 0;
+}
+
+/* The space E or the nearest one before it that follows no number, or LOW where there is none. */
+static size_t no_number(const char *text, size_t low, size_t e)
+{
+    while (e > low && number_ends(text, low, e))
+        e = space_back(text, low, e - 1);
+    return e;
+}
+
+/*
+ * Where a line of TEXT that begins at AT and has ROOM columns is broken: at the last space
+ * that keeps it within the width and lies behind LOW. Two things move the break to an
+ * earlier space. A number is not parted from the word behind it, which is its unit. And the
+ * last line does not hold one word alone, where that word and the one before it fit a line
+ * of NEXT columns. LOW is returned where the width has no space.
+ */
+static size_t break_at(const char *text, size_t len, size_t at, size_t low, size_t room, size_t next)
+{
+    size_t last = space_back(text, low, at + room), e, p, rest;
+
+    if (last == low)
+        return low;
+    if ((e = no_number(text, low, last)) == low)
+        return last;                            /* a number is the first word: no other place */
+    if (e != last)
+        return e;
+    for (rest = last; rest < len && text[rest] == ' '; rest++)
+        ;
+    if (memchr(text + rest, ' ', len - rest))
+        return last;
+    p = no_number(text, low, space_back(text, low, last - 1));
+    for (rest = p; rest < len && text[rest] == ' '; rest++)
+        ;
+    return p > low && len - rest <= next ? p : last;
+}
+
 /*
  * One line to the screen and to the report. Where it has more than WIDTH columns it is
- * continued in further lines that begin in the column HANG, each broken at the last space
- * that keeps it within the width, and never before HANG, where the label ends. A word that
- * does not fit a line stands in one alone and is as long as it is. The spans follow each other
- * and lie before the first break. A HANG beyond the middle leaves no room worth a break.
+ * continued in further lines that begin in the column HANG, each broken at a space that
+ * keeps it within the width (see break_at), and never before HANG, where the label ends. A
+ * word that does not fit a line stands in one alone and is as long as it is. The spans follow
+ * each other and lie before the first break. A HANG beyond the middle leaves no room worth a
+ * break.
  */
 static void line(struct run *r, char *text, size_t hang, const struct span *spans, size_t nspans)
 {
@@ -123,19 +185,16 @@ static void line(struct run *r, char *text, size_t hang, const struct span *span
     for (i = 0; i < len; i++)
         if ((unsigned char)text[i] < 0x20 || text[i] == 0x7f)
             text[i] = ' ';
+    while (len && text[len - 1] == ' ')
+        len--;
     do {
         size_t room = WIDTH - (first ? 0 : hang), floor = first ? hang : 0, end = len;
 
         if (hang <= WIDTH / 2 && len - at > room) {
-            for (end = at + room; end > at + floor && text[end] != ' '; end--)
-                ;
+            end = break_at(text, len, at, at + floor, room, WIDTH - hang);
             if (end == at + floor)              /* no space in the width: the word stays whole */
                 for (end = at + room; end < len && text[end] != ' '; end++)
                     ;
-            for (i = end; i < len && text[i] == ' '; i++)
-                ;
-            if (i == len)                       /* nothing but spaces behind it */
-                end = len;
         }
         while (end > at && text[end - 1] == ' ')
             end--;

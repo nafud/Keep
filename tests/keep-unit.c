@@ -19,6 +19,8 @@
  *   keep-unit secure-boot DIR                   the value of the variable SecureBoot in DIR
  *   keep-unit os-name FILE FILE                 PRETTY_NAME of the first file that can be read
  *   keep-unit names NAME                        NAME for the screen and as a file name
+ *   keep-unit line LABEL TEXT                   LABEL and TEXT as a line of the screen of a run,
+ *                                               broken where it is longer than the screen is wide
  *   keep-unit image-source IOMEM CORE           the ranges of memory that an image holds, from
  *                                               a text like /proc/iomem and a core like
  *                                               /proc/kcore
@@ -47,6 +49,7 @@
 #include "../src/image.h"
 #include "../src/json.h"
 #include "../src/luks.h"
+#include "../src/run.h"
 #include "../src/snappy.h"
 #include "../src/sys.h"
 #include "../src/util.h"
@@ -767,6 +770,14 @@ int main(int argc, char **argv)
         return cmd_cached(argv[2]);
     if (argc == 3 && !strcmp(argv[1], "names"))
         return cmd_names(argv[2]);
+    if (argc == 4 && !strcmp(argv[1], "line")) {
+        struct run r;
+
+        memset(&r, 0, sizeof r);
+        run_screen(&r, 1);
+        run_field(&r, argv[2], "%s", argv[3]);
+        return 0;
+    }
     if (argc == 4 && !strcmp(argv[1], "dm-answer") && (!strcmp(argv[2], "list") || !strcmp(argv[2], "table")))
         return cmd_dm_answer(argv[2], argv[3]);
     if (argc >= 3 && !strcmp(argv[1], "volumes"))

@@ -30,7 +30,8 @@
 #              TERM=dumb, and no colour with NO_COLOR. Through a pipe no escape byte and no
 #              carriage return, in triage.txt the lines of the screen, no line of more than 80
 #              columns but for a word that is longer, and a control character in the name of
-#              a file as a space
+#              a file as a space. A line that is broken parts no number from the word behind
+#              it and leaves no word alone in its last line
 #   kernel     the two answers of device-mapper, laid out as the kernel lays them out, before
 #              and from Linux 4.13, and then with bytes changed and ends cut off 1600 times:
 #              read or refused, never a fault. Then the volumes among tables as cryptsetup
@@ -1206,6 +1207,103 @@ system_parts() {
 }
 for u in "${UNITS[@]}"; do
     check "system: ${u##*/} reads mounts, lockdown, SecureBoot and os-release, and makes names safe" system_parts "$u"
+done
+
+# Where a line of the screen is broken. The two first cases are lines of runs by hand on
+# installed guests, which 2.0-pre9 broke between a number and its unit and before a last word.
+line_breaks() {
+    local u=$1 r=0
+    # broken LABEL TEXT: the lines of standard input are what the screen must give
+    broken() {
+        "$u" line "$1" "$2" > "$T/line.txt" 2>&1 && cmp -s - "$T/line.txt" ||
+            { echo "the line of '$1': not broken as expected"; cat "$T/line.txt"; r=1; }
+    }
+    broken destination "/dev/mapper/ubuntu--vg-ubuntu--lv, ext4, mounted at /, 6.65 GiB free" <<'EOF'
+  destination  /dev/mapper/ubuntu--vg-ubuntu--lv, ext4, mounted at /,
+               6.65 GiB free
+EOF
+    broken header "headers/a-mapping-with-a-name-of-some-length-on-this-system.hdr, 16777216 bytes" <<'EOF'
+  header       headers/a-mapping-with-a-name-of-some-length-on-this-system.hdr,
+               16777216 bytes
+EOF
+    # a number in the last column stays with its unit, and one before the break is left alone
+    broken note "every pair of the 90 keys of the image was tried, which were 5108 attempts in 510 s" <<'EOF'
+  note         every pair of the 90 keys of the image was tried, which were
+               5108 attempts in 510 s
+EOF
+    # a line that 2.0-pre9 broke well is broken as before
+    broken headers "none: no file with a LUKS header is given and the dump itself holds none, so nothing can be proven here" <<'EOF'
+  headers      none: no file with a LUKS header is given and the dump itself
+               holds none, so nothing can be proven here
+EOF
+    # numbers alone: there is no other place, so the last space in the width is taken
+    broken note "1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 words" <<'EOF'
+  note         1234567890 1234567890 1234567890 1234567890 1234567890 1234567890
+               1234567890 words
+EOF
+    # a last word that fits no line with the one before it stands alone, as long as it is
+    broken image "the image of the memory was written into the folder of this run, as /a/path/that/is/longer/than/a/line/of/the/screen/can/hold/memory.lime" <<'EOF'
+  image        the image of the memory was written into the folder of this run,
+               as
+               /a/path/that/is/longer/than/a/line/of/the/screen/can/hold/memory.lime
+EOF
+    # a text that fits is one line, and spaces at its end are not printed
+    broken key "keys/dm_crypt-0.vk, 64 bytes  " <<'EOF'
+  key          keys/dm_crypt-0.vk, 64 bytes
+EOF
+    # 400 texts of words, numbers and paths, broken here by the rule as it is said and not as
+    # the program computes it: the same lines
+    python3 -I - "$u" <<'EOF' || r=1
+import random, subprocess, sys
+
+WIDTH, HANG = 80, 15
+def number(w):
+    return any(c.isdigit() for c in w) and all(c in "0123456789." for c in w)
+def before_no_number(words, k):                 # the most words up to K that do not end with a number
+    while k and number(words[k - 1]):
+        k -= 1
+    return k
+def lines(words):
+    out, room = [], WIDTH - HANG
+    while words:
+        if len(" ".join(words)) <= room:
+            out.append(words)
+            break
+        k = 0
+        while len(" ".join(words[:k + 1])) <= room:
+            k += 1
+        if k == 0:                              # a word that fits no line stands alone
+            k = 1
+        else:
+            j = before_no_number(words, k)
+            if j == 0:
+                j = k                           # numbers only: no other place
+            elif j == k and k == len(words) - 1:
+                p = before_no_number(words, k - 1)
+                if p and len(" ".join(words[p:])) <= room:
+                    j = p                       # the last word is not left alone
+            k = j
+        out.append(words[:k])
+        words = words[k:]
+    return out
+
+rnd = random.Random(20261126)
+plain = ["a", "of", "the", "key", "image", "schedules", "bytes", "GiB", "free", "s", "written,", "proven,",
+         "/proc/kcore,", "headers/name.hdr,", "0x10b695830", "sha256", "attempt", "in", "at", "mounted"]
+figures = ["1", "64", "510", "6.65", "16777216", "4274352352", "3.30"]
+long_word = "/a/path/that/is/longer/than/a/line/of/the/screen/can/hold/in/its/width/memory.lime"
+for n in range(400):
+    words = [rnd.choice(figures) if rnd.random() < 0.3 else long_word if rnd.random() < 0.03 else rnd.choice(plain)
+             for i in range(rnd.randint(1, 45))]
+    want = "".join(("  note         " if i == 0 else " " * HANG) + " ".join(l) + "\n" for i, l in enumerate(lines(words)))
+    got = subprocess.run([sys.argv[1], "line", "note", " ".join(words)], capture_output=True, text=True)
+    if got.returncode or got.stdout != want:
+        sys.exit("text %d is not broken by the rule:\n%s\nwanted:\n%s" % (n, got.stdout + got.stderr, want))
+EOF
+    return $r
+}
+for u in "${UNITS[@]}"; do
+    check "screen: ${u##*/} breaks a long line at a space, parts no number from its unit and leaves no word alone at the end" line_breaks "$u"
 done
 
 # ---- headers -------------------------------------------------------------------------------------

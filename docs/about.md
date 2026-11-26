@@ -104,7 +104,7 @@ A statement on these pages about a kernel, a cryptsetup release or a distributio
 
 Keep 1 is a shell script, `keytriage.sh`, on a tool medium with a static bash, busybox, the scanner and AVML. It uses the `dmsetup` and the `cryptsetup` of the examined system. Keep 2 is the one C program of these pages, which does the work of that medium and starts no program.
 
-Version 2.0 is not released. These pages describe `keep` 2.0-pre9. The script is in the repository beside it, and the pipeline runs both on the same volumes: the C program must write the same line of the report for every volume, and header backups and keys that are the same byte for byte.
+Version 2.0 is not released. These pages describe `keep` 2.0-pre10. The script is in the repository beside it, and the pipeline runs both on the same volumes: the C program must write the same line of the report for every volume, and header backups and keys that are the same byte for byte.
 
 ## The keys of these pages { #keys }
 

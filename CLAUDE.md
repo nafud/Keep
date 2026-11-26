@@ -404,9 +404,12 @@ sudo ./keep -m [-f FORMAT | -F]         # the keys, then a memory image: lime (d
   label of at most 11 characters and its value from column 16. A line that the program puts
   together has at most 80 columns: a longer text goes on in the next line below its value,
   and only a word that is longer, as a path or a name of the examined system can be, makes
-  a line longer. A block is printed while its work is done, so its last line is the verdict,
-  and the block `result` at the end names every verdict once more, with the first 16 digits
-  of the SHA-256 of each key that is held. `triage.txt` holds the same lines.
+  a line longer. A line is broken at a space, and not at every one: a number is not parted
+  from the word behind it, which is its unit, and the last line does not hold one word
+  alone where the word before it can go with it. A block is printed while its work is
+  done, so its last line is the verdict, and the block `result` at the end names every
+  verdict once more, with the first 16 digits of the SHA-256 of each key that is held.
+  `triage.txt` holds the same lines.
 - On a terminal the titles are bold, the labels cyan, and the word that says how far a key
   or an image is has the look of its tone:
   - green for what is reached: `captured and proven`, `proven`, an image `captured`;
@@ -691,6 +694,12 @@ Read in Linux 4.18, 5.10, 6.12 and 6.18, cryptsetup 2.0.6, 2.3.7, 2.7.0 and 2.8.
 - It asks cryptsetup nothing and takes none of its locks. `cryptsetup status` waited without
   end on a volume whose re-encryption was paused in a step, and the C program read the same
   volume. A header that cryptsetup writes at that moment is read from the copy that holds.
+- The header is read through the page cache of the device (`find_header` in `triage.c` opens
+  the device without `O_DIRECT`), where cryptsetup reads past the cache. So after a key
+  run the cache of the device holds what the backup holds, 16777216 bytes for the LUKS2
+  headers of the installed guests, and an image that is taken afterwards holds the
+  metadata of the header whatever the machine held of them before. The search of a dump
+  reads the dump and its `FILE`s through the page cache as well.
 - The search of a dump proves against header backups, raw images and devices. The disk file
   of a virtual machine and an EnCase image are read by `vkverify.py` only, and so is a header
   whose digest uses a function that `hash.c` does not compute.
@@ -758,6 +767,12 @@ One thing was found by a run by hand on a machine (see below) and is no defect o
 program gave. The search of a dump spent 510 s on a digest without a key before it proved
 the key of the header behind it: since 2.0-pre7 every header has the attempts that cost
 little first, with a case of `unit-check.sh`.
+
+The runs by hand on installed guests showed two lines of the screen that were broken
+badly, and nothing wrong in what the program gave: `16777216` at the end of a line with
+`bytes` below it, and `6.65 GiB` with `free` below it. Since 2.0-pre10 a line is broken by
+the rule above. `unit-check.sh` has both lines as cases and compares 400 texts with the
+rule as it is written there in Python.
 
 One defect of `keytriage.sh` was found on the way: it stated no key size for a LUKS2 volume
 with integrity. It is corrected in 1.5.1, with its check in `selftest.sh`.
@@ -973,6 +988,8 @@ image of its own:
     writes to ext4 in 6 s, with the `System.map` of `/boot`. `/proc/kcore` offered all of
     the RAM. The installer gives the root file system half of the volume group, so the
     destination had 6.65 GiB free at the start, which the two images nearly used up.
+    Of the 1043544 pages of that image the cache held none, counted in the same way as
+    for the file of AVML, after the search of a dump and a second run of AVML.
 
 ### Not handled or not checked
 
@@ -1028,7 +1045,9 @@ image of its own:
   opened at boot. On the three with RHEL the daemon of udisks2 was not running, and the
   page cache held the block of the metadata. These are guests, minutes after their start: how long
   such a block stays in the cache of a machine in use is not known, and what reads it at
-  boot neither.
+  boot neither. On RHEL 10.3 and Ubuntu Server a key run had read the header through the
+  cache before AVML took its image, so there it is the count of the cache before any tool
+  that says what the machine held by itself, and not the image.
   Not known either is what a machine holds of metadata with several keyslots or tokens,
   where the object `digests` can lie across two pages that do not follow each other in
   memory.
@@ -1182,6 +1201,10 @@ with `TERM=dumb` what a pipe gets. Through a pipe it must hold no escape byte an
 carriage return, `triage.txt` must be the lines of the screen, no line may have more than
 80 columns without a word that needs them, a long text must go on below its value, and a
 control character in the name of a file must be a space on the screen and in the report.
+`keep-unit line` prints one line as the screen of a run does: two lines that a run by hand
+showed, a number at the end of a line and a last word that fits no line with the one
+before it must be broken as the check has them written out, and 400 texts of words,
+numbers and paths as the rule breaks them, which the check has in Python.
 The parts that read the system
 are given mount tables, a tree like `/sys` with logical volumes on a volume, a lockdown file, a
 SecureBoot variable and an os-release written there.

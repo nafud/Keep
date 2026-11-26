@@ -17,7 +17,7 @@ sudo ./keep -d /media/evidence
 
 The screen is a card of facts: the system, then a block for each volume that ends with its verdict, then every verdict once more. An example with `-m`, with illustrative values:
 
-<div class="highlight keep-screen"><pre><code><b>keep 2.0-pre9 (2026-11)</b>
+<div class="highlight keep-screen"><pre><code><b>keep 2.0-pre10 (2026-11)</b>
 
   <i>host</i>         ws01
   <i>system</i>       Linux Mint 22.3
@@ -115,7 +115,7 @@ sudo ./keep -m -d /media/evidence
 
 A run on a test image of 64 MiB and a container that was made for it, with the paths shortened:
 
-<div class="highlight keep-screen"><pre><code><b>keep 2.0-pre9 (2026-11)</b>
+<div class="highlight keep-screen"><pre><code><b>keep 2.0-pre10 (2026-11)</b>
 
   <i>dump</i>         /case/memory.lime
   <i>started</i>      2026-11-25T18:07:05Z

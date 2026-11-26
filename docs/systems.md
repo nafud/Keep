@@ -6,7 +6,7 @@ A card names the kernel and the cryptsetup of the latest run it stands for, and 
 
 ## Checked in the pipeline { #pipeline }
 
-The pipeline on GitHub boots each of these ten systems as a guest from the distribution's own cloud image, pinned by its published checksum, and runs `tests/compat-check.sh` in it with `keep` 2.0-pre9. The check makes volumes from keys it has just drawn: LUKS2 with the key in the kernel keyring, LUKS1 with the key in the table, a mapping without a type, one with the null cipher, LVM on LUKS, LUKS2 with integrity and a volume in re-encryption. Keep must give the right verdict for each and keys that are the known ones byte for byte. It then takes the memory of the guest in each format, and the search of that image must prove both volume keys again.
+The pipeline on GitHub boots each of these ten systems as a guest from the distribution's own cloud image, pinned by its published checksum, and runs `tests/compat-check.sh` in it with `keep` 2.0-pre10. The check makes volumes from keys it has just drawn: LUKS2 with the key in the kernel keyring, LUKS1 with the key in the table, a mapping without a type, one with the null cipher, LVM on LUKS, LUKS2 with integrity and a volume in re-encryption. Keep must give the right verdict for each and keys that are the known ones byte for byte. It then takes the memory of the guest in each format, and the search of that image must prove both volume keys again.
 
 The guests have 2 GiB of memory and boot with BIOS under KVM, so kernel lockdown is `none` on all of them.
 
