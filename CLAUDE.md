@@ -1754,6 +1754,18 @@ from each the disk byte for byte and prove both keys.
   run for every commit: who releases reads its last run.
 - The artifact of `build` is the record of what a commit builds, kept for 30 days. A release
   of a commit whose artifact is gone needs a new run of `checks.yml` first.
+- Release 2.0 is the tag `v2.0` at commit `9d8f734`, published on 2026-11-26 by the first run
+  of `release.yml`, after `checks.yml` had passed for that commit and `distros.yml` for the
+  commit before it, which has the same program. Its `keep` has 326256 bytes and the SHA-256
+  `5cc732729ca0b1ca1a68a343231ef112b564bf19fb35005d679a070dc40f9167`. The three files were
+  then fetched from the release as the installation page says: `sha256sum -c keep.sha256`
+  accepted the file, the file was byte for byte a build of the tag on another machine, it
+  named its version and refused a wrong option with status 2, and `musl-copyright.txt` was
+  the `copyright` file of `musl-dev` 1.2.4-2. The pages of that commit were published by
+  `pages.yml`. They could not be fetched from where the release was checked, so the page
+  that names the release was read as it is built and not as it is served.
+- Keep has no licence file of its own yet. The release states the terms of musl and none
+  for Keep.
 - Actions are pinned by commit hash with the release in a comment. `dependabot.yml` proposes
   their updates.
 - `pages.yml` builds the pages with `mkdocs build --strict` and publishes `site/`, from `main`
