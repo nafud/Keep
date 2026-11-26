@@ -16,7 +16,8 @@
 #              with one byte changed at a time, against Python's json module
 #   scanner    the search of memory with the sanitizers, on a fixture with the schedules of
 #              known keys in its four formats, cut short and damaged: the same schedules,
-#              messages and status as the scanner gives that is built as the program links it
+#              messages and status as the scanner gives that is built as the program links it.
+#              A search that the program ends before its end gives the schedules up to there
 #   options    the command line of "keep", with both builds of the program: a wrong option, an
 #              option without its value, a command of an earlier version and options that do
 #              not go together end with status 2 and the usage, -h names every option, and
@@ -55,7 +56,9 @@
 #              offer, memory that the core offers twice, a range that reaches beyond its
 #              segment, a stretch that cannot be read and a file that cannot be written. What
 #              cannot be placed is refused, and cores with changed bytes give no fault. The
-#              image of the fixture of the scanner gives the schedules of that fixture
+#              image of the fixture of the scanner gives the schedules of that fixture. A
+#              read that is ended before the end of the memory leaves files that are whole
+#              as far as they go
 #   system     the mount that holds a path, what a volume carries by a tree like /sys with
 #              logical volumes on it, the file systems that encrypt by themselves, the
 #              lockdown mode, the variable SecureBoot, the name of the system and the names of
@@ -78,6 +81,10 @@
 #              LUKS2 header inside other bytes, as the memory of a machine can, must give
 #              both keys with no file at all, each copy once, and not for a header that is
 #              among the files
+#   a run      that is disturbed or asked to end: its screen goes away and its terminal hangs
+#              up, its shell has a limit of the size of a file, and it is sent SIGINT and
+#              SIGTERM while it makes its attempts. It must come to its end, with its
+#              report, its manifest and its status
 #
 # It needs neither root nor device-mapper, and writes only below a temporary directory, which
 # is removed at the end. The test keys are drawn from /dev/urandom there and are never printed.

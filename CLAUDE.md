@@ -975,17 +975,20 @@ report and no manifest.
 
 ### Where it has run
 
-`keep` 2.0-pre9 is run beside `keytriage.sh` 1.5.1 by `compat-check.sh`: before any mapping is
-made, on the four mappings of the main run, with `-d` and a destination on FAT, on LVM on LUKS and on
-LUKS2 with integrity, and alone on a volume in re-encryption. Beside `keytriage.sh` it gave the
+Up to 2.0-pre12 `keep` was run beside `keytriage.sh` 1.5.1 by `compat-check.sh`: before any
+mapping is made, on the four mappings of the main run, with `-d` and a destination on FAT, on
+LVM on LUKS and on LUKS2 with integrity, and alone on a volume in re-encryption. What follows
+in this section up to the runs with 2.0-rc1 is from those runs. Beside `keytriage.sh` it gave the
 same line of `verdict.json` for every volume, on the table route, the memory route, a mapping
 without a type and the null cipher, and header backups and keys that are the same byte for
 byte. On the volume in re-encryption it proved both keys, from memory and from the table, each
 for its part. It took the memory image of each system, and the schedules of both volume keys
 lay in every image at an address at which they lay in the image that AVML had taken. Searched
 as a dump that exists, the first image of each run gave both volume keys, proven against the
-headers in the images of the two containers. The output of each of these runs was read line
-by line:
+headers in the images of the two containers. With 2.0-pre12, the last version that was run
+beside the script, this held on the ten guests and on both runner images. The output of each
+run with 2.0-pre9 was read line by line, of the runs with 2.0-pre11 that of Fedora 45, and of
+the runs with 2.0-pre12 those of AlmaLinux 9.9 and of the two runner images:
 
 | System | Kernel | cryptsetup | Where |
 |---|---|---|---|
@@ -1001,7 +1004,8 @@ by line:
 | Arch Linux | 7.3.4-arch1-2 | 2.8.9 | `distros.yml` |
 | Ubuntu 24.04.5, runner image | 7.0.0-1014-aws | 2.7.0 | `checks.yml`, also the build with the sanitizers |
 | Ubuntu 24.04.5, runner image | 7.0.0-1017-azure | 2.7.0 | `checks.yml`, with 2.0-pre5 and in part with 2.0-pre7, also the build with the sanitizers |
-| Ubuntu 22.04.5, runner image | 6.8.0-1070-azure | 2.4.3 | `checks.yml`, up to 2.0-pre8, also the build with the sanitizers |
+| Ubuntu 24.04.5, runner image | 7.0.0-1020-azure | 2.7.0 | `checks.yml`, with 2.0-pre12, also the build with the sanitizers |
+| Ubuntu 22.04.5, runner image | 6.8.0-1070-azure | 2.4.3 | `checks.yml`, up to 2.0-pre8 and with 2.0-pre12, also the build with the sanitizers |
 | Ubuntu 22.04.5, runner image | 6.8.0-1073-azure | 2.4.3 | `checks.yml`, also the build with the sanitizers |
 
 On openSUSE Leap 16.1 cryptsetup could not make the container with integrity: the kernel
@@ -1056,6 +1060,17 @@ The memory image in these runs:
   line of more than 80 columns without a word that needs them. These screens went to
   files: what a terminal is given was looked at by `unit-check.sh` alone (see "Not handled
   or not checked").
+- With 2.0-pre11 and 2.0-pre12, which read a header past the page cache of its device and
+  write its copy past it, no page of a device with a header and none of a copy lay in the
+  cache after a run beside the script, on the ten guests and both runners. On AlmaLinux 9.9
+  and on the runners these were 37369 pages in the main run, 107001 in the run on LVM and
+  49657 in the run with integrity, and on FAT 505 pages of the copy of the LUKS1 header and
+  4096 of that of the LUKS2 header.
+- With 2.0-pre12 on the runners: the LiME image of 17174331584 bytes was read in 112 s, and
+  the image of AVML of that machine held 57 blocks of 16 MiB less. On the other runner the
+  raw image of 20401094656 bytes was read in 44 s and the compressed image of 13313681345
+  bytes in 49 s. It held 17123999744 bytes of memory, and the compressed image of AVML
+  15647604736, 88 blocks less, in 13702809426 bytes.
 
 The tables of both kinds of volume were first seen on a guest emulated on the workstation
 (Ubuntu 24.04.5, kernel 6.8.0-147-generic, cryptsetup 2.7.0), and `compat-check.sh` passed

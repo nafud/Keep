@@ -277,8 +277,8 @@ static ssize_t read_some(int fd, void *p, size_t n, uint64_t off)
 
 /*
  * Read LEN bytes of the file from offset OFF. PHYS and VIRT are the addresses of the first byte.
- * Returns 0, or 1 where the file ends before them or the search is ended (halted), with the
- * offset of that place in *ENDED: the bytes up to there are searched.
+ * Returns 0, or 1 where the file ends before them and 2 where the search is ended (halted),
+ * with the offset of that place in *ENDED: the bytes up to there are searched.
  *
  * A stretch that cannot be read counts as zeros. A read that fails says nothing about the pages
  * before the one it failed at (read_kcore_iter of the kernel returns the error alone), so its
@@ -296,7 +296,7 @@ static int scan(int fd, uint64_t off, uint64_t len, uint64_t phys, uint64_t virt
     while (done < len) {
         if (halted()) {
             *ended = off + done;
-            return 1;
+            return 2;
         }
         want = len - done < CHUNK ? (size_t)(len - done) : CHUNK;
         n = read_some(fd, buf + have, want, off + done);
@@ -545,7 +545,7 @@ int keyscan_run(const char *path, int raw, unsigned every, FILE *keys, FILE *msg
     const char *why = NULL;
     uint64_t stopped = 0;
     ssize_t headlen;
-    int fd, i, j, nseg = 0, n128 = 0, n256 = 0, u128 = 0, u256 = 0, status = 1, unwritten;
+    int fd, i, j, nseg = 0, n128 = 0, n256 = 0, u128 = 0, u256 = 0, status = 1, unwritten, cut;
 
     keys_out = keys; msg_out = msg; step = every;
     nhit = dropped = 0; nbytes = nfail = nbadcrc = 0; have = 0;
@@ -588,7 +588,7 @@ int keyscan_run(const char *path, int raw, unsigned every, FILE *keys, FILE *msg
 
     if (raw) {
         format = "raw";
-        if (scan(fd, 0, file_size, 0, NONE, &stopped) && halted())
+        if (scan(fd, 0, file_size, 0, NONE, &stopped) == 2)
             why = HALTED;
         nseg = 1;
     } else if (!memcmp(head, ELFMAG, SELFMAG) && head[EI_CLASS] == ELFCLASS64 && head[EI_DATA] == ELFDATA2LSB) {
@@ -609,9 +609,9 @@ int keyscan_run(const char *path, int raw, unsigned every, FILE *keys, FILE *msg
             if (ph.p_type != PT_LOAD || !ph.p_filesz || ph.p_paddr == NONE)
                 continue;
             /* an image taken from outside the guest has no kernel addresses: 0 or the physical one */
-            if (scan(fd, ph.p_offset, ph.p_filesz, ph.p_paddr,
-                     ph.p_vaddr && ph.p_vaddr != ph.p_paddr ? ph.p_vaddr : NONE, &stopped)) {
-                why = halted() ? HALTED : "the file ends inside a segment";
+            if ((cut = scan(fd, ph.p_offset, ph.p_filesz, ph.p_paddr,
+                            ph.p_vaddr && ph.p_vaddr != ph.p_paddr ? ph.p_vaddr : NONE, &stopped))) {
+                why = cut == 2 ? HALTED : "the file ends inside a segment";
                 break;
             }
             nseg++;
@@ -636,8 +636,8 @@ int keyscan_run(const char *path, int raw, unsigned every, FILE *keys, FILE *msg
                 off += 32 + used;
                 packed_ranges++;
             } else {
-                if (scan(fd, off + 32, e - s + 1, s, NONE, &stopped)) {
-                    why = halted() ? HALTED : "the file ends inside a range";
+                if ((cut = scan(fd, off + 32, e - s + 1, s, NONE, &stopped))) {
+                    why = cut == 2 ? HALTED : "the file ends inside a range";
                     break;
                 }
                 off += 32 + (e - s + 1);
@@ -648,7 +648,7 @@ int keyscan_run(const char *path, int raw, unsigned every, FILE *keys, FILE *msg
         format = packed_ranges ? "AVML compressed" : "LiME";
     } else {
         format = "raw";
-        if (scan(fd, 0, file_size, 0, NONE, &stopped) && halted())
+        if (scan(fd, 0, file_size, 0, NONE, &stopped) == 2)
             why = HALTED;
         nseg = 1;
     }
