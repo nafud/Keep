@@ -1071,12 +1071,11 @@ int dump_run(const struct dump_options *o)
         return status ? status : 1;
     }
     if (r->line_lost) {
-        fprintf(stderr, "keep: a line of the report could not be put together for lack of memory, triage.txt is not whole\n");
+        fprintf(stderr, "keep: a line of triage.txt was lost for lack of memory, so it is not whole\n");
         return status ? status : 1;
     }
     if (cut) {
-        fprintf(stderr, "keep: the run was ended by a signal. What it did not do is named in its report, and every file "
-                "of it is flushed to the destination\n");
+        fprintf(stderr, "keep: the run was ended by a signal, and its report says what it did not do\n");
         return status ? status : 1;
     }
     run_tell(r, "keep: every file of this run is flushed to the destination");

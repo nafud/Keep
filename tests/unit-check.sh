@@ -311,6 +311,25 @@ EOF
     return $r
 }
 
+# The last line of a run, which says how it ended, goes to the screen like any other and is no
+# line of the report, so the rule of 80 columns is looked at in the source: 2.0-rc1 had one
+# of 139 columns for a run that a signal ended, which the check on real device-mapper found.
+last_lines() {
+    python3 -I - src/*.c <<'EOF'
+import re, sys
+bad = 0
+for path in sys.argv[1:]:
+    text = open(path).read()
+    # a message can be put together from several string literals that follow each other
+    for m in re.finditer(r'"keep: (?:[^"\\]|\\.)*"(?:\s*"(?:[^"\\]|\\.)*")*', text):
+        line = "".join(re.findall(r'"((?:[^"\\]|\\.)*)"', m.group(0))).replace("\\n", "")
+        if len(line) > 80 and "%" not in line:
+            bad += 1; print("%s: %d columns: %s" % (path, len(line), line))
+sys.exit(1 if bad else 0)
+EOF
+}
+check "screen: no last line of a run in the source has more than 80 columns" last_lines
+
 # ---- options -------------------------------------------------------------------------------------
 # "keep" takes what a run does as options and asks nothing. The search of a dump needs no root.
 # start PROGRAM [ARGUMENT...] : one start in $T/opt, with the umask of an ordinary shell and no

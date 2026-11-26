@@ -266,7 +266,11 @@ examine() {
     local dest=$1 label=$2 rc ok=1 f n devs pages=0
     # keep reads a header past the page cache and writes its copy past it. So the cache of
     # each device with a header is let go before the run, and after it, before anything else
-    # reads them, no page of such a device and none of a copy may lie there.
+    # reads them, no page of such a device and none of a copy may lie there. A device that is
+    # new is read by the system itself, which looks at what it holds (udev), through the
+    # cache: the system is given time to end that first. On Arch Linux, where it was not, 22
+    # pages of a container that had just been opened lay in the cache after the run.
+    if command -v udevadm > /dev/null; then udevadm settle 2> /dev/null; fi
     devs=$(for n in $(crypts); do cryptsetup status "$n" 2> /dev/null | awk '$1 == "type:" && $2 ~ /^LUKS/ {l = 1} l && $1 == "device:" {print $2}'; done | sort -u)
     for f in $devs; do "$UNIT" forget "$f" || ok=0; done
     ( cd "$dest" && "$KEEP" ) > "$dest/screen.txt" 2>&1; rc=$?
