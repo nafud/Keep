@@ -922,7 +922,7 @@ is corrected in 2.0-pre11 and 2.0-pre12, each with its check:
 - The scanner took a LiME image or an ELF core that was cut for one that it had read to its
   end, with status 0, and searched a range of 2^62 bytes without end (see `kcore-keyscan`).
   It gave no status for a list of the schedules that could not be written, which
-  `keytriage.sh` relies on. Of a read that failed it took the first 4096 bytes for
+  `keytriage.sh` relied on. Of a read that failed it took the first 4096 bytes for
   unreadable, also where the page that failed lay behind them: with one such page late in a
   read of 1 MiB, the schedules before it in that read were not found. It is 1.3 now.
 - A text file was read into memory of its largest size, whatever its own: 8 MiB for a mount
@@ -964,6 +964,10 @@ is corrected in 2.0-pre11 and 2.0-pre12, each with its check:
 
 One defect of `keytriage.sh` was found on the way: it stated no key size for a LUKS2 volume
 with integrity. It was corrected in 1.5.1.
+
+The check on real device-mapper found one more defect, of 2.0-rc1 before it was on `main`:
+the last line of a run that a signal had ended had 139 columns. `unit-check.sh` now looks at
+every such line in the source.
 
 With 2.0-rc1 the script and its medium were removed, and with them what was there for them
 alone. The check on real device-mapper, which had held `keep` against the script, holds it
@@ -1071,6 +1075,54 @@ The memory image in these runs:
   raw image of 20401094656 bytes was read in 44 s and the compressed image of 13313681345
   bytes in 49 s. It held 17123999744 bytes of memory, and the compressed image of AVML
   15647604736, 88 blocks less, in 13702809426 bytes.
+
+With 2.0-rc1 `compat-check.sh` holds `keep` against the tools of the system itself (see
+"Checks before a commit"), and no script runs beside it. On the ten guests, with cryptsetup
+2.6.1 to 2.8.9:
+
+- In the main run the 4 volumes were those of `dmsetup ls --target crypt`, each with the type,
+  the key size, the key location and the device of `cryptsetup status` and the cipher of its
+  table, the 4 tables in `log/` were what `dmsetup` prints, the 2 header backups were the files
+  of `cryptsetup luksHeaderBackup` byte for byte, cryptsetup accepted the 2 keys of the LUKS
+  volumes for their headers, and the 2 keys of the table were what `dmsetup table --showkeys`
+  shows. With LVM on LUKS these were 5 volumes, 5 tables, 3 header backups, 3 keys that
+  cryptsetup accepted and 2 keys of the table, and with integrity 5, 5, 3, 2 and 3. No page
+  of a device with a header or of a copy lay in the page cache after a run: 37369, 107001
+  and 49657 pages.
+- Sent `SIGTERM` while it searched the memory, `keep` ended the search, kept the keys of the
+  table and wrote its report and its manifest, on every guest. Sent it while it read an
+  image, it kept the part and named it as interrupted: the first 17424384 or 34201600 of
+  2146938880 bytes of the memory, which is the first range and one or two blocks of 16 MiB of
+  the second, in a file of 64 bytes more, the two headers. The scanner named such a file as
+  one that ends inside a range.
+- The LiME image of AVML held all 2146938880 bytes of the memory on seven guests, one block
+  of 16 MiB less on two and ten blocks less on one. That of `keep` has 2146938944 bytes on
+  every guest. Its compressed image had 853483619 to 1032725436 bytes, 40 % to 48 % of the
+  memory, and 973572358 to 1425672055 bytes where it was one of three from one read. In the
+  runs beside the script, where an image of AVML had been written and read through the page
+  cache before, it had 55 % to 68 %. One image was read in 2 to 12 seconds and all three in
+  14 to 35.
+- The first run of the new check found two things, on the commit before. On all ten guests
+  the last line of a run that a signal had ended had 139 columns, which the look at the
+  screens named. On Arch Linux 22 of 16384 pages of the container that had just been opened
+  lay in the page cache after the main run, and none on the nine others: the check had let
+  the cache of the device go while the system still looked at the new device, which it does
+  through the cache. With the script beside it, the run of the script had taken that time.
+  The check now waits for udev first, and the run after that had none on all ten.
+- The outputs of AlmaLinux 9.9 and of Arch Linux were read line by line. Of the eight others
+  the lines of each kind were counted: 23 `PASS` and no other on seven, and on openSUSE Leap
+  16.1 21 `PASS` and the one `SKIP` of the part with integrity.
+- On the two runner images, with cryptsetup 2.4.3 and 2.7.0 and with the build with the
+  sanitizers at the same places, the same held, with the same numbers of volumes, tables,
+  header backups, keys and pages. The LiME image of 17174331584 bytes was read in 101 s, and
+  the image of AVML of that machine held 58 blocks of 16 MiB less. On the other runner the
+  raw image of 20401094656 bytes was read in 44 s and the compressed image of 13378372395
+  bytes, 78 % of its 17107222528 bytes of memory, in 46 s. The compressed image of AVML
+  held 84 blocks less. An image whose read was ended held the first 17428480 and 34205696
+  of 17174331392 bytes. Both outputs were read line by line.
+- This is the pipeline of commit `07f9d57`: `distros.yml` on the ten guests, and `checks.yml`
+  with the self-test, the unit checks with AVML, the pages, the build and the two runner
+  images.
 
 The tables of both kinds of volume were first seen on a guest emulated on the workstation
 (Ubuntu 24.04.5, kernel 6.8.0-147-generic, cryptsetup 2.7.0), and `compat-check.sh` passed
@@ -1718,50 +1770,46 @@ from each the disk byte for byte and prove both keys.
 
 ## Systems checked
 
-`compat-check.sh` passed on these x86-64 systems, each with a memory image. A row names the
-kernel and the cryptsetup of the latest run it stands for, and the XTS driver that the kernel
-chose in that run. The driver follows the processor of the machine behind the runner, which a
-guest under KVM sees as its own: the guests of Debian 13, AlmaLinux 10.3, Rocky Linux 10.3 and
-openSUSE Leap 16.1 each used `xts-aes-vaes-avx2` in one run and `xts-aes-vaes-avx10_512` in
-others, and those of Fedora 45 and Arch Linux `xts-aes-vaes-avx512` in one run and
-`xts-aes-vaes-avx2` in another. The first ten are guests that
-`distros.yml` boots from the cloud images of `tests/compat-images.txt`, under KVM with BIOS boot,
-so lockdown is `none` on all of them. The next three are the runner images of `checks.yml`. The
-machine behind a runner image differs from run to run and with it the kernel. The outputs are
-kept as artifacts of the pipeline.
+`compat-check.sh` passed with `keep` 2.0-rc1 on these x86-64 systems, each with memory images.
+A row names the kernel and the cryptsetup of the latest run it stands for, and the XTS driver
+that the kernel chose in that run. The driver follows the processor of the machine behind the
+runner, which a guest under KVM sees as its own: the guests of Debian 13, AlmaLinux 10.3,
+Rocky Linux 10.3 and openSUSE Leap 16.1 each used `xts-aes-vaes-avx2` in one run and
+`xts-aes-vaes-avx10_512` in others, and those of Fedora 45 and Arch Linux
+`xts-aes-vaes-avx512` in some runs and `xts-aes-vaes-avx2` in another. The first ten are guests
+that `distros.yml` boots from the cloud images of `tests/compat-images.txt`, under KVM with BIOS
+boot, so lockdown is `none` on all of them. The last two are the runner images of
+`checks.yml`. The machine behind a runner image differs from run to run and with it the
+kernel. The outputs are kept as artifacts of the pipeline.
 
-| System | Kernel | cryptsetup | Key option | XTS driver | `keytriage.sh` |
+| System | Kernel | cryptsetup | Key option | XTS driver | `keep` |
 |---|---|---|---|---|---|
-| Debian 13 | 6.12.117+deb13-amd64 | 2.7.5 | `--volume-key-file` | `xts-aes-vaes-avx10_512` | 1.5.1 |
-| Debian 12 | 6.1.0-56-amd64 | 2.6.1 | `--volume-key-file` | `xts-aes-aesni` | 1.5.1 |
-| Ubuntu 26.04.1 | 7.0.0-43-generic | 2.8.4 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.5.1 |
-| Ubuntu 24.04.5 | 6.8.0-147-generic | 2.7.0 | `--volume-key-file` | `xts-aes-aesni` | 1.5.1 |
-| Fedora 45 | 7.2.11-300.fc45.x86_64 | 2.8.8 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.5.1 |
-| AlmaLinux 10.3 | 6.12.0-264.16.1.el10_3.x86_64 | 2.8.6 | `--volume-key-file` | `xts-aes-vaes-avx10_512` | 1.5.1 |
-| AlmaLinux 9.9 | 5.14.0-741.22.1.el9_9.x86_64 | 2.8.6 | `--volume-key-file` | `xts-aes-aesni` | 1.5.1 |
-| Rocky Linux 10.3 | 6.12.0-264.16.1.el10_3.x86_64 | 2.8.6 | `--volume-key-file` | `xts-aes-vaes-avx10_512` | 1.5.1 |
-| openSUSE Leap 16.1, Build3.23 | 6.12.0-160100.9-default | 2.8.4 | `--volume-key-file` | `xts-aes-vaes-avx2` | 1.5.1 |
-| Arch Linux, image of 2026-11-15 | 7.3.4-arch1-2 | 2.8.9 | `--volume-key-file` | `xts-aes-vaes-avx2` | 1.5.1 |
-| Ubuntu 24.04.5, runner image | 7.0.0-1014-aws | 2.7.0 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.5.1 |
-| Ubuntu 24.04.5, runner image | 7.0.0-1017-azure | 2.7.0 | `--volume-key-file` | `xts-aes-vaes-avx512` | 1.5.1 |
-| Ubuntu 22.04.5, runner image | 6.8.0-1073-azure | 2.4.3 | `--master-key-file` | `xts-aes-aesni` | 1.5.1 |
+| Debian 13 | 6.12.117+deb13-amd64 | 2.7.5 | `--volume-key-file` | `xts-aes-vaes-avx10_512` | 2.0-rc1 |
+| Debian 12 | 6.1.0-56-amd64 | 2.6.1 | `--volume-key-file` | `xts-aes-aesni` | 2.0-rc1 |
+| Ubuntu 26.04.1 | 7.0.0-43-generic | 2.8.4 | `--volume-key-file` | `xts-aes-vaes-avx512` | 2.0-rc1 |
+| Ubuntu 24.04.5 | 6.8.0-147-generic | 2.7.0 | `--volume-key-file` | `xts-aes-aesni` | 2.0-rc1 |
+| Fedora 45 | 7.2.11-300.fc45.x86_64 | 2.8.9 | `--volume-key-file` | `xts-aes-vaes-avx512` | 2.0-rc1 |
+| AlmaLinux 10.3 | 6.12.0-264.16.1.el10_3.x86_64 | 2.8.6 | `--volume-key-file` | `xts-aes-vaes-avx10_512` | 2.0-rc1 |
+| AlmaLinux 9.9 | 5.14.0-741.22.1.el9_9.x86_64 | 2.8.6 | `--volume-key-file` | `xts-aes-aesni` | 2.0-rc1 |
+| Rocky Linux 10.3 | 6.12.0-264.16.1.el10_3.x86_64 | 2.8.6 | `--volume-key-file` | `xts-aes-vaes-avx10_512` | 2.0-rc1 |
+| openSUSE Leap 16.1, Build3.23 | 6.12.0-160100.9-default | 2.8.4 | `--volume-key-file` | `xts-aes-vaes-avx10_512` | 2.0-rc1, without the part with integrity |
+| Arch Linux, image of 2026-11-15 | 7.3.4-arch1-2 | 2.8.9 | `--volume-key-file` | `xts-aes-vaes-avx512` | 2.0-rc1 |
+| Ubuntu 24.04.5, runner image | 7.0.0-1020-azure | 2.7.0 | `--volume-key-file` | `xts-aes-vaes-avx2` | 2.0-rc1, also the build with the sanitizers |
+| Ubuntu 22.04.5, runner image | 6.8.0-1073-azure | 2.4.3 | `--master-key-file` | `xts-aes-aesni` | 2.0-rc1, also the build with the sanitizers |
+
+The key option is the one that the check gives `cryptsetup open --test-passphrase`, which
+holds the proof of `keep` against cryptsetup. `keep` itself uses no cryptsetup.
 
 On every one of the ten guests the on-scene pairing of the XTS halves found the key, with each of
 the four XTS drivers that the runs met: `xts-aes-aesni`, `xts-aes-vaes-avx2`,
 `xts-aes-vaes-avx512` and `xts-aes-vaes-avx10_512`. Debian keeps a placeholder as
 `System.map`, and the Arch image has none, so no symbol table is kept beside the image there.
 
-Three further systems were checked on guests with a version before 1.3, with outputs that are not
-kept: Ubuntu Server 26.04.1 under kernel lockdown `integrity` (kernel 7.0.0-44-generic,
-cryptsetup 2.8.4), Ubuntu 22.04.5 with kernel 5.15 and cryptsetup 2.4.3, and Debian 11 with
-kernel 5.10 and cryptsetup 2.3.7.
-
 Linux Mint has no cloud image and is not in the list: `compat-check.sh` has not run there.
 `keep` was run by hand on Linux Mint 22.3 and on guests installed from Red Hat
 Enterprise Linux 8.10, 9.9 and 10.3 and from Ubuntu Server 26.04.1, under Secure Boot (see
-"Where it has run"). openSUSE
-Tumbleweed has no dated build to pin and is not checked. `compat-check.sh` has run on no
-system with Secure Boot on, where lockdown is `integrity`, with a version from 1.3 on.
+"Where it has run"). openSUSE Tumbleweed has no dated build to pin and is not checked.
+`compat-check.sh` has run on no system with Secure Boot on, where lockdown is `integrity`.
 
 ## Known limits
 

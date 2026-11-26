@@ -49,7 +49,7 @@ On three of those four, minimal installations of Red Hat Enterprise Linux 8.10, 
 
 ### The keys first, then the image { #order }
 
-An event can close the window of the keys within seconds. An image of the memory takes longer, 16 s for 16 GiB on one machine and up to 73 s on the machines of the pipeline. So the keys are taken first. A key counts as captured only when it is written to the destination and flushed, because the machine may lose power the moment the verdict is read.
+An event can close the window of the keys within seconds. An image of the memory takes longer, 16 s for 16 GiB on one machine and up to 112 s on the machines of the pipeline. So the keys are taken first. A key counts as captured only when it is written to the destination and flushed, because the machine may lose power the moment the verdict is read.
 
 ### An image that does not overwrite what it reads { #direct }
 

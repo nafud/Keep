@@ -6,7 +6,7 @@ A card names the kernel and the cryptsetup of the latest run it stands for, and 
 
 ## Checked in the pipeline { #pipeline }
 
-The pipeline on GitHub boots each of these ten systems as a guest from the distribution's own cloud image, pinned by its published checksum, and runs `tests/compat-check.sh` in it with `keep` 2.0-rc1. The check makes volumes from keys it has just drawn: LUKS2 with the key in the kernel keyring, LUKS1 with the key in the table, a mapping without a type, one with the null cipher, LVM on LUKS, LUKS2 with integrity and a volume in re-encryption. Keep must give the right verdict for each and keys that are the known ones byte for byte. It then takes the memory of the guest in each format, and the search of that image must prove both volume keys again.
+The pipeline on GitHub boots each of these ten systems as a guest from the distribution's own cloud image, pinned by its published checksum, and runs `tests/compat-check.sh` in it with `keep` 2.0-rc1. The check makes volumes from keys it has just drawn: LUKS2 with the key in the kernel keyring, LUKS1 with the key in the table, a mapping without a type, one with the null cipher, LVM on LUKS, LUKS2 with integrity and a volume in re-encryption. Keep must give the right verdict for each and keys that are the known ones byte for byte, and what it writes is held against the `cryptsetup` and the `dmsetup` of that system. It then takes the memory of the guest in each format, and the search of that image must prove both volume keys again.
 
 The guests have 2 GiB of memory and boot with BIOS under KVM, so kernel lockdown is `none` on all of them.
 
@@ -51,7 +51,7 @@ The guests have 2 GiB of memory and boot with BIOS under KVM, so kernel lockdown
 <span class="system-card-title">Fedora 45</span>
 <dl>
 <dt>kernel</dt><dd>7.2.11-300.fc45.x86_64</dd>
-<dt>cryptsetup</dt><dd>2.8.8</dd>
+<dt>cryptsetup</dt><dd>2.8.9</dd>
 <dt>xts driver</dt><dd><code>xts-aes-vaes-avx512</code></dd>
 <dt>symbols</dt><dd>System.map kept</dd>
 </dl>
@@ -90,7 +90,7 @@ The guests have 2 GiB of memory and boot with BIOS under KVM, so kernel lockdown
 <dl>
 <dt>kernel</dt><dd>6.12.0-160100.9-default</dd>
 <dt>cryptsetup</dt><dd>2.8.4</dd>
-<dt>xts driver</dt><dd><code>xts-aes-vaes-avx2</code></dd>
+<dt>xts driver</dt><dd><code>xts-aes-vaes-avx10_512</code></dd>
 <dt>symbols</dt><dd>System.map kept</dd>
 </dl>
 <p>Without the part with integrity: cryptsetup could not make the LUKS2 container with integrity there, because the kernel refused its table. LUKS2 with integrity is not checked on this system.</p>
@@ -100,7 +100,7 @@ The guests have 2 GiB of memory and boot with BIOS under KVM, so kernel lockdown
 <dl>
 <dt>kernel</dt><dd>7.3.4-arch1-2</dd>
 <dt>cryptsetup</dt><dd>2.8.9</dd>
-<dt>xts driver</dt><dd><code>xts-aes-vaes-avx2</code></dd>
+<dt>xts driver</dt><dd><code>xts-aes-vaes-avx512</code></dd>
 <dt>symbols</dt><dd>none: no System.map there</dd>
 </dl>
 <p>The cloud image of 2026-11-15.</p>
@@ -115,12 +115,12 @@ The same check runs on the two runner images of the pipeline itself, on every ch
 <div class="system-card">
 <span class="system-card-title">Ubuntu 24.04.5, runner image</span>
 <dl>
-<dt>kernel</dt><dd>7.0.0-1014-aws</dd>
+<dt>kernel</dt><dd>7.0.0-1020-azure</dd>
 <dt>cryptsetup</dt><dd>2.7.0</dd>
-<dt>xts driver</dt><dd><code>xts-aes-vaes-avx512</code></dd>
+<dt>xts driver</dt><dd><code>xts-aes-vaes-avx2</code></dd>
 <dt>memory</dt><dd>16 GiB</dd>
 </dl>
-<p>The raw image, 17951621120 bytes, was read in 73 s and the compressed one, 10117846686 bytes, in 50 s. The build with the sanitizers runs here too.</p>
+<p>The raw image, 20401094656 bytes, was read in 44 s and the compressed one, 13378372395 bytes, in 46 s. The build with the sanitizers runs here too.</p>
 </div>
 <div class="system-card">
 <span class="system-card-title">Ubuntu 22.04.5, runner image</span>
@@ -130,7 +130,7 @@ The same check runs on the two runner images of the pipeline itself, on every ch
 <dt>xts driver</dt><dd><code>xts-aes-aesni</code></dd>
 <dt>memory</dt><dd>16 GiB</dd>
 </dl>
-<p>The LiME image, 17174331584 bytes, was read in 42 s. The build with the sanitizers runs here too.</p>
+<p>The LiME image, 17174331584 bytes, was read in 101 s. The build with the sanitizers runs here too.</p>
 </div>
 </div>
 
