@@ -76,6 +76,7 @@ struct proof {                          /* the key of one digest of a header */
     char stem[NAME_MAX + 56], hash[17];
     size_t bytes;
     unsigned attempt;                   /* the attempt that gave it */
+    int unwritten;                      /* a key gives the digest, and its file could not be written */
     int has_places;                     /* it is a pair that lies as the XTS code keeps it */
     uint64_t tweak_at;
 };
@@ -299,9 +300,11 @@ static struct target *add_target(struct run *r, struct target **list, size_t *n,
  * The LUKS headers of one file. The start is read as a header whatever stands there, because a
  * LUKS2 header whose first copy is overwritten still has its second one. Behind it every
  * sector that begins with the magic of a first copy is tried, and counts where the header
- * holds as cryptsetup would have it. Returns the number of headers, or -1 without memory.
+ * holds as cryptsetup would have it. A read that fails ends the search of the file, which the
+ * run says and *unread notes: a header behind that place is not found. Returns the number of
+ * headers, or -1 without memory.
  */
-static int locate(struct run *r, const char *path, struct target **list, size_t *n)
+static int locate(struct run *r, const char *path, struct target **list, size_t *n, int *unread)
 {
     static const uint8_t magic[6] = { 'L', 'U', 'K', 'S', 0xba, 0xbe };
     char err[LUKS_ERR_LEN];
@@ -344,6 +347,12 @@ static int locate(struct run *r, const char *path, struct target **list, size_t 
 
         if (got < 0 && errno == EINTR)
             continue;
+        if (got < 0) {
+            run_mark(r, "headers", RUN_NOT, "FAILED", "%s cannot be read at offset %llu (%s): what lies behind that "
+                     "place is not searched for headers", path, (unsigned long long)off, strerror(errno));
+            *unread = 1;
+            break;
+        }
         if (got < (ssize_t)sizeof magic)
             break;
         len = (size_t)got;
@@ -357,12 +366,14 @@ static int locate(struct run *r, const char *path, struct target **list, size_t 
             found++;
             next = off + i + (h.area + SECTOR - 1) / SECTOR * SECTOR;
         }
+        /* a read can give less than was asked for before the end of the file: the search goes
+           on behind the sectors that it gave, and ends where a read gives none */
         if (next)
             off = next;
-        else if (len < CHUNK)
+        else if (len < SECTOR)
             break;
         else
-            off += CHUNK;
+            off += len / SECTOR * SECTOR;
     }
     free(buf);
     close(fd);
@@ -448,6 +459,7 @@ static int attempt(struct effort *e, const uint8_t *key, size_t len, const struc
     if (run_keep_key(e->r, p->stem, key, len, p->hash)) {
         run_mark(e->r, "key file", RUN_NOT, "FAILED", "the key could not be written to the destination");
         p->hash[0] = 0;
+        p->unwritten = 1;
     } else {
         p->bytes = len;
         run_field(e->r, "key file", "keys/%s.vk, %zu bytes, sha256 %s", p->stem, len, p->hash);
@@ -527,13 +539,18 @@ static void second_round(struct run *r, struct target *t, const struct keys *k)
 /* What the attempts on a header came to. */
 static void conclude(struct target *t)
 {
-    size_t proven = 0, i;
+    size_t proven = 0, unwritten = 0, i;
 
-    for (i = 0; i < t->h.ndigests; i++)
+    for (i = 0; i < t->h.ndigests; i++) {
         proven += t->proofs[i].bytes > 0;
+        unwritten += t->proofs[i].unwritten;
+    }
     if (t->uncomputed) {
         snprintf(t->note, sizeof t->note, "the digest of the header uses %s, which this program does not compute. vkverify.py does",
                  t->uncomputed);
+    } else if (unwritten) {
+        snprintf(t->note, sizeof t->note, "a key gives the digest of the header, and its file could not be written to the "
+                 "destination");
     } else if (all_proven(t) && proven == t->h.ndigests) {
         t->verdict = PROVEN;
         snprintf(t->note, sizeof t->note, "%s", t->h.ndigests > 1 ? "each key gives its digest of the header" : "gives the digest of the header");
@@ -723,10 +740,23 @@ static void json_proof(FILE *f, const struct target *t, size_t i)
         fprintf(f, ", \"attempts\": %u, \"adjacent_places\": %d", p->attempt, p->has_places);
 }
 
+/* A run that cannot go on after its folder is made: its report says why and is closed in
+   order, and what the run holds is given back. Returns 1, the exit status. */
+static int give_up(struct run *r, const char *why)
+{
+    if (why)
+        run_mark(r, "run", RUN_NOT, "FAILED", "%s: the run ends here", why);
+    if (written(r->report) || fsync(fileno(r->report)))
+        r->write_failed = 1;
+    fclose(r->report);
+    run_free(r);
+    return why ? run_die("%s", why) : 1;
+}
+
 int dump_run(const struct dump_options *o)
 {
     char dump[PATH_MAX], dest[PATH_MAX], path[PATH_MAX], name[NAME_MAX + 1], stamp[32], started[32], finished[32];
-    char real[PATH_MAX], size_of[32], label[32], *said, *line, *next;
+    char real[PATH_MAX], size_of[32], label[32], held[BUFSIZ], *said, *line, *next;
     const struct keyscan_summary *sum;
     struct str headers = { 0 };
     struct run run = { 0 }, *r = &run;
@@ -739,7 +769,7 @@ int dump_run(const struct dump_options *o)
     struct stat st;
     size_t ntargets = 0, nfiles_targets, npairs = 0, further = 0, i, k, proven = 0, in_memory = 0, more_in_memory;
     char unlocked[160] = "";
-    int kfd, mfd, fd, failed = 0, status, found = 0, names = 0, words = 0, nline = 0;
+    int kfd, mfd, fd, failed = 0, status, found = 0, names = 0, words = 0, nline = 0, unread = 0;
 
     /* Keys pass through the memory of this process. Locked memory is not written to the swap
        space, and the files of the run are for their owner alone. */
@@ -788,31 +818,37 @@ int dump_run(const struct dump_options *o)
     msg = mfd < 0 ? NULL : fdopen(mfd, "w");
     if (!list || !msg) {
         run_mark(r, "search", RUN_NOT, "FAILED", "the list of the schedules cannot be written: %s", strerror(errno));
-        fclose(r->report);
-        return 1;
+        if (list) fclose(list); else if (kfd >= 0) close(kfd);
+        if (msg) fclose(msg); else if (mfd >= 0) close(mfd);
+        return give_up(r, NULL);
     }
+    setvbuf(list, held, _IOFBF, sizeof held);   /* keys pass through it: it is wiped below */
     /* while the memory is read for the schedules, it is searched for headers as well */
     if (!(w = calloc(1, sizeof *w)) || !(w->win = malloc(WINDOW))) {
         free(w);
         fclose(list);
         fclose(msg);
-        fclose(r->report);
-        return run_die("no memory");
+        explicit_bzero(held, sizeof held);
+        return give_up(r, "no memory");
     }
     keyscan_watch(watch, w);
     run_progress(r, "search", "reading the dump for AES key schedules and LUKS headers");
     status = keyscan_run(dump, 0, 1, list, msg, &failed);
     keyscan_watch(NULL, NULL);
     look(w, 1);
-    if (fflush(list) || fflush(msg) || run_flush(r, kfd, "keys") || fsync(mfd))
+    if (written(list) | written(msg) || run_flush(r, kfd, "keys") || fsync(mfd))
         r->write_failed = 1;
     fclose(list);
     fclose(msg);
+    explicit_bzero(held, sizeof held);
     keys.hits = keyscan_hits(&keys.nhits);
     if (distinct(&keys) || places(&keys)) {
         keyscan_wipe();
         keys_free(&keys);
-        return run_die("no memory");
+        explicit_bzero(w->win, WINDOW);
+        free(w->win);
+        free(w);
+        return give_up(r, "no memory");
     }
     /* What the search read, from its own count. Its first two messages say the same and stay
        in scan.txt. What it says beyond them is said here as well: bytes that could not be
@@ -848,7 +884,7 @@ int dump_run(const struct dump_options *o)
 
         if (!realpath(o->files[i], real))
             snprintf(real, sizeof real, "%s", o->files[i]);
-        if ((n = locate(r, real, &targets, &ntargets)) < 0)
+        if ((n = locate(r, real, &targets, &ntargets, &unread)) < 0)
             found = -1;
         else if (!n)
             run_field(r, "headers", "none in %s", real);
@@ -875,13 +911,14 @@ int dump_run(const struct dump_options *o)
         in_memory++;
     }
     more_in_memory = w->further;
+    explicit_bzero(w->win, WINDOW);             /* memory of the dump */
     free(w->win);
     free(w);
     if (found < 0) {
         keyscan_wipe();
         keys_free(&keys);
         free(targets);
-        return run_die("no memory");
+        return give_up(r, "no memory");
     }
     if (o->nfiles && nfiles_targets)
         str_addf(&headers, "%zu in %zu file%s", nfiles_targets, o->nfiles, o->nfiles == 1 ? "" : "s");
@@ -943,7 +980,7 @@ int dump_run(const struct dump_options *o)
     run_say(r, "%s", "");
     run_utc(finished, 0);
     run_say(r, "finished %s, %u s", finished, run_seconds(r));
-    if (fflush(r->report) || fsync(fileno(r->report)))
+    if (written(r->report) || fsync(fileno(r->report)))
         r->write_failed = 1;
     fclose(r->report);
 
@@ -951,6 +988,8 @@ int dump_run(const struct dump_options *o)
        in this file. */
     if ((fd = run_create(r, "verdict.json", O_WRONLY, 0600)) < 0 || !(json = fdopen(fd, "w"))) {
         r->write_failed = 1;
+        if (fd >= 0)
+            close(fd);
     } else {
         fprintf(json, "{\n  \"schema\": \"keep-report/1\",\n  \"tool\": \"keep %s\",\n  \"started_utc\": \"%s\",\n"
                 "  \"finished_utc\": \"%s\",\n  \"source\": ", KEEP_VERSION, started, finished);
@@ -998,7 +1037,7 @@ int dump_run(const struct dump_options *o)
                     pairs[i].hash, (unsigned long long)pairs[i].tweak_at);
         }
         fprintf(json, "\n  ],\n  \"further_memory_pairs\": %zu\n}\n", further);
-        if (fflush(json) || fsync(fd))
+        if (written(json) || fsync(fd))
             r->write_failed = 1;
         fclose(json);
     }
@@ -1022,5 +1061,5 @@ int dump_run(const struct dump_options *o)
        keys. What the dump itself holds of a header can be that of a volume that was closed. */
     if (status)
         return status;
-    return o->nfiles && (!nfiles_targets || proven < nfiles_targets) ? 1 : 0;
+    return unread || (o->nfiles && (!nfiles_targets || proven < nfiles_targets)) ? 1 : 0;
 }

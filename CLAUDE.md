@@ -169,16 +169,23 @@ The input format is recognised from the first bytes.
 - Data is read in 1 MiB chunks with the last 239 bytes carried over, and a range that begins where
   the previous one ended continues the same run, so a schedule across a chunk or range border is
   found.
-- An unreadable stretch counts as zeros and is reported. At most 4096 schedules are listed, and
-  further ones are counted.
-- A LiME or compressed image that is cut, as on a medium that ran full, or damaged is searched
-  up to that place. The schedules before it are listed, the file offset and the number of bytes
-  not searched are named, and the status is 1. A chunk that differs from its checksum is counted
-  and its data searched as it is.
+- An unreadable stretch counts as zeros and is reported. A read of `/proc/kcore` that fails
+  says nothing about the pages before the one it failed at, so its first page is then asked
+  for by itself, and only a page that cannot be read alone is zeros. At most 4096 schedules
+  are listed, and further ones are counted. A schedule is listed once for an address and a
+  key.
+- An image that is cut, as on a medium that ran full, or damaged is searched up to that place:
+  a LiME image or an ELF core that ends inside a range or a segment, as one whose header
+  states more memory than the file holds, and a compressed image whose stream ends or does not
+  follow its format. The schedules before it are listed, the file offset and the number of
+  bytes not searched are named, and the status is 1. A chunk that differs from its checksum is
+  counted and its data searched as it is. Up to 1.2 only the compressed image was looked at
+  in this way: a LiME image or an ELF core that was cut ended with status 0, with what was
+  missing counted as zeros, and one with a range of 2^62 bytes was searched without end.
 - A self-test against the two expansions of FIPS-197 appendix A runs at every start. Exit status
-  0 is a completed scan, 1 an unreadable or refused input or an image that could not be read to
-  its end, 2 a usage error, 3 a failed self-test. The summary line names the version of the
-  scanner.
+  0 is a completed scan, 1 an unreadable or refused input, an image that could not be read to
+  its end or a list of the schedules that could not be written, 2 a usage error, 3 a failed
+  self-test. The summary line names the version of the scanner.
 - `/proc/kcore` needs root and is refused under kernel lockdown `confidentiality`.
 
 ### Headers from a disk image
@@ -430,6 +437,15 @@ sudo ./keep -m [-f FORMAT | -F]         # the keys, then a memory image: lime (d
   file is flushed, is written when the report is closed.
 - A control character in a text of the examined system, as in the name of a mapping or of a
   file, is printed as a space.
+- The line `in use` of a volume says what it carries. Where that could not be looked up, it
+  says `unknown` and not `no`, and where nothing is found and the kernel counts the device
+  as open, it says how often: something reads the device that leaves no trace in `/sys` and
+  in the mount table.
+- A digest of a header is computed up to 16777216 iterations. cryptsetup makes a digest to
+  cost 125 ms, which is some hundred thousand, and a header can state up to 4294967295, with
+  which one attempt takes from 21 minutes to more than an hour. A digest beyond the bound is named as
+  one that is not computed here, like one with a function that `hash.c` does not have, and
+  the key and the list of the schedules are kept for the lab.
 - `-m` takes a memory image after the keys, into `memory/` of the folder of the run, as
   `memory.lime`. `-f` names another format: `raw`, where each byte lies at the file offset
   that is its physical address, or `avml`, the compressed format of AVML. `-F` writes all
@@ -558,7 +574,23 @@ Read in Linux 4.18, 5.10, 6.12 and 6.18, cryptsetup 2.0.6, 2.3.7, 2.7.0 and 2.8.
   reader that ended after one line, a hang-up and `ulimit -f 1` each ended the search of a
   dump with no key file or one, an empty or short `triage.txt` and no report.
 - The kernel answers a request for the table of a mapped device that is not there with
-  `ENXIO` (`find_device` and `table_status` in `dm-ioctl.c` of Linux 4.18 and 6.12).
+  `ENXIO` (`find_device` and `table_status` in `dm-ioctl.c` of Linux 4.18 and 6.12), and
+  states with every answer about a device how often it is open (`__dev_status`).
+- `dmsetup table` replaces by zeros the key of a crypt target and the keys that a
+  dm-integrity target can have behind `internal_hash:`, `journal_crypt:` and `journal_mac:`
+  (`hide_key` and `_status` in `dmsetup.c` of LVM2 2.03.22).
+- cryptsetup makes the digest of a header to cost 125 ms on the machine that formats
+  (`LUKS_MKD_ITERATIONS_MS` in `lib/luks1/luks.h` and `lib/luks2/luks2_digest_pbkdf2.c`), with
+  1000 iterations at least. Measured here with the SHA instructions: 4000000 iterations of
+  PBKDF2 take 1.2 s with SHA-256, 3.8 s with SHA-512 and 3.9 s with SHA-1, so 125 ms are
+  about 430000 iterations of SHA-256.
+- A stream of the C library that cannot write drops what it held and remembers only that it
+  could not. A later flush of what was written after it succeeds. Measured with musl and
+  with glibc: after a write that failed, `fflush` returned 0 and `ferror` 1, and the file
+  lacked the bytes. So a flush alone does not say that a file is whole.
+- Memory that a process with `mlockall(MCL_FUTURE)` allocates is taken from the free memory
+  of the machine at once, read or not. Measured: two buffers of 8 MiB that were never
+  written raised the locked memory of a process from 216 kB to 16608 kB.
 - LUKS2 with integrity is two mapped devices (`create_or_reload_device_with_integrity`): `NAME`
   with a crypt target on `NAME_dif`, and `NAME_dif` with one integrity target on the device.
   The header lies on that device, and cryptsetup finds it by the option
@@ -759,6 +791,18 @@ Read in Linux 4.18, 5.10, 6.12 and 6.18, cryptsetup 2.0.6, 2.3.7, 2.7.0 and 2.8.
   size of a file and of processor time off where it may. `keytriage.sh` is ended by each.
 - A table of a mapped device that cannot be read is named on the screen, and the run ends
   with status 1. Only a device that was removed since the list was read is passed over.
+- A name that begins with a point has `_` in its place in a file name, so that no file of a
+  run is one that a listing does not show. `keytriage.sh` keeps the point.
+- The line `in use` says `unknown` where the look-up failed, and names the opens that the
+  kernel counts where nothing else is found. `keytriage.sh` says `no` in both cases. The
+  field `in_use` of the report is the same in both.
+- `log/NAME.table.txt` has zeros also for the keys of a dm-integrity target, as `dmsetup
+  table` prints them.
+- A destination that `/proc/self/mountinfo` does not name, as in a root that is no mount
+  point, is taken, and the report says that its file system is not known. `keytriage.sh`
+  does not start there.
+- A digest beyond 16777216 iterations is not computed (see above). `keytriage.sh` leaves
+  the proof to cryptsetup, which computes what the header states.
 - The search of a dump proves against header backups, raw images and devices. The disk file
   of a virtual machine and an EnCase image are read by `vkverify.py` only, and so is a header
   whose digest uses a function that `hash.c` does not compute.
@@ -841,7 +885,7 @@ write outside a buffer and no fault was found: what the analyzers named was look
 is none. With one allocation failed, or every one from a place on, no run of 450 crashed,
 and none ended with status 0 with a key, a report or a manifest missing. With a
 destination that ran full every run ended with status 1 and said so. What was found, and
-is corrected in 2.0-pre11, each with its check:
+is corrected in 2.0-pre11 and 2.0-pre12, each with its check:
 
 - Three signals ended a run in the middle (see "What the sources say"): `SIGPIPE`,
   `SIGHUP` and `SIGXFSZ`. A run now takes none of them.
@@ -855,6 +899,45 @@ is corrected in 2.0-pre11, each with its check:
   status is 1.
 - The table of a mapped device that could not be read was passed over without a word, as
   a device is that was removed since the list was read. It is now named, with status 1.
+- The scanner took a LiME image or an ELF core that was cut for one that it had read to its
+  end, with status 0, and searched a range of 2^62 bytes without end (see `kcore-keyscan`).
+  It gave no status for a list of the schedules that could not be written, which
+  `keytriage.sh` relies on. Of a read that failed it took the first 4096 bytes for
+  unreadable, also where the page that failed lay behind them: with one such page late in a
+  read of 1 MiB, the schedules before it in that read were not found. It is 1.3 now.
+- A text file was read into memory of its largest size, whatever its own: 8 MiB for a mount
+  table, twice for each volume, and 256 MiB for `System.map`, in memory that is locked and
+  so taken from the machine at once. The memory now grows with the text.
+- The reader of JSON gave every string the memory of the rest of the whole text. Metadata
+  of 20000 members in 269 KiB needed an address space of 5.4 GiB, all of it locked in a
+  run, and a header of that kind, which no cryptsetup writes, ended a run of one of the
+  readers by the kernel's lack of memory. A string now has the memory of its own bytes,
+  and those metadata are read in 8 MiB.
+- A write of `verdict.json`, of the manifest or of a list of schedules that failed inside
+  the C library was not seen, where the flush after it succeeded: with one such write the
+  run ended with status 0 and a report that was no JSON. Every flush now asks the stream
+  as well.
+- A digest could state up to 4294967295 iterations, and an attempt was begun whatever it
+  stated. There is a bound now (see above).
+- The search of a dump took a read of a `FILE` that failed, or that gave less than was asked
+  for, as the end of the file, and said nothing: a header behind an unreadable sector was not
+  found. It now says where the read failed and ends with status 1, and goes on behind a
+  read that gave less.
+- A key that gave the digest of a header and whose file could not be written was reported
+  as a key that was not found.
+- `in use` said `no` where the look-up had failed.
+- `verdict.json` could hold bytes that are no UTF-8: a longer form of a character, a
+  surrogate or a number above 10FFFF in a name passed as it was, and the file was then no
+  JSON for a reader that is strict.
+- The table of a dm-integrity device in `log/` kept the keys that such a target can have.
+  cryptsetup gives the device below a LUKS2 volume with integrity none, so this needed a
+  stack made by hand.
+- Of the memory that held keys or memory of the machine, four places were given back
+  without a wipe: the window of the search of a dump, the buffers of a compressed range in
+  the scanner, the last chunk of a compressed image, and the buffer of the C library for
+  the list of the schedules.
+- A run that could not go on for lack of memory after its folder was made left its report
+  without a word of that.
 
 One defect of `keytriage.sh` was found on the way: it stated no key size for a LUKS2 volume
 with integrity. It is corrected in 1.5.1, with its check in `selftest.sh`.
@@ -1105,6 +1188,24 @@ image of its own:
   image at a time and not the image. For btrfs this is run (see "Where it has run"), for
   FAT it is read in the source, and no image was written to FAT in a run. An image on exFAT
   or NTFS is not run either. On tmpfs a file lies in memory whichever way it is written.
+- A digest within the bound of 16777216 iterations is computed, and the largest of those takes
+  5 s for an attempt with SHA-256 and 16 s with SHA-512 or SHA-1 on the machine of the
+  measurement, with no line of progress inside an attempt. The search of memory makes up to 64 attempts
+  for a key (`-b`). In the search of a dump, text that only looks like the digests of a
+  header costs a search of 8192 bytes for each place: 32 MiB of nothing but such places
+  took 25 s.
+- A read of one copy of a LUKS2 header that fails ends the reading of that header, where
+  cryptsetup goes on with the other copy. The copy for the evidence would fail at the same
+  place.
+- What the scanner warns of reaches the screen of a search of a dump by a second reading of
+  `scan.txt`, from its third line on. Where that file cannot be read again, the warnings are
+  in it and not on the screen.
+- The parts of `/sys` and `/proc` that say what a volume carries are asked with `stat` for
+  the source of a mount and for each swap space. A path on a network mount that does not
+  answer would hold the run. Not run.
+- Not run, for want of a way to bring them about in a check: a destination that the mount
+  table does not name, a `/sys` that is not mounted, and the ends of a run for lack of
+  memory. The first was seen by one of the readers in a root that is no mount point.
 - A run that is ended by an interrupt from the keyboard or by `SIGTERM` leaves the keys it
   had written, the lines of `triage.txt` up to there and the part of an image, and neither
   `verdict.json` nor a manifest. It does not end its work in order. This is read in the
@@ -1249,7 +1350,12 @@ named as one that failed at a write, and on a loop device that the check holds o
 dm-crypt holds the device of a volume: after direct reads no page of the device may lie in
 the cache, and after reads in the usual way the pages of the header. A request for a table
 that a device refuses must be taken as a table that cannot be read, and not as a mapped
-device that is gone. The code that reads the answers of
+device that is gone. A digest of 4294967295 iterations must be named as not computed, at
+once, and the copy of its header made. The table of a crypt target and of a dm-integrity
+target with its three keys must have zeros for each key as it is kept in `log/`. Under a
+limit of the address space of 64 MiB a text of 4 MiB must be read with a maximum of 256
+MiB, and under one of 200 MiB metadata of 20000 members. After a write that failed and a
+flush that did not, the program must take the file for one that is not whole. The code that reads the answers of
 device-mapper is given answers laid out as `list_devices` and `retrieve_status` of the kernel lay
 them out, before and from Linux 4.13, and then the same with bytes changed and ends cut off,
 1600 times: each must be read or refused, and the sanitizers report a read outside the buffer.
@@ -1305,6 +1411,17 @@ hangs up (`SIGHUP`) and the reader goes away (`SIGPIPE`), and the run must end w
 0, all sixteen keys, a report and a manifest that verifies. Under a limit of the size of a
 file of one block (`ulimit -f 1`) a process that may take the limit off must give the whole
 run, and another must end with status 1 and say that a write failed: no signal may end it.
+The search of a dump must name a `FILE` that cannot be read, with the place and status 1,
+must name a key whose file cannot be written as such and not as one that was not found,
+and must write a `verdict.json` that Python reads for a name that is no UTF-8.
+The scanner, static and with the sanitizers, is given a LiME image and an ELF core that
+are cut, a range of 2^62 bytes, an ELF header of 6 bytes and a compressed image that is cut
+in its first range: each must end with status 1 and its reason, and so must a list that
+goes to a device without room. Two segments that state no physical address, each with
+another key at the same place, must give both keys. A library that stands before the C
+library makes one read fail as the kernel fails a read of `/proc/kcore`, as a whole for
+one page in it: the schedules must be those of the fixture, with 4096 bytes named as not
+read.
 The screen is looked at byte by byte. On a pseudo-terminal, which Python's `pty` gives, it
 must have the titles bold, the labels cyan and the verdicts in their colours, no escape
 sequence but those five, and a line of progress that is written over and taken away. With
@@ -1371,7 +1488,8 @@ a schedule at an odd address, one across the scanner's 1 MiB read boundary, one 
 of two ranges, one with a single wrong bit that must not be reported, and one inside a run of
 zeros. It writes the compressed format of AVML with its own Snappy encoder and CRC-32C, which
 `avml convert` of AVML 0.21.0 decodes to the same LiME image byte for byte. The self-test also
-cuts and damages that image.
+cuts and damages that image, cuts the LiME image, and sends the list to a device without
+room.
 
 ```bash
 head -c 64 /dev/urandom > k.vk

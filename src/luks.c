@@ -166,6 +166,16 @@ static void field(char *out, size_t outlen, const uint8_t *p, size_t n)
     out[len] = 0;
 }
 
+/* What of a digest is not computed here, for the one who reads the run. */
+static void costs(struct luks_digest *d)
+{
+    d->uncomputed[0] = 0;
+    if (!d->alg)
+        snprintf(d->uncomputed, sizeof d->uncomputed, "%s", d->hash[0] ? d->hash : "no known function");
+    else if (d->iterations > LUKS_MOST_ITERATIONS)
+        snprintf(d->uncomputed, sizeof d->uncomputed, "%s with %u iterations", d->hash, d->iterations);
+}
+
 /* ---- LUKS1 ---------------------------------------------------------------------------------- */
 
 /* The rules of _check_and_convert_hdr, LUKS_check_keyslots and LUKS_check_device_size, which
@@ -223,6 +233,7 @@ static int luks1(const uint8_t *b, struct luks_header *h, char err[LUKS_ERR_LEN]
     memcpy(d->salt, b + 132, LUKS_SALT);
     d->saltlen = LUKS_SALT;
     d->iterations = be32(b + 164);
+    costs(d);
     h->ndigests = d->iterations ? 1 : 0;
     return 0;
 }
@@ -360,6 +371,7 @@ static void digest(const struct json *j, const struct json *meta, struct luks_he
     snprintf(d->hash, sizeof d->hash, "%s", hash);
     d->alg = hash_by_name(hash);
     d->iterations = (uint32_t)iterations;
+    costs(d);
     if (base64(salt, d->salt, sizeof d->salt) != LUKS_SALT)
         return;
     d->saltlen = LUKS_SALT;
@@ -606,8 +618,8 @@ int luks_proves(const struct luks_header *h, const uint8_t *key, size_t keylen, 
 
         if (taken >> i & 1)
             continue;
-        if (!d->alg) {
-            *hash = d->hash;
+        if (d->uncomputed[0]) {
+            *hash = d->uncomputed;
             continue;
         }
         computed = 1;

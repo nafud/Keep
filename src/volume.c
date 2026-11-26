@@ -273,6 +273,58 @@ static int build(struct vol *v, const struct dm_table *top, const struct dm_tabl
     return 0;
 }
 
+/* An optional key of a dm-integrity line, behind NAME and the name of an algorithm, replaced
+   by zeros: hide_key in dmsetup.c of LVM2. */
+static void hide_key(char *params, const char *name)
+{
+    char *c = strstr(params, name);
+
+    if (!c || !(c = strpbrk(c + strlen(name), " :")) || *c++ != ':')
+        return;
+    while (*c && *c != ' ')
+        *c++ = '0';
+}
+
+/* What the kernel said about a device of the volume, with each key replaced by zeros, as
+   "dmsetup table" prints it: the key of a crypt target, and the keys that a dm-integrity
+   target can have for its hash, for the encryption of its journal and for the journal's MAC. */
+void vol_table_text(struct str *text, const struct dm_table *t)
+{
+    size_t i;
+
+    str_addf(text, "name %s\nuuid %s\ndevice %u:%u\n", t->name, t->uuid[0] ? t->uuid : "-", t->major, t->minor);
+    for (i = 0; i < t->ntargets; i++) {
+        const char *p = t->targets[i].params, *key = strchr(p, ' ');
+
+        str_addf(text, "%llu %llu %s ", (unsigned long long)t->targets[i].start,
+                 (unsigned long long)t->targets[i].length, t->targets[i].type);
+        if (!strcmp(t->targets[i].type, "crypt") && key && key[1] != ':') {
+            size_t n = strcspn(++key, " ");
+
+            str_addn(text, p, (size_t)(key - p));
+            for (; n; n--)
+                str_add(text, "0");
+            str_add(text, key + strcspn(key, " "));
+        } else if (!strcmp(t->targets[i].type, "integrity")) {
+            char *copy = strdup(p);
+
+            if (copy) {
+                hide_key(copy, "internal_hash:");
+                hide_key(copy, "journal_crypt:");
+                hide_key(copy, "journal_mac:");
+                str_add(text, copy);
+                explicit_bzero(copy, strlen(copy));
+                free(copy);
+            } else {
+                text->failed = 1;               /* and not the line as it is */
+            }
+        } else {
+            str_add(text, p);
+        }
+        str_add(text, "\n");
+    }
+}
+
 static void release(struct vol *v)
 {
     free(v->parts);

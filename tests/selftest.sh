@@ -160,6 +160,15 @@ damaged() {
     grep -q 'damaged or ends early at file offset' "$T/cut.err" || { echo "the cut is not named"; return 1; }
     n=$(wc -l < "$T/keys/cut.txt")
     [ "$n" -ge 7 ] || { echo "$n schedules before the cut, at least 7 are expected"; return 1; }
+    # a LiME image that ends inside a range, which the scanner before 1.3 searched with status
+    # 0 and zeros in place of what was missing. A list that cannot be written is status 1 too.
+    head -c 3000000 "$T/fx.lime" > "$T/cut.lime"
+    "$SCAN" "$T/cut.lime" > "$T/keys/cut.txt" 2> "$T/cut.err"
+    [ $? -eq 1 ] && grep -q 'ends early at file offset 3000000: the file ends inside a range' "$T/cut.err" ||
+        { echo "a LiME image that is cut is not named with status 1"; cat "$T/cut.err"; return 1; }
+    "$SCAN" "$T/fx.lime" > /dev/full 2> "$T/cut.err"
+    [ $? -eq 1 ] && grep -q 'the list of the schedules could not be written' "$T/cut.err" ||
+        { echo "a list that cannot be written is not named with status 1"; cat "$T/cut.err"; return 1; }
     python3 -I -c 'import sys
 d = bytearray(open(sys.argv[1], "rb").read())
 d[32 + 10 + 5000] ^= 1          # inside the first chunk of the first range

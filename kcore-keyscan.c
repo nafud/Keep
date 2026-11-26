@@ -22,8 +22,10 @@
  * search that found no key. Such a file is refused with status 1. -r searches it all the same,
  * for a raw image that happens to begin with one of those marks.
  *
- * A compressed image that ends early or is damaged is searched up to that place. The place and
- * the number of bytes of the file that were not searched are reported, and the status is 1.
+ * An image that ends early or is damaged is searched up to that place: a file that ends inside
+ * a segment or a range, or a compressed stream that does not follow its format. The place and
+ * the number of bytes of the file that were not searched are reported, and the status is 1. So
+ * is it where the list of the schedules could not be written.
  *
  * A key schedule is the list of round keys that AES derives from a key (FIPS-197, section 5.2).
  * The kernel keeps the schedule, not only the key, and the first 16 or 32 bytes of the schedule
@@ -60,7 +62,7 @@
 #define CHUNK   (1u << 20)      /* bytes read at once */
 #define KEEP    240             /* longest schedule: bytes kept in front of the next chunk */
 #define MAXHIT  4096
-#define VERSION "1.2"
+#define VERSION "1.3"
 #define NONE    (~0ULL)
 
 static uint8_t sbox[256];
@@ -149,8 +151,10 @@ static void report(int nk, const uint8_t *s, uint64_t phys, uint64_t virt)
 {
     int i, len = nk * 4;
 
-    for (i = 0; i < nhit; i++)      /* the kernel text is also inside the RAM segment */
-        if (hits[i].phys == phys && hits[i].nk == nk)
+    /* The kernel text is also inside the RAM segment, so the same schedule can come twice.
+       A core whose segments state no physical address has another key at the same number. */
+    for (i = 0; i < nhit; i++)
+        if (hits[i].phys == phys && hits[i].nk == nk && !memcmp(hits[i].key, s, (size_t)len))
             return;
     if (nhit == MAXHIT) { dropped++; return; }
     hits[nhit].nk = nk; hits[nhit].phys = phys; memcpy(hits[nhit].key, s, len); nhit++;
@@ -169,6 +173,7 @@ static void report(int nk, const uint8_t *s, uint64_t phys, uint64_t virt)
 static uint8_t buf[KEEP + CHUNK];
 static size_t have;
 static uint64_t bphys, bvirt;
+static uint64_t file_size;              /* of the file that is searched, as fstat states it */
 
 /* A program that links the search can look at the memory as well: each byte is handed to it
    once, in the order of the search, with the address of the first of them. */
@@ -208,11 +213,29 @@ static void sweep(int last)
     if (bvirt != NONE) bvirt += end;
 }
 
-/* Read LEN bytes of the file from offset OFF. PHYS and VIRT are the addresses of the first byte. */
-static void scan(int fd, uint64_t off, uint64_t len, uint64_t phys, uint64_t virt)
+static ssize_t read_some(int fd, void *p, size_t n, uint64_t off)
+{
+    ssize_t got;
+
+    do
+        got = pread(fd, p, n, (off_t)off);
+    while (got < 0 && errno == EINTR);
+    return got;
+}
+
+/*
+ * Read LEN bytes of the file from offset OFF. PHYS and VIRT are the addresses of the first byte.
+ * Returns 0, or 1 where the file ends before them, with the offset of its end in *ENDED: the
+ * bytes up to there are searched.
+ *
+ * A stretch that cannot be read counts as zeros. A read that fails says nothing about the pages
+ * before the one it failed at (read_kcore_iter of the kernel returns the error alone), so its
+ * first page is then asked for by itself, and only a page that cannot be read alone is zeros.
+ */
+static int scan(int fd, uint64_t off, uint64_t len, uint64_t phys, uint64_t virt, uint64_t *ended)
 {
     uint64_t done = 0;
-    size_t want;
+    size_t want, page;
     ssize_t n;
 
     if (have && (phys != bphys + have || virt != (bvirt == NONE ? NONE : bvirt + have)))
@@ -220,15 +243,26 @@ static void scan(int fd, uint64_t off, uint64_t len, uint64_t phys, uint64_t vir
     if (!have) { bphys = phys; bvirt = virt; }
     while (done < len) {
         want = len - done < CHUNK ? (size_t)(len - done) : CHUNK;
-        n = pread(fd, buf + have, want, (off_t)(off + done));
-        if (n <= 0) {                        /* an unreadable stretch counts as zeros */
-            n = want < 4096 ? (ssize_t)want : 4096;
-            memset(buf + have, 0, (size_t)n);
-            nfail += (unsigned long long)n;
+        n = read_some(fd, buf + have, want, off + done);
+        if (n == 0 && off + done >= file_size) {
+            *ended = off + done;
+            return 1;
+        }
+        if (n <= 0) {
+            page = 4096 - (size_t)((phys + done) % 4096);
+            if (page > want)
+                page = want;
+            n = page < want ? read_some(fd, buf + have, page, off + done) : 0;
+            if (n <= 0) {
+                n = (ssize_t)page;
+                memset(buf + have, 0, page);
+                nfail += page;
+            }
         }
         done += (uint64_t)n; have += (size_t)n; nbytes += (unsigned long long)n;
         sweep(0);
     }
+    return 0;
 }
 
 static int full_read(int fd, void *p, size_t n, uint64_t off)
@@ -352,9 +386,11 @@ static unsigned long long nbadcrc;
  * 8 bytes, or 0 where the stream ends early or does not follow the format, with the reason in WHY
  * and the file offset up to which the stream was taken in STOP.
  */
+static uint8_t packed_in[4 + SNAPMAX + SNAPMAX / 6 + 64], packed_out[SNAPMAX];   /* a chunk, and its data */
+
 static uint64_t avml_range(int fd, uint64_t off, uint64_t len, uint64_t phys, const char **why, uint64_t *stop)
 {
-    static uint8_t in[4 + SNAPMAX + SNAPMAX / 6 + 64], out[SNAPMAX];
+    uint8_t *const in = packed_in, *const out = packed_out;
     uint64_t at = off, done = 0, stored;
     uint8_t h[4];
     uint32_t size, crc;
@@ -371,11 +407,11 @@ static uint64_t avml_range(int fd, uint64_t off, uint64_t len, uint64_t phys, co
             continue;
         }
         if (h[0] > 1) { *why = "a chunk of a kind that the framed format reserves"; return 0; }
-        if (size < 4 || size > sizeof in) { *why = "a chunk with an impossible length"; return 0; }
+        if (size < 4 || size > sizeof packed_in) { *why = "a chunk with an impossible length"; return 0; }
         if (!full_read(fd, in, size, at + 4)) { *why = "the file ends inside a chunk"; return 0; }
         memcpy(&crc, in, 4);
         if (h[0] == 0) {
-            n = snappy_block(in + 4, size - 4, out, sizeof out);
+            n = snappy_block(in + 4, size - 4, out, sizeof packed_out);
             if (n < 0) { *why = "a chunk that cannot be decompressed"; return 0; }
         } else {
             n = (long)size - 4;
@@ -429,8 +465,10 @@ const struct keyscan_hit *keyscan_hits(int *n)
 
 void keyscan_wipe(void)
 {
-    memset(hits, 0, sizeof hits);
-    memset(buf, 0, sizeof buf);
+    explicit_bzero(hits, sizeof hits);
+    explicit_bzero(buf, sizeof buf);
+    explicit_bzero(packed_in, sizeof packed_in);
+    explicit_bzero(packed_out, sizeof packed_out);
     nhit = 0;
 }
 
@@ -449,7 +487,8 @@ int keyscan_run(const char *path, int raw, unsigned every, FILE *keys, FILE *msg
     struct stat st;
     const char *why = NULL;
     uint64_t stopped = 0;
-    int fd, i, j, nseg = 0, n128 = 0, n256 = 0, u128 = 0, u256 = 0, status = 1;
+    ssize_t headlen;
+    int fd, i, j, nseg = 0, n128 = 0, n256 = 0, u128 = 0, u256 = 0, status = 1, unwritten;
 
     keys_out = keys; msg_out = msg; step = every;
     nhit = dropped = 0; nbytes = nfail = nbadcrc = 0; have = 0;
@@ -466,8 +505,9 @@ int keyscan_run(const char *path, int raw, unsigned every, FILE *keys, FILE *msg
         if (fd >= 0) close(fd);
         return 1;
     }
+    file_size = (uint64_t)st.st_size;
     memset(head, 0, sizeof head);
-    if (pread(fd, head, sizeof head, 0) < 0) {
+    if ((headlen = pread(fd, head, sizeof head, 0)) < 0) {
         *failed = errno;
         fprintf(msg_out, "kcore-keyscan: %s: %s\n", path, strerror(errno));
         close(fd);
@@ -476,22 +516,31 @@ int keyscan_run(const char *path, int raw, unsigned every, FILE *keys, FILE *msg
     for (i = 0; !raw && i < (int)(sizeof packed / sizeof packed[0]); i++)
         if (!memcmp(head, packed[i].mark, packed[i].len) && memcmp(head, "AVML\2\0\0\0", 8)) {
             fprintf(msg_out, "kcore-keyscan: %s begins like %s. Such a file holds memory in another form, and a "
-                    "search of its bytes misses key schedules, so it is not searched: %s. -r searches it as "
-                    "raw bytes all the same.\n",
-                    path, packed[i].name, packed[i].advice);
+                    "search of its bytes misses key schedules, so it is not searched: %s.%s\n",
+                    path, packed[i].name, packed[i].advice,
+#ifdef KEYSCAN_LIBRARY
+                    ""
+#else
+                    " -r searches it as raw bytes all the same."
+#endif
+                    );
             goto out;
         }
     clock_gettime(CLOCK_MONOTONIC, &t0);
 
     if (raw) {
         format = "raw";
-        scan(fd, 0, (uint64_t)st.st_size, 0, NONE);
+        scan(fd, 0, file_size, 0, NONE, &stopped);
         nseg = 1;
     } else if (!memcmp(head, ELFMAG, SELFMAG) && head[EI_CLASS] == ELFCLASS64 && head[EI_DATA] == ELFDATA2LSB) {
         Elf64_Ehdr eh;
         Elf64_Phdr ph;
 
         format = "ELF64 core";
+        if ((size_t)headlen < sizeof eh) {   /* by what was read: a file of /proc need not state its size */
+            fprintf(msg_out, "kcore-keyscan: %s ends inside its ELF header\n", path);
+            goto out;
+        }
         memcpy(&eh, head, sizeof eh);
         for (i = 0; i < eh.e_phnum; i++) {
             if (!full_read(fd, &ph, sizeof ph, eh.e_phoff + (uint64_t)i * eh.e_phentsize)) {
@@ -501,8 +550,11 @@ int keyscan_run(const char *path, int raw, unsigned every, FILE *keys, FILE *msg
             if (ph.p_type != PT_LOAD || !ph.p_filesz || ph.p_paddr == NONE)
                 continue;
             /* an image taken from outside the guest has no kernel addresses: 0 or the physical one */
-            scan(fd, ph.p_offset, ph.p_filesz, ph.p_paddr,
-                 ph.p_vaddr && ph.p_vaddr != ph.p_paddr ? ph.p_vaddr : NONE);
+            if (scan(fd, ph.p_offset, ph.p_filesz, ph.p_paddr,
+                     ph.p_vaddr && ph.p_vaddr != ph.p_paddr ? ph.p_vaddr : NONE, &stopped)) {
+                why = "the file ends inside a segment";
+                break;
+            }
             nseg++;
         }
     } else if (!memcmp(head, "EMiL", 4) || !memcmp(head, "AVML\2\0\0\0", 8)) {
@@ -510,7 +562,7 @@ int keyscan_run(const char *path, int raw, unsigned every, FILE *keys, FILE *msg
            1 for a range as it is and 2 for a compressed one. Its reader takes each range by its
            own header, so both kinds may follow each other. */
         uint64_t off = 0, s, e, used;
-        int packed_ranges = 0;
+        int packed_ranges = !memcmp(head, "AVML", 4);
 
         while (full_read(fd, head, 32, off)) {
             int v2 = !memcmp(head, "AVML\2\0\0\0", 8);
@@ -525,7 +577,10 @@ int keyscan_run(const char *path, int raw, unsigned every, FILE *keys, FILE *msg
                 off += 32 + used;
                 packed_ranges++;
             } else {
-                scan(fd, off + 32, e - s + 1, s, NONE);
+                if (scan(fd, off + 32, e - s + 1, s, NONE, &stopped)) {
+                    why = "the file ends inside a range";
+                    break;
+                }
                 off += 32 + (e - s + 1);
             }
             nseg++;
@@ -534,7 +589,7 @@ int keyscan_run(const char *path, int raw, unsigned every, FILE *keys, FILE *msg
         format = packed_ranges ? "AVML compressed" : "LiME";
     } else {
         format = "raw";
-        scan(fd, 0, (uint64_t)st.st_size, 0, NONE);
+        scan(fd, 0, file_size, 0, NONE, &stopped);
         nseg = 1;
     }
     sweep(1);
@@ -546,7 +601,7 @@ int keyscan_run(const char *path, int raw, unsigned every, FILE *keys, FILE *msg
                 break;
         if (hits[i].nk == 4) { n128++; u128 += j == i; } else { n256++; u256 += j == i; }
     }
-    fflush(keys_out);
+    unwritten = fflush(keys_out) || ferror(keys_out);
     summary.format = format;
     summary.segments = nseg;
     summary.bytes = nbytes;
@@ -560,12 +615,16 @@ int keyscan_run(const char *path, int raw, unsigned every, FILE *keys, FILE *msg
         fprintf(msg_out, "kcore-keyscan: %llu bytes could not be read and count as zeros\n", nfail);
     if (nbadcrc)
         fprintf(msg_out, "kcore-keyscan: chunks that differ from their checksum: %llu. Their data is searched as it is\n", nbadcrc);
+    if (unwritten)
+        fprintf(msg_out, "kcore-keyscan: the list of the schedules could not be written to its end\n");
     if (why) {
         fprintf(msg_out, "kcore-keyscan: the image is damaged or ends early at file offset %llu: %s. "
                 "%llu bytes of the file from there on are not searched.\n",
-                (unsigned long long)stopped, why, (unsigned long long)st.st_size - (unsigned long long)stopped);
+                (unsigned long long)stopped, why, (unsigned long long)(file_size > stopped ? file_size - stopped : 0));
         goto out;
     }
+    if (unwritten)
+        goto out;
     if (dropped)
         fprintf(msg_out, "kcore-keyscan: %d further schedules were not listed (more than %d)\n",
                 dropped, MAXHIT);

@@ -6,6 +6,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <sys/types.h>
 
 /* A text that grows. After a failed allocation it stays as it was and failed is set. */
@@ -29,7 +30,8 @@ char *read_text(const char *path, size_t max, size_t *len);
 void name_clean(char *s);
 /* The same name as part of a file name in the destination: every byte that is not a letter, a
    digit or one of . _ + = @ , - becomes _, so that the name cannot leave the destination and
-   FAT and exFAT take it. An empty name becomes _. */
+   FAT and exFAT take it, and so does a point at its start, which would make a file that a
+   listing does not show. An empty name becomes _. */
 void name_file(const char *name, char *out, size_t outlen);
 
 /* \ooo in a field of /proc/self/mountinfo, /proc/mounts or /proc/swaps, in place. */
@@ -45,6 +47,10 @@ void hex_encode(const uint8_t *p, size_t n, char *out);        /* 2 * n digits a
 int pathf(char *out, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 
 int write_all(int fd, const void *buf, size_t n);              /* 0, or -1 with errno */
+/* Flush a stream that was written. Returns 0, or -1 where the flush or a write before it
+   failed: a stream drops what it could not write and remembers only that it could not, and a
+   later flush of the rest then succeeds. */
+int written(FILE *f);
 int flush_path(const char *path);                              /* fsync of a file or directory */
 
 /*

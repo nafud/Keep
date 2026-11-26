@@ -279,12 +279,17 @@ char *sys_in_use(const char *sysfs, const char *mountinfo, const char *swaps, un
     }
     if (count > MOUNTS_NAMED)
         str_addf(&out, " and %zu more mounts", count - MOUNTS_NAMED);
+    /* a system without swap has no /proc/swaps, which is no failure */
+    if (!mounts || !st.n || out.failed) {
+        str_free(&out);
+        out.failed = 1;
+    }
     free(mounts);
     free(swap);
     free(st.v);
-    if (!out.s)
-        return strdup("");
-    return out.s;
+    if (out.failed)
+        return NULL;
+    return out.s ? out.s : strdup("");
 }
 
 char *sys_other_filesystems(const char *mounts)

@@ -72,23 +72,37 @@ void str_free(struct str *t)
     memset(t, 0, sizeof *t);
 }
 
+/*
+ * The memory grows with the text, from a page on. The memory of a run is locked, so every byte
+ * that is allocated is taken from the free memory of the machine at once, read or not: with
+ * the maximum allocated at the start, a mount table of two kilobytes cost eight megabytes.
+ */
 char *read_text(const char *path, size_t max, size_t *len)
 {
     int fd = open(path, O_RDONLY | O_CLOEXEC);
-    char *buf;
-    size_t n = 0;
+    size_t n = 0, room = max < 4096 ? max : 4096;
+    char *buf, *grown;
     ssize_t got = 0;
 
     if (fd < 0)
         return NULL;
-    if (!(buf = malloc(max + 1))) {
+    if (!(buf = malloc(room + 1))) {
         close(fd);
         return NULL;
     }
-    while (n < max && (got = read(fd, buf + n, max - n)) != 0) {
+    while (n < max) {
+        if (n == room) {
+            room = room > max / 2 ? max : room * 2;
+            if (!(grown = realloc(buf, room + 1))) {
+                got = -1;
+                break;
+            }
+            buf = grown;
+        }
+        got = read(fd, buf + n, room - n);
         if (got < 0 && errno == EINTR)
             continue;
-        if (got < 0)
+        if (got <= 0)
             break;
         n += (size_t)got;
     }
@@ -131,7 +145,7 @@ void name_file(const char *name, char *out, size_t outlen)
     for (i = 0; name[i] && i + 1 < outlen; i++) {
         char c = name[i];
         int kept = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
-                   (c && strchr("._+=@,-", c));
+                   (c && strchr("._+=@,-", c) && !(c == '.' && !i));
 
         out[i] = kept ? c : '_';
     }
@@ -217,6 +231,11 @@ int write_all(int fd, const void *buf, size_t n)
         n -= (size_t)put;
     }
     return 0;
+}
+
+int written(FILE *f)
+{
+    return fflush(f) || ferror(f) ? -1 : 0;
 }
 
 int flush_path(const char *path)

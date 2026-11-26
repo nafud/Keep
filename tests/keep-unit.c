@@ -44,6 +44,14 @@
  *   keep-unit forget FILE                       flush FILE and let the pages go that the page
  *                                               cache holds of it
  *   keep-unit snappy                            standard input as a framed Snappy stream
+ *   keep-unit text FILE MAX                     FILE as the program reads a small text file, at
+ *                                               most MAX bytes of it: its length and SHA-256
+ *   keep-unit written FILE                      what a flush says of a stream after a write to
+ *                                               FILE that failed, and what the program takes
+ *                                               it for
+ *   keep-unit table-text FILE                   FILE as an answer of the kernel with a table,
+ *                                               as the program keeps it in log/: every key
+ *                                               replaced by zeros
  *   keep-unit dm-answer list|table FILE         FILE as an answer of the kernel to one of the two
  *                                               requests, printed like the two lines below
  *   keep-unit dm-list                           the mapped devices, as "dmsetup ls" prints them
@@ -74,9 +82,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <signal.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/mount.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -308,7 +318,7 @@ static int cmd_luks(const char *path)
            h.secondary ? " second copy in use" : "");
     for (i = 0; i < h.ndigests; i++) {
         printf("digest %u %s%s iterations %u salt %zu bytes digest ", h.digests[i].number, h.digests[i].hash,
-               h.digests[i].alg ? "" : " (not computed here)", h.digests[i].iterations, h.digests[i].saltlen);
+               h.digests[i].uncomputed[0] ? " (not computed here)" : "", h.digests[i].iterations, h.digests[i].saltlen);
         print_hex(h.digests[i].digest, h.digests[i].digestlen);
     }
     for (i = 0; i < h.ndigests; i++)
@@ -528,6 +538,83 @@ static void *read_answer(const char *path, size_t *len)
         close(fd);
     *len = buf ? (size_t)st.st_size : 0;
     return buf;
+}
+
+/* A text file as the program reads its small files, at most MAX bytes of it. */
+static int cmd_text_file(const char *path, const char *max)
+{
+    uint8_t digest[32];
+    size_t len = 0;
+    char *text = read_text(path, (size_t)strtoull(max, NULL, 10), &len);
+
+    if (!text) {
+        printf("not read: %s\n", strerror(errno));
+        return 1;
+    }
+    sha256((const uint8_t *)text, len, digest);
+    printf("%zu bytes, sha256 ", len);
+    print_hex(digest, sizeof digest);
+    free(text);
+    return 0;
+}
+
+/*
+ * A write that fails inside a stream and is not seen by a flush alone. The limit of the size
+ * of a file is one block while 8 KiB are written, so that write fails and the stream drops
+ * the bytes. With the limit taken off again, a few bytes more are written and flushed, which
+ * succeeds. written() must say that the file is not whole.
+ */
+static int cmd_written(const char *path)
+{
+    static char block[8192];
+    struct rlimit before, small;
+    FILE *f;
+    int flushed, error, said;
+
+    signal(SIGXFSZ, SIG_IGN);
+    if (getrlimit(RLIMIT_FSIZE, &before) || !(f = fopen(path, "w"))) {
+        perror(path);
+        return 2;
+    }
+    small = before;
+    small.rlim_cur = 4096;
+    memset(block, 'x', sizeof block);
+    if (setrlimit(RLIMIT_FSIZE, &small))
+        return 2;
+    fwrite(block, 1, sizeof block, f);
+    fflush(f);
+    setrlimit(RLIMIT_FSIZE, &before);
+    fputs("the end\n", f);
+    flushed = fflush(f);
+    error = ferror(f);
+    said = written(f);
+    fclose(f);
+    printf("fflush %d, ferror %d, written %d\n", flushed, error ? 1 : 0, said);
+    return 0;
+}
+
+/* The table of an answer of the kernel as it is kept in log/, each key replaced by zeros. */
+static int cmd_table_text(const char *path)
+{
+    char err[DM_ERR_LEN];
+    struct dm_table t;
+    struct str text = { 0 };
+    size_t len;
+    void *buf = read_answer(path, &len);
+
+    if (!buf)
+        return 2;
+    if (dm_table_answer(buf, len, &t, err)) {
+        printf("refused: %s\n", err);
+        return 1;
+    }
+    vol_table_text(&text, &t);
+    dm_table_free(&t);
+    if (text.failed)
+        return 2;
+    fputs(str_text(&text), stdout);
+    str_free(&text);
+    return 0;
 }
 
 static int cmd_dm_answer(const char *kind, const char *path)
@@ -801,8 +888,11 @@ int main(int argc, char **argv)
         return cmd_luks_prove(argv[2], argv[3]);
     if (argc == 4 && !strcmp(argv[1], "mount-of"))
         return cmd_mount_of(argv[2], argv[3]);
-    if (argc == 7 && !strcmp(argv[1], "in-use"))
-        return cmd_text(sys_in_use(argv[2], argv[3], argv[4], (unsigned)atoi(argv[5]), (unsigned)atoi(argv[6])));
+    if (argc == 7 && !strcmp(argv[1], "in-use")) {
+        char *use = sys_in_use(argv[2], argv[3], argv[4], (unsigned)atoi(argv[5]), (unsigned)atoi(argv[6]));
+
+        return cmd_text(use ? use : strdup("unknown"));
+    }
     if (argc == 3 && !strcmp(argv[1], "other-fs"))
         return cmd_text(sys_other_filesystems(argv[2]));
     if (argc == 3 && !strcmp(argv[1], "lockdown")) {
@@ -851,6 +941,12 @@ int main(int argc, char **argv)
         run_field(&r, argv[2], "%s", argv[3]);
         return 0;
     }
+    if (argc == 4 && !strcmp(argv[1], "text"))
+        return cmd_text_file(argv[2], argv[3]);
+    if (argc == 3 && !strcmp(argv[1], "written"))
+        return cmd_written(argv[2]);
+    if (argc == 3 && !strcmp(argv[1], "table-text"))
+        return cmd_table_text(argv[2]);
     if (argc == 4 && !strcmp(argv[1], "dm-answer") && (!strcmp(argv[2], "list") || !strcmp(argv[2], "table")))
         return cmd_dm_answer(argv[2], argv[3]);
     if (argc >= 3 && !strcmp(argv[1], "volumes"))
@@ -864,7 +960,7 @@ int main(int argc, char **argv)
     fprintf(stderr, "usage: keep-unit [plain] selftest | cpu | hash NAME | pbkdf2 NAME KEY SALT ITERATIONS LENGTH | json | luks FILE | "
             "luks-backup FILE OUT | luks-prove FILE KEYFILE | mount-of MOUNTINFO PATH | in-use SYSFS MOUNTINFO SWAPS MAJOR MINOR | other-fs MOUNTS | "
             "lockdown FILE | secure-boot DIR | os-name FILE FILE | memory FILE | names NAME | image-source IOMEM CORE | "
-            "image IOMEM CORE FORMAT OUT... | cached FILE | forget FILE | snappy | dm-answer list|table FILE | volumes FILE... | "
+            "image IOMEM CORE FORMAT OUT... | cached FILE | forget FILE | snappy | text FILE MAX | written FILE | table-text FILE | dm-answer list|table FILE | volumes FILE... | "
             "dm-list | dm-table NAME [CONTROL] | dm-volumes\n");
     return 2;
 }

@@ -35,7 +35,7 @@ make
 ```
 
 ```text
-keep 2.0-pre11 (2026-11)
+keep 2.0-pre12 (2026-11)
 ```
 
 This is a version before the release of 2.0. A built file is not published yet, so the file is built from the source.

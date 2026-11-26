@@ -148,7 +148,7 @@ static int keep_key(struct run *r, struct key_result *k, const uint8_t *key, siz
 static void scan_once(struct run *r)
 {
     FILE *keys = NULL, *msg = NULL;
-    char path[PATH_MAX], *text;
+    char path[PATH_MAX], held[BUFSIZ], *text;
     int kfd, mfd, failed = 0, status, n;
 
     if (r->scanned) {
@@ -168,8 +168,9 @@ static void scan_once(struct run *r)
         if (msg) fclose(msg); else if (mfd >= 0) close(mfd);
         return;
     }
+    setvbuf(keys, held, _IOFBF, sizeof held);   /* keys pass through it: it is wiped below */
     status = keyscan_run("/proc/kcore", 0, 1, keys, msg, &failed);
-    if (fflush(keys) || fflush(msg))
+    if (written(keys) | written(msg))
         r->write_failed = 1;
     if (status == 0) {
         keyscan_hits(&n);
@@ -188,6 +189,7 @@ static void scan_once(struct run *r)
     }
     fclose(keys);
     fclose(msg);
+    explicit_bzero(held, sizeof held);
 }
 
 /* The type of a mapping by the UUID that cryptsetup gave it, CRYPT-<type>-..., in the order of
@@ -367,32 +369,6 @@ static void memory_route(struct run *r, struct key_result *k, const struct luks_
     }
 }
 
-/* What the kernel said about a device of the volume, with the key replaced by zeros, as
-   "dmsetup table" prints it. */
-static void table_text(struct str *text, const struct dm_table *t)
-{
-    size_t i;
-
-    str_addf(text, "name %s\nuuid %s\ndevice %u:%u\n", t->name, t->uuid[0] ? t->uuid : "-", t->major, t->minor);
-    for (i = 0; i < t->ntargets; i++) {
-        const char *p = t->targets[i].params, *key = strchr(p, ' ');
-
-        str_addf(text, "%llu %llu %s ", (unsigned long long)t->targets[i].start,
-                 (unsigned long long)t->targets[i].length, t->targets[i].type);
-        if (!strcmp(t->targets[i].type, "crypt") && key && key[1] != ':') {
-            size_t n = strcspn(++key, " ");
-
-            str_addn(text, p, (size_t)(key - p));
-            for (; n; n--)
-                str_add(text, "0");
-            str_add(text, key + strcspn(key, " "));
-        } else {
-            str_add(text, p);
-        }
-        str_add(text, "\n");
-    }
-}
-
 /* The tables of the volume, kept in log/: its own, and those of the devices that are part of it. */
 static void log_tables(struct run *r, const struct volume *v, const struct vol *f)
 {
@@ -401,14 +377,14 @@ static void log_tables(struct run *r, const struct volume *v, const struct vol *
     size_t i;
     int fd;
 
-    table_text(&text, f->top);
+    vol_table_text(&text, f->top);
     for (i = 0; i < f->nparts; i++) {
         str_add(&text, "\n");
-        table_text(&text, f->parts[i]);
+        vol_table_text(&text, f->parts[i]);
     }
     if (f->below) {
         str_add(&text, "\n");
-        table_text(&text, f->below);
+        vol_table_text(&text, f->below);
     }
     if (text.failed || pathf(rel, "log/%s.table.txt", v->file) || (fd = run_create(r, rel, O_WRONLY, 0600)) < 0) {
         r->write_failed = 1;
@@ -463,11 +439,14 @@ static void one_key(struct run *r, const struct volume *v, struct key_result *k,
         run_field(r, "key", "none: key size 0 in the table, the device holds the data as they are");
         settle(k, V_NO_KEY, R_TABLE, "key size 0 in the table, cipher %s", k->cipher);
     } else if (field[0] != ':') {
-        uint8_t *key = keylen % 2 ? NULL : malloc(keylen / 2 + 1);
+        uint8_t *key = malloc(keylen / 2 + 1);
         const char *hash = NULL;
         int result;
 
-        if (!key || hex_decode(field, keylen, key)) {
+        if (!key) {
+            run_mark(r, "key", RUN_NOT, "FAILED", "in the table, and no memory to take it");
+            settle(k, V_MEMORY, NULL, "no memory for the key of the table");
+        } else if (hex_decode(field, keylen, key)) {
             run_field(r, "key", "the key field of the table line is neither a key in hexadecimal nor a keyring reference");
             settle(k, V_MEMORY, NULL, "the key field of the table line is not understood");
         } else if (keep_key(r, k, key, keylen / 2)) {
@@ -600,8 +579,20 @@ static void one_volume(struct run *r, struct volume *v, const struct vol *f)
     v->in_use = sys_in_use("/sys", "/proc/self/mountinfo", "/proc/swaps", f->top->major, f->top->minor);
     if (v->in_use)
         name_clean(v->in_use);
-    run_field(r, "in use", "%s", v->in_use && v->in_use[0] ? v->in_use
-              : "no: not mounted, not swap, nothing stands on it");
+    /* What is found in /sys and in the mount table is what a copy of the files has to cover.
+       The kernel counts every open of the device, also one that leaves no trace there, as
+       that of a program that reads the device itself. */
+    if (!v->in_use)
+        run_field(r, "in use", "unknown: what stands on the device could not be looked up in /sys and "
+                  "/proc/self/mountinfo. The kernel counts %d open%s of it", f->top->open_count,
+                  f->top->open_count == 1 ? "" : "s");
+    else if (v->in_use[0])
+        run_field(r, "in use", "%s", v->in_use);
+    else if (f->top->open_count > 0)
+        run_field(r, "in use", "open %d time%s, by what is not seen: not mounted, not swap, nothing stands on it",
+                  f->top->open_count, f->top->open_count == 1 ? "" : "s");
+    else
+        run_field(r, "in use", "no: not mounted, not swap, nothing stands on it");
 
     /* a key is useless without the header, so the header comes first */
     if (why.len && header_failed)
@@ -715,6 +706,11 @@ static int load_tables(struct dm_table **tabs, size_t *ntabs, int *present, stru
     *tabs = NULL;
     *ntabs = 0;
     *present = !access("/sys/class/misc/device-mapper", F_OK);
+    if (!*present && access("/sys/class/misc", F_OK)) {
+        snprintf(err, DM_ERR_LEN, "/sys/class/misc is not there to say whether this kernel has device-mapper: %s",
+                 strerror(errno));
+        return -1;
+    }
     if (!*present)
         return 0;
     if ((dm = dm_open(err)) < 0)
@@ -769,7 +765,7 @@ int triage_run(const struct triage_options *o)
     size_t ntabs = 0, nvols = 0, i, k;
     FILE *json;
     char unlocked[160] = "", size_of[32], label[32];
-    int fd, present = 1, no_memory = 0, listed = 1, names = 0, words = 0, tables_unread;
+    int fd, present = 1, no_memory = 0, listed = 1, names = 0, words = 0, tables_unread, readonly = 0;
 
     /* Keys pass through the memory of this process. Locked memory is not written to the swap
        space of the examined system. */
@@ -782,19 +778,28 @@ int triage_run(const struct triage_options *o)
         return run_die("must run as root (sudo)");
     if (!realpath(o->dest, dest))
         return run_die("the destination directory %s: %s", o->dest, strerror(errno));
-    /* the file system that holds the destination, for the report. Where the destination lies is
-       the examiner's decision and is not tested. */
-    if (sys_mount_of("/proc/self/mountinfo", dest, &mount))
-        return run_die("no mount that holds %s in /proc/self/mountinfo", dest);
-    str_addf(&medium, "%s (%s) mounted at %s", mount.source, mount.type, mount.point);
-    str_addf(&where, "%s, %s, mounted at %s", mount.source, mount.type, mount.point);
-    if (medium.failed || where.failed)
-        return run_die("no memory");
-    if (mount.readonly)
-        return run_die("%s is on a file system that is mounted read-only: %s", dest, medium.s);
-    sys_mount_free(&mount);
     if (access(dest, W_OK))
         return run_die("%s is not writable", dest);
+    /* The file system that holds the destination, for the report. Where the destination lies is
+       the examiner's decision and is not tested. A destination that the mount table does not
+       name, as in a root that is no mount point, is one all the same. */
+    if (sys_mount_of("/proc/self/mountinfo", dest, &mount)) {
+        str_add(&medium, "unknown: no mount in /proc/self/mountinfo holds it");
+        str_add(&where, "a file system that /proc/self/mountinfo does not name");
+    } else {
+        str_addf(&medium, "%s (%s) mounted at %s", mount.source, mount.type, mount.point);
+        str_addf(&where, "%s, %s, mounted at %s", mount.source, mount.type, mount.point);
+        readonly = mount.readonly;
+        sys_mount_free(&mount);
+    }
+    if (medium.failed || where.failed) {
+        run_die("no memory");
+        goto refused;
+    }
+    if (readonly) {
+        run_die("%s is on a file system that is mounted read-only: %s", dest, medium.s);
+        goto refused;
+    }
 
     uname(&un);
     snprintf(host, sizeof host, "%s", un.nodename);
@@ -802,13 +807,19 @@ int triage_run(const struct triage_options *o)
     name_file(host, hostfile, sizeof hostfile);
     run_utc(stamp, 1);
     run_utc(started, 0);
-    if (pathf(r->out, "%s/triage_%s_%s", dest, hostfile, stamp) || mkdir(r->out, 0700))
-        return run_die("cannot create %s/triage_%s_%s: %s", dest, hostfile, stamp, strerror(errno));
+    if (pathf(r->out, "%s/triage_%s_%s", dest, hostfile, stamp) || mkdir(r->out, 0700)) {
+        run_die("cannot create %s/triage_%s_%s: %s", dest, hostfile, stamp, strerror(errno));
+        goto refused;
+    }
     for (i = 0; i < 3; i++)
-        if (pathf(path, "%s/%s", r->out, i == 0 ? "headers" : i == 1 ? "keys" : "log") || mkdir(path, 0700))
-            return run_die("cannot create %s: %s", path, strerror(errno));
-    if (run_report(r))
-        return run_die("cannot create %s/triage.txt: %s", r->out, strerror(errno));
+        if (pathf(path, "%s/%s", r->out, i == 0 ? "headers" : i == 1 ? "keys" : "log") || mkdir(path, 0700)) {
+            run_die("cannot create %s: %s", path, strerror(errno));
+            goto refused;
+        }
+    if (run_report(r)) {
+        run_die("cannot create %s/triage.txt: %s", r->out, strerror(errno));
+        goto refused;
+    }
 
     sys_lockdown("/sys/kernel/security/lockdown", r->lockdown, sizeof r->lockdown);
     sys_secure_boot("/sys/firmware/efi/efivars", secure_boot, sizeof secure_boot);
@@ -890,7 +901,17 @@ int triage_run(const struct triage_options *o)
     }
     if (no_memory) {
         free_tables(tabs, ntabs);               /* they can hold keys, and this wipes them */
-        return run_die("no memory");
+        vol_free(found, nvols);
+        for (i = 0; vols && i < nvols; i++)
+            free(vols[i].keys);
+        free(vols);
+        run_mark(r, "volumes", RUN_NOT, "FAILED", "no memory for the %zu volumes: none is examined", nvols);
+        if (written(r->report) || fsync(fileno(r->report)))
+            r->write_failed = 1;
+        fclose(r->report);
+        run_free(r);
+        run_die("no memory");
+        goto refused;
     }
     if (nvols) {
         struct str all = { 0 };
@@ -955,13 +976,15 @@ int triage_run(const struct triage_options *o)
     run_say(r, "%s", "");
     run_utc(finished, 0);
     run_say(r, "finished %s, %u s", finished, run_seconds(r));
-    if (fflush(r->report) || fsync(fileno(r->report)))
+    if (written(r->report) || fsync(fileno(r->report)))
         r->write_failed = 1;
     fclose(r->report);
 
     /* the same verdicts for a program, schema keep-report/1. No key is in this file. */
     if ((fd = run_create(r, "verdict.json", O_WRONLY, 0600)) < 0 || !(json = fdopen(fd, "w"))) {
         r->write_failed = 1;
+        if (fd >= 0)
+            close(fd);
     } else {
         fprintf(json, "{\n  \"schema\": \"keep-report/1\",\n  \"tool\": \"keep %s\",\n  \"host\": ", KEEP_VERSION);
         run_json(json, host);
@@ -1022,7 +1045,7 @@ int triage_run(const struct triage_options *o)
             fputc('}', json);
         }
         fputs("\n  ]\n}\n", json);
-        if (fflush(json) || fsync(fd))
+        if (written(json) || fsync(fd))
             r->write_failed = 1;
         fclose(json);
     }
@@ -1060,4 +1083,8 @@ int triage_run(const struct triage_options *o)
         return 1;
     }
     return 0;
+refused:
+    str_free(&medium);
+    str_free(&where);
+    return 1;
 }

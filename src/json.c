@@ -59,11 +59,16 @@ static int hex4(struct reader *r, unsigned *v)
 }
 
 /* A string, from behind its opening quote. An escape never grows, so the text fits the bytes
-   of its source. */
+   of its source up to the quote that ends it. With the rest of the whole text allocated for
+   each string, metadata of many strings cost the square of their size. */
 static char *string(struct reader *r, size_t *len)
 {
-    char *out = malloc((size_t)(r->end - r->p) + 1), *o = out;
+    const char *q = r->p;
+    char *out, *o;
 
+    while (q < r->end && *q != '"')
+        q += *q == '\\' && q + 1 < r->end ? 2 : 1;
+    o = out = malloc((size_t)(q - r->p) + 1);
     if (!out) {
         fail(r, "no memory", NULL);
         return NULL;

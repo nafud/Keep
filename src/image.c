@@ -479,6 +479,7 @@ static void avml_block(struct image_file *f, uint64_t start, const uint8_t *buf,
         put(f, chunk, len);
         stream += len;
     }
+    explicit_bzero(chunk, sizeof chunk);        /* memory of the machine */
     le64(count, stream);
     put(f, count, sizeof count);
 }
@@ -611,6 +612,7 @@ int image_write(int core, const struct image_source *src, struct image_file *fil
     }
     explicit_bzero(buf, BLOCK);         /* memory of the machine, which holds its keys */
     free(buf);
+    snappy_wipe();
     for (k = 0, alive = 0; k < nfiles; k++) {
         out_end(&files[k]);
         alive += !files[k].failed;

@@ -24,6 +24,7 @@
 #define KEEP_VOLUME_H
 
 #include "dm.h"
+#include "util.h"
 
 #define VOL_ERR_LEN 256
 #define VOL_CIPHER_LEN 128
@@ -68,5 +69,11 @@ struct vol {
  */
 int vol_find(const struct dm_table *tabs, size_t ntabs, struct vol **vols, size_t *nvols, char err[VOL_ERR_LEN]);
 void vol_free(struct vol *vols, size_t nvols);
+
+/* What the kernel said about a mapped device, added to TEXT as "dmsetup table" prints it, with
+   each key replaced by zeros: the key of a crypt target, and the keys that a dm-integrity
+   target can have for its hash, for the encryption of its journal and for the journal's MAC
+   (hide_key in dmsetup.c of LVM2 2.03.22). */
+void vol_table_text(struct str *text, const struct dm_table *t);
 
 #endif

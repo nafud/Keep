@@ -85,6 +85,7 @@ Because it asks cryptsetup nothing, it takes none of its locks. On a volume whos
 - A header whose digest uses ripemd160 or whirlpool is backed up, and its key is proven in the lab by `vkverify.py`, not by Keep.
 - The search of a dump reads header backups, raw images and devices. The disk file of a virtual machine and an EnCase image are read by `vkverify.py`.
 - A digest that a dump holds and has no key for costs every pair of the keys of the dump: 510 s for 90 keys on one machine. These attempts come last, and their number is said before they begin.
+- A digest of a header is computed up to 16777216 iterations. cryptsetup makes a digest to cost 125 ms, which is some hundred thousand, and a header can state up to 4294967295, with which one attempt takes from 21 minutes to more than an hour.<sup><a href="#ref-5">[5]</a></sup> A digest beyond the bound is named as one that is not computed here, and the key and the list of the schedules are kept for the lab.
 - A header backup of a volume that cryptsetup is re-encrypting shows the moment of the run. The header on the device goes on changing until cryptsetup ends.
 
 ## How it is checked { #checks }
@@ -107,7 +108,7 @@ A statement on these pages about a kernel, a cryptsetup release or a distributio
 
 Keep 1 is a shell script, `keytriage.sh`, on a tool medium with a static bash, busybox, the scanner and AVML. It uses the `dmsetup` and the `cryptsetup` of the examined system. Keep 2 is the one C program of these pages, which does the work of that medium and starts no program.
 
-Version 2.0 is not released. These pages describe `keep` 2.0-pre11. The script is in the repository beside it, and the pipeline runs both on the same volumes: the C program must write the same line of the report for every volume, and header backups and keys that are the same byte for byte.
+Version 2.0 is not released. These pages describe `keep` 2.0-pre12. The script is in the repository beside it, and the pipeline runs both on the same volumes: the C program must write the same line of the report for every volume, and header backups and keys that are the same byte for byte.
 
 ## The keys of these pages { #keys }
 

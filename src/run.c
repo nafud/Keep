@@ -572,7 +572,7 @@ void run_manifest(struct run *r)
         fprintf(f, "%s  %s\n", hex, r->files[i].name);
     }
     explicit_bzero(buf, sizeof buf);    /* the files of keys/ passed through it */
-    if (fflush(f) || fsync(mfd))
+    if (written(f) || fsync(mfd))
         r->write_failed = 1;
     fclose(f);
 }
@@ -589,6 +589,11 @@ static void json_text(FILE *f, const char *s)
 
         for (i = 1; i < n && (p[i] & 0xc0) == 0x80; i++)
             ;
+        /* and none of the forms that the table of well-formed sequences leaves out (Unicode,
+           3.9): a longer form of a shorter character, a surrogate, a number above 10FFFF */
+        if (i == n && ((p[0] == 0xe0 && p[1] < 0xa0) || (p[0] == 0xed && p[1] > 0x9f) ||
+                       (p[0] == 0xf0 && p[1] < 0x90) || (p[0] == 0xf4 && p[1] > 0x8f)))
+            n = 0;
         if (!n || i < n) {
             fputs("\xef\xbf\xbd", f);
             p++;

@@ -149,9 +149,15 @@ static size_t compress(const uint8_t *in, size_t n, uint8_t *out)
     return (size_t)(out - start);
 }
 
+static uint8_t work[WORK_MAX];          /* a chunk, compressed: wiped by snappy_wipe */
+
+void snappy_wipe(void)
+{
+    explicit_bzero(work, sizeof work);
+}
+
 size_t snappy_chunk(const uint8_t *in, size_t n, uint8_t out[SNAPPY_CHUNK_MAX])
 {
-    uint8_t work[WORK_MAX];
     uint32_t crc = masked(crc32c(in, n));
     size_t packed = compress(in, n, work), len = packed < n ? packed : n;
 

@@ -17,7 +17,7 @@ sudo ./keep -d /media/evidence
 
 The screen is a card of facts: the system, then a block for each volume that ends with its verdict, then every verdict once more. An example with `-m`, with illustrative values:
 
-<div class="highlight keep-screen"><pre><code><b>keep 2.0-pre11 (2026-11)</b>
+<div class="highlight keep-screen"><pre><code><b>keep 2.0-pre12 (2026-11)</b>
 
   <i>host</i>         ws01
   <i>system</i>       Linux Mint 22.3
@@ -57,7 +57,7 @@ The screen is a card of facts: the system, then a block for each volume that end
 finished 2026-11-25T10:59:04Z, 65 s
 keep: every file of this run is flushed to the destination</code></pre></div>
 
-No key is printed. A key is named by its file in `keys/`, its length and the first 16 digits of its SHA-256. The line `in use` says what the volume carries: where it and the devices that stand on it, such as logical volumes, are mounted or used as swap. This is what a copy of the mounted files has to cover.
+No key is printed. A key is named by its file in `keys/`, its length and the first 16 digits of its SHA-256. The line `in use` says what the volume carries: where it and the devices that stand on it, such as logical volumes, are mounted or used as swap. This is what a copy of the mounted files has to cover. Where nothing is found and the kernel counts the device as open, the line says how often, and where the look-up failed it says `unknown`.
 
 `-b N` limits the proof attempts for each key in the search of memory, 64 by default.
 
@@ -119,7 +119,7 @@ sudo ./keep -m -d /media/evidence
 
 A run on a test image of 64 MiB and a container that was made for it, with the paths shortened:
 
-<div class="highlight keep-screen"><pre><code><b>keep 2.0-pre11 (2026-11)</b>
+<div class="highlight keep-screen"><pre><code><b>keep 2.0-pre12 (2026-11)</b>
 
   <i>dump</i>         /case/memory.lime
   <i>started</i>      2026-11-25T18:07:05Z

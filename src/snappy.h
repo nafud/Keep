@@ -17,6 +17,9 @@ extern const uint8_t snappy_stream_start[10];
    makes it shorter, and as it is else. Returns its length. */
 size_t snappy_chunk(const uint8_t *in, size_t n, uint8_t out[SNAPPY_CHUNK_MAX]);
 
+/* snappy_chunk keeps the last chunk it compressed: this wipes it, for data that hold keys. */
+void snappy_wipe(void);
+
 /* NULL, or what does not compute the example of its standard. */
 const char *snappy_selftest(void);
 

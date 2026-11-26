@@ -22,7 +22,9 @@ void sys_mount_free(struct sys_mount *m);
 
 /* What the block device MAJOR:MINOR carries, as one line: where it and the devices that stand
    on it, such as the logical volumes of LVM, are mounted or used as swap. Eight mounts are
-   named and further ones counted. Empty where nothing is. The caller frees it. */
+   named and further ones counted. Empty where nothing is, and NULL where it could not be
+   looked up: SYSFS does not know the device, MOUNTINFO cannot be read, or memory is short.
+   The caller frees it. */
 char *sys_in_use(const char *sysfs, const char *mountinfo, const char *swaps, unsigned major, unsigned minor);
 
 /* The types of the mounted file systems that can encrypt by themselves (eCryptfs, ZFS,

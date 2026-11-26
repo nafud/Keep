@@ -32,6 +32,7 @@ struct dm_table {
     char name[DM_NAME_LEN];
     char uuid[DM_UUID_LEN];             /* empty where the device has none */
     unsigned major, minor;
+    int open_count;                     /* how often the device is open, as the kernel counts it */
     size_t ntargets;
     struct dm_target *targets;
     void *buf;                          /* what the kernel wrote: it can hold a key */

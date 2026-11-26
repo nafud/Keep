@@ -168,6 +168,106 @@ scanner_same() {
     return $r
 }
 
+# An image that ends inside a range or a segment, a range that states more memory than the
+# file holds, and an ELF header that is cut: each is named with status 1, and none is searched
+# without end. Before 1.3 the first two ended with status 0, what was missing counted as zeros,
+# and the third ran for as long as its range was. A compressed image that is cut in its first
+# range is still named as one. A list that cannot be written ends with status 1 too. Two
+# segments of a core that state no physical address, each with another key at the same
+# place, give both keys.
+scanner_ends() {
+    local s=$1 f rc r=0
+    head -c 3000000 "$T/fx.lime" > "$T/fx.cutl"; head -c 3000000 "$T/fx.elf" > "$T/fx.cute"; head -c 6 "$T/fx.elf" > "$T/fx.six"
+    head -c 300000 "$T/fx.avml" > "$T/fx.cuta"
+    python3 -I - "$T" <<'EOF' || return 1
+import struct, sys
+t = sys.argv[1]
+open(t + "/fx.huge", "wb").write(struct.pack("<IIQQQ", 0x4C694D45, 1, 0, (1 << 62) - 1, 0) + bytes(4096))
+# two schedules of AES-256 of the fixture, each in a segment of its own at 0x100, both without an address
+raw = open(t + "/fx.raw", "rb").read()
+places = []
+for line in open(t + "/fx.list"):
+    w = line.split()
+    if w[0] == "AES-256" and w[-1] not in [k for _, k in places]:
+        places.append((int(w[2], 16), w[-1]))
+assert len(places) >= 2, places
+segs = [bytes(0x100) + raw[at:at + 240] + bytes(4096 - 0x100 - 240) for at, _ in places[:2]]
+ehdr = b"\x7fELF\x02\x01\x01" + bytes(9) + struct.pack("<HHIQQQIHHHHHH", 4, 62, 1, 0, 64, 0, 0, 64, 56, 2, 0, 0, 0)
+phdrs = b"".join(struct.pack("<IIQQQQQQ", 1, 4, 4096 * (i + 1), 0xffff800000000000 + (i << 20), 0, 4096, 4096, 4096) for i in range(2))
+open(t + "/fx.zero", "wb").write((ehdr + phdrs).ljust(4096, b"\0") + segs[0] + segs[1])
+open(t + "/fx.zero.want", "w").write("".join(sorted(k + "\n" for _, k in places[:2])))
+EOF
+    for f in cutl cute huge six cuta; do
+        timeout 60 "$s" "$T/fx.$f" > /dev/null 2> "$T/e.$f"; rc=$?
+        [ "$rc" = 1 ] || { echo "fx.$f: status $rc"; tail -n 2 "$T/e.$f"; r=1; }
+    done
+    grep -q 'ends early at file offset 3000000: the file ends inside a range\.' "$T/e.cutl" || { echo "a LiME image that is cut:"; cat "$T/e.cutl"; r=1; }
+    grep -q 'ends early at file offset 3000000: the file ends inside a segment\.' "$T/e.cute" || { echo "an ELF core that is cut:"; cat "$T/e.cute"; r=1; }
+    grep -q 'the file ends inside a range\.' "$T/e.huge" || { echo "a range of 2^62 bytes:"; cat "$T/e.huge"; r=1; }
+    grep -q 'ends inside its ELF header$' "$T/e.six" || { echo "an ELF header that is cut:"; cat "$T/e.six"; r=1; }
+    grep -q ', AVML compressed, 0 segments, ' "$T/e.cuta" || { echo "a compressed image that is cut in its first range:"; cat "$T/e.cuta"; r=1; }
+    "$s" "$T/fx.raw" > /dev/full 2> "$T/e.full"; rc=$?
+    [ "$rc" = 1 ] && grep -q 'the list of the schedules could not be written to its end$' "$T/e.full" ||
+        { echo "a list that cannot be written: status $rc"; cat "$T/e.full"; r=1; }
+    "$s" "$T/fx.zero" 2> "$T/e.zero" | sed 's/.* key //' | sort | cmp -s - "$T/fx.zero.want" ||
+        { echo "two keys at one place of two segments without an address:"; "$s" "$T/fx.zero" 2>&1 | sed 's/ key .*//'; r=1; }
+    return $r
+}
+# A page of /proc/kcore that cannot be read. The kernel then fails the whole read that holds
+# the page (read_kcore_iter), so the pages before it in that read are asked for one by one,
+# and only the page itself is zeros. Here a library that stands before the C library makes a
+# read fail in that way for one page of the raw fixture: the schedules must be those of the
+# fixture all the same, with 4096 bytes named as not read. Before 1.3 every page of that read
+# up to the unreadable one was zeros.
+scanner_page() {
+    local bad
+    cat > "$T/shim.c" <<'EOF'
+/* pread fails as a whole where it holds the byte KEEP_SHIM_BAD of the file KEEP_SHIM_FILE */
+#define _GNU_SOURCE
+#include <dlfcn.h>
+#include <errno.h>
+#include <stdlib.h>
+#include <sys/stat.h>
+#include <unistd.h>
+static ssize_t shim(int fd, void *buf, size_t n, off_t off)
+{
+    static ssize_t (*real)(int, void *, size_t, off_t);
+    const char *file = getenv("KEEP_SHIM_FILE"), *at = getenv("KEEP_SHIM_BAD");
+    struct stat a, b;
+
+    if (!real)
+        real = (ssize_t (*)(int, void *, size_t, off_t))dlsym(RTLD_NEXT, "pread64");
+    if (file && at && !fstat(fd, &a) && !stat(file, &b) && a.st_ino == b.st_ino && a.st_dev == b.st_dev) {
+        off_t bad = (off_t)strtoull(at, NULL, 10);
+
+        if (off <= bad && bad < off + (off_t)n) {
+            errno = EFAULT;
+            return -1;
+        }
+    }
+    return real(fd, buf, n, off);
+}
+ssize_t pread(int fd, void *buf, size_t n, off_t off) { return shim(fd, buf, n, off); }
+ssize_t pread64(int fd, void *buf, size_t n, off_t off) { return shim(fd, buf, n, off); }
+/* the names that a C library with fortified reads gives the call */
+ssize_t __pread_chk(int fd, void *buf, size_t n, off_t off, size_t room) { (void)room; return shim(fd, buf, n, off); }
+ssize_t __pread64_chk(int fd, void *buf, size_t n, off_t off, size_t room) { (void)room; return shim(fd, buf, n, off); }
+EOF
+    cc -shared -fPIC -O1 -o "$T/shim.so" "$T/shim.c" -ldl && cc -O2 -o "$T/keyscan-dyn" kcore-keyscan.c || { echo "the library or the scanner is not built"; return 1; }
+    # a page late in a read of 1 MiB that holds schedules, and that holds none itself
+    bad=$(python3 -I -c 'import sys
+hits = [int(l.split()[2], 16) for l in open(sys.argv[1])]
+for chunk in sorted({h >> 20 for h in hits}, reverse=True):
+    for page in range((chunk << 20) + (1 << 20) - 4096, chunk << 20, -4096):
+        if all(h + 240 <= page - 4096 or h >= page + 8192 for h in hits) and any(chunk << 20 <= h < page for h in hits):
+            print(page + 100); sys.exit(0)
+sys.exit(1)' "$T/fx.list") || { echo "the fixture has no page for this"; return 1; }
+    LD_PRELOAD="$T/shim.so" KEEP_SHIM_FILE="$T/fx.raw" KEEP_SHIM_BAD="$bad" "$T/keyscan-dyn" "$T/fx.raw" > "$T/fx.shim" 2> "$T/e.shim" ||
+        { echo "the search with a page that cannot be read: status $?"; cat "$T/e.shim"; return 1; }
+    cmp -s "$T/fx.shim" "$T/fx.list" || { echo "a page that cannot be read at $bad costs schedules:"; diff "$T/fx.list" "$T/fx.shim" | sed 's/ key .*//'; cat "$T/e.shim"; return 1; }
+    grep -q '^kcore-keyscan: 4096 bytes could not be read and count as zeros$' "$T/e.shim" || { echo "the page is not named:"; cat "$T/e.shim"; return 1; }
+}
+
 # ---- options -------------------------------------------------------------------------------------
 # "keep" takes what a run does as options and asks nothing. The search of a dump needs no root.
 # start PROGRAM [ARGUMENT...] : one start in $T/opt, with the umask of an ordinary shell and no
@@ -282,6 +382,11 @@ options() {
 if have make && have musl-gcc && have cc; then
     check "build: keep, the program, static against musl, the same with the sanitizers, and the scanner alone both ways" make -s keep keep-san tests/keyscan tests/keyscan-san
     check "scanner: static and with the sanitizers it gives the same on four formats, a cut and a damaged image" scanner_same
+    tests/keyscan "$T/fx.raw" > "$T/fx.list" 2> /dev/null
+    for s in tests/keyscan tests/keyscan-san; do
+        check "scanner: ${s##*/} names an image that ends early, a range beyond the file and a list that cannot be written with status 1, and keeps two keys at one place" scanner_ends "$s"
+    done
+    check "scanner: a page that cannot be read costs that page alone, and not the pages that were read with it" scanner_page
     for k in keep keep-san; do
         check "options: $k refuses what does not go together, names its options with -h, searches a dump into keys/ and ends with the status of the search" options "$k"
     done
@@ -606,6 +711,29 @@ t3 = table(b"lv", b"", 253, 3, [(0, 100, b"linear", b"8:3 2048"), (100, 50, b"st
 expect("three targets, one type of 16 bytes, one without a line", "table", t3,
        "0 100 linear 8:3 2048\n100 50 striped_sixteen_ 2 128 8:3 0 8:4 0\n150 10 error \n", "3 target(s)")
 expect("a device without a table", "table", table(b"empty", b"", 253, 9, []), "", "0 target(s)")
+# The table as it is kept in log/: the key of a crypt target and the three keys that a
+# dm-integrity target can have are zeros, as "dmsetup table" prints them, and a keyring
+# reference stays.
+def kept(what, data, out):
+    global bad
+    path = os.path.join(tmp, "answer.bin")
+    open(path, "wb").write(data)
+    p = subprocess.run([unit, "table-text", path], capture_output=True)
+    if p.returncode != 0 or p.stdout.decode("latin-1") != out:
+        bad += 1; print(what, ": status", p.returncode, "output", repr(p.stdout), repr(p.stderr[-200:]))
+kept("the keys of a crypt and of an integrity target",
+     table(b"vol", b"CRYPT-LUKS2-x", 253, 4, [
+         (0, 100, b"crypt", b"aes-xts-plain64 00112233aabbccdd 0 7:1 32768 1 allow_discards"),
+         (100, 50, b"integrity", b"7:2 0 32 J 4 journal_crypt:ctr(aes):0123456789abcdef internal_hash:hmac(sha256):feedface "
+                                  b"journal_mac:hmac(sha256):c0ffee00 journal_sectors:1024"),
+         (150, 10, b"integrity", b"7:3 0 32 J 1 internal_hash:crc32c"),
+         (160, 10, b"crypt", b"aes-xts-plain64 :64:logon:cryptsetup:abc-d0 0 7:1 0")]),
+     "name vol\nuuid CRYPT-LUKS2-x\ndevice 253:4\n"
+     "0 100 crypt aes-xts-plain64 0000000000000000 0 7:1 32768 1 allow_discards\n"
+     "100 50 integrity 7:2 0 32 J 4 journal_crypt:ctr(aes):0000000000000000 internal_hash:hmac(sha256):00000000 "
+     "journal_mac:hmac(sha256):00000000 journal_sectors:1024\n"
+     "150 10 integrity 7:3 0 32 J 1 internal_hash:crc32c\n"
+     "160 10 crypt aes-xts-plain64 :64:logon:cryptsetup:abc-d0 0 7:1 0\n")
 refused("a table shorter than its header", "table", t[:311])
 refused("more targets stated than the answer holds", "table", t[:20] + struct.pack("<I", 100000) + t[24:])
 refused("two targets stated and one held", "table", t[:20] + struct.pack("<I", 2) + t[24:])
@@ -1195,7 +1323,9 @@ system_parts() {
     expect "what a volume carries"          "[vg-data at /data, on-data at /data/inner one, vg-root at /, vg-home at /home]" \
         "$u" in-use "$T/sys/tree" "$T/sys/mountinfo-lvm" /dev/null 253 0
     expect "what a logical volume carries"  "[vg-home at /home]"                            "$u" in-use "$T/sys/tree" "$T/sys/mountinfo-lvm" /dev/null 253 9
-    expect "a device that /sys does not know" "[]"                                          "$u" in-use "$T/sys/tree" "$T/sys/mountinfo-lvm" /dev/null 8 1
+    expect "a device that /sys does not know" "[unknown]"                                   "$u" in-use "$T/sys/tree" "$T/sys/mountinfo-lvm" /dev/null 8 1
+    expect "a mount table that is not there" "[unknown]"                                    "$u" in-use "$T/sys/tree" "$T/sys/missing" /dev/null 253 9
+    expect "no file of the swap spaces"     "[vg-home at /home]"                            "$u" in-use "$T/sys/tree" "$T/sys/mountinfo-lvm" "$T/sys/missing" 253 9
     expect "file systems that encrypt"      "[ecryptfs fuse.gocryptfs zfs]"                 "$u" other-fs "$T/sys/mounts"
     expect "none that encrypts"             "[]"                                            "$u" other-fs "$T/sys/mounts-plain"
     expect "the lockdown mode"              "[integrity]"                                   "$u" lockdown "$T/sys/lockdown"
@@ -1210,14 +1340,41 @@ system_parts() {
     expect "no line MemTotal"               "[unknown]"                                     "$u" memory "$T/sys/os-release"
     expect "no meminfo"                     "[unknown]"                                     "$u" memory "$T/sys/missing"
     expect "a plain name"                   "[kc_l2] [kc_l2]"                               "$u" names kc_l2
-    expect "a name that leaves the folder"  "[../../etc/x] [.._.._etc_x]"                   "$u" names ../../etc/x
+    expect "a name that leaves the folder"  "[../../etc/x] [_._.._etc_x]"                   "$u" names ../../etc/x
+    expect "a name of two points"           "[..] [_.]"                                     "$u" names ..
+    expect "a name that begins with a point" "[.hidden] [_hidden]"                          "$u" names .hidden
     expect "a name with an escape sequence" "[a [31m b] [a__31m_b]"                         "$u" names "$(printf 'a\033[31m b')"
     expect "the characters that are kept"   "[A.z_0+=@,-] [A.z_0+=@,-]"                     "$u" names "A.z_0+=@,-"
     expect "an empty name"                  "[] [_]"                                        "$u" names ""
     return $r
 }
+# The memory of a run is locked, so what is allocated is taken from the free memory of the
+# machine at once. A text file is read into memory that grows with it, and a string of JSON
+# has the memory of its own bytes: under a limit of the address space of 64 MiB a file of
+# 4 MiB must be read with a maximum of 256 MiB, and under one of 200 MiB metadata of 20000
+# members in 269 KiB. Before 2.0-pre12 the first allocated its maximum and the second the rest
+# of the text for each string, which needed 5.4 GiB for those metadata. The build with the sanitizers
+# needs more address space than such a limit leaves, and is given the same without one.
+frugal() {
+    local u=$1 r=0 out limit=1
+    case $u in *-san) limit=0 ;; esac
+    head -c 3000000 /dev/urandom | base64 > "$T/big.txt"
+    python3 -I -c 'import json, sys; open(sys.argv[1], "w").write(json.dumps({str(i): "v" for i in range(20000)}))' "$T/many.json"
+    out=$( [ "$limit" = 0 ] || ulimit -v 65536; "$u" text "$T/big.txt" 268435456 )
+    [ "$out" = "$(wc -c < "$T/big.txt") bytes, sha256 $(sha256sum < "$T/big.txt" | cut -d' ' -f1)" ] || { echo "a text of 4 MiB: $out"; r=1; }
+    out=$("$u" text "$T/big.txt" 1000)
+    [ "$out" = "1000 bytes, sha256 $(head -c 1000 "$T/big.txt" | sha256sum | cut -d' ' -f1)" ] || { echo "the first 1000 bytes of it: $out"; r=1; }
+    ( [ "$limit" = 0 ] || ulimit -v 200000; "$u" json < "$T/many.json" > "$T/many.out" ) || { echo "metadata of 20000 members are not read"; r=1; }
+    python3 -I -c 'import json, sys; sys.exit(0 if json.load(open(sys.argv[1])) == json.load(open(sys.argv[2])) else 1)' "$T/many.json" "$T/many.out" ||
+        { echo "metadata of 20000 members are read as something else"; r=1; }
+    # a write that failed inside a stream, and a flush of what came after it that succeeds
+    out=$("$u" written "$T/written.txt")
+    [ "$out" = "fflush 0, ferror 1, written -1" ] || { echo "a write that failed and a flush that did not: $out"; r=1; }
+    return $r
+}
 for u in "${UNITS[@]}"; do
     check "system: ${u##*/} reads mounts, lockdown, SecureBoot and os-release, and makes names safe" system_parts "$u"
+    check "system: ${u##*/} reads a text and metadata into the memory they need, and takes a write that failed for one after a flush that did not" frugal "$u"
 done
 
 # Where a line of the screen is broken. The two first cases are lines of runs by hand on
@@ -1392,6 +1549,20 @@ other_hash() {
     "$u" luks-prove "$T/l1rmd.img" "$T/k64" | tee "$T/prove.txt"
     grep -q 'no digest that is computed here.*ripemd160' "$T/prove.txt"
 }
+# A header can state up to 4294967295 iterations for its digest, and one attempt with that many
+# takes from minutes to hours. Such a digest is named as one that is not computed here, at
+# once, and the copy of the header is made all the same.
+costly() {
+    local u=$1 out rc
+    python3 -I -c 'import sys
+d = bytearray(open(sys.argv[1], "rb").read()); d[164:168] = b"\xff\xff\xff\xff"; open(sys.argv[2], "wb").write(d)' "$T/l1.img" "$T/l1huge.img" || return 1
+    rm -f "$T/ours.hdr"
+    "$u" luks-backup "$T/l1huge.img" "$T/ours.hdr" > /dev/null && cmp -s <(head -c 2066432 "$T/l1huge.img") <(head -c 2066432 "$T/ours.hdr") ||
+        { echo "the copy of the header is not made"; return 1; }
+    out=$(timeout 20 "$u" luks-prove "$T/l1huge.img" "$T/k64"); rc=$?
+    [ "$rc" = 1 ] && [ "$out" = "no digest that is computed heresha256 with 4294967295 iterations" ] || { echo "status $rc: $out"; return 1; }
+}
+for u in "${UNITS[@]}"; do header_ways "headers: ${u##*/}, a digest of 4294967295 iterations is named as not computed, and not begun" costly "$u"; done
 if container l1rmd k64 --type luks1 --cipher aes-xts-plain64 --key-size 512 --hash ripemd160; then
     for u in "${UNITS[@]}"; do header_ways "headers: ${u##*/}, a LUKS1 header with ripemd160 is copied, and its proof is named as not computed" other_hash "$u"; done
 else
@@ -1979,7 +2150,36 @@ disturbed() {
     fi
     return $r
 }
+# What the search of a dump must say and not pass over. A file that cannot be read: the place
+# is named and the run ends with status 1 (the memory of the process itself is such a file:
+# its first page cannot be read). A key that gives the digest and whose file cannot be
+# written, here for a name that is too long: named as such, and not as a key that was not
+# found. A name that is no UTF-8, with a longer form of "/" in it: verdict.json must be JSON
+# that Python reads.
+dump_says() {
+    local k=$1 r=0 rc d long
+    case $k in /*) ;; *) k=$R/$k ;; esac
+    rm -rf "$T/says"; mkdir "$T/says" "$T/says/1" "$T/says/2" "$T/says/3" || return 1
+    "$k" -n -s "$T/dump.lime" -d "$T/says/1" /proc/self/mem > "$T/says/1.txt" 2>&1; rc=$?
+    [ "$rc" = 1 ] && tr -s '\n ' '  ' < "$T/says/1.txt" | grep -q 'headers FAILED, /proc/[0-9]*/mem cannot be read at offset 512 (.*): what lies behind that place is not searched for headers' ||
+        { echo "a file that cannot be read: status $rc"; cat "$T/says/1.txt"; r=1; }
+    long=$(printf 'n%.0s' $(seq 1 253))
+    cp "$T/l2.img" "$T/says/$long" && "$k" -n -s "$T/dump.lime" -d "$T/says/2" "$T/says/$long" > "$T/says/2.txt" 2>&1; rc=$?
+    [ "$rc" = 1 ] && tr -s '\n ' '  ' < "$T/says/2.txt" | grep -q 'verdict not proven, a key gives the digest of the header, and its file could not be written to the destination' ||
+        { echo "a key whose file cannot be written: status $rc"; cat "$T/says/2.txt"; r=1; }
+    cp "$T/l2.img" "$T/says/over"$'\xe0\x80\xaf'"long"$'\xed\xa0\x80\xf4\x90\x80\x80'".img" &&
+        "$k" -n -s "$T/dump.lime" -d "$T/says/3" "$T/says/over"$'\xe0\x80\xaf'"long"$'\xed\xa0\x80\xf4\x90\x80\x80'".img" > "$T/says/3.txt" 2>&1; rc=$?
+    d=$(ls -d "$T"/says/3/scan_* 2> /dev/null | head -n 1)
+    [ "$rc" = 0 ] && python3 -I -c 'import json, sys
+v = json.load(open(sys.argv[1], encoding="utf-8", errors="strict"))["volumes"]
+sys.exit(0 if len(v) == 1 and v[0]["verdict"] == "proven" and "\ufffd" in v[0]["name"] else 1)' "$d/verdict.json" ||
+        { echo "a name that is no UTF-8: status $rc"; cat "$T/says/3.txt"; r=1; }
+    return $r
+}
 if [ -x keep ] && [ -x keep-san ] && [ -f "$T/dump.lime" ]; then
+    for k in keep keep-san; do
+        check "dump: $k names a file that cannot be read and a key whose file cannot be written, and writes a report that is JSON for a name that is no UTF-8" dump_says "$k"
+    done
     for k in keep keep-san; do
         check "disturbed: $k ends its run and keeps every key when its terminal hangs up and its screen goes away, and under a limit of the size of a file" disturbed "$k"
     done

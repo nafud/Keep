@@ -12,11 +12,24 @@
 
 #define LUKS_ERR_LEN 256
 #define LUKS_MAX_DIGESTS 8              /* LUKS2_DIGEST_MAX of cryptsetup */
+/*
+ * The most iterations of a digest that are computed. cryptsetup makes a digest to cost 125 ms
+ * on the machine that formats (LUKS_MKD_ITERATIONS_MS in lib/luks1/luks.h and
+ * lib/luks2/luks2_digest_pbkdf2.c), which is some hundred thousand iterations: about 430000
+ * with SHA-256 where the processor has its instructions. A header can state up to 4294967295,
+ * and one attempt with that many takes from 21 minutes to more than an hour. So a digest
+ * beyond this bound is
+ * named as one that is not computed here, like one with an unknown function, and the key and
+ * the list of the schedules are kept for the lab.
+ */
+#define LUKS_MOST_ITERATIONS (1u << 24)
 
 struct luks_digest {                    /* PBKDF2 of a volume key, as the header stores it */
     unsigned number;                    /* LUKS2: the number that names it in the metadata */
     char hash[32];                      /* the name in the header */
     const struct hash_alg *alg;         /* NULL for a function that is not computed here */
+    char uncomputed[64];                /* what of it is not computed here: the function, or its number of
+                                           iterations. Empty for a digest that is */
     uint8_t salt[64], digest[HASH_MAX_DIGEST];
     size_t saltlen, digestlen;
     uint32_t iterations;
@@ -81,7 +94,7 @@ int luks_backup(int fd, const struct luks_header *h, int out, struct luks_copy *
 /*
  * Whether a key gives a digest of the header. Returns the number of that digest, counted from 1,
  * or 0 where it gives none, or -1 where no digest could be tried because none of them is
- * computed here, with the name of the hash function in *hash. A header in re-encryption has a
+ * computed here, with what is not, the hash function or the number of iterations, in *hash. A header in re-encryption has a
  * digest for the old key and one for the new: TAKEN has bit n set for the digest n + 1 that
  * another key of the volume gives already, and that digest is not tried.
  */

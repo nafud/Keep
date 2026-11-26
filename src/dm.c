@@ -247,6 +247,7 @@ int dm_table_answer(void *buf, size_t len, struct dm_table *t, char err[DM_ERR_L
     memcpy(t->name, io->name, DM_NAME_LEN);
     memcpy(t->uuid, io->uuid, DM_UUID_LEN);
     decode_dev(io->dev, &t->major, &t->minor);
+    t->open_count = io->open_count;
     avail = answer(io, len, &data);
     if (!io->target_count)
         return 0;
