@@ -1,0 +1,112 @@
+# Publishes a release of Keep: the program as the pipeline builds it, with its SHA-256.
+#
+# It is started by hand, from main: a run from another branch does nothing. The version is
+# the one that the program names (KEEP_VERSION in src/triage.h), and the tag is v and that
+# version, so the two cannot differ. The run ends without a release where
+#
+#   - checks.yml has not ended with success for this commit,
+#   - the version is none of a release, as 2.0-rc1 is none,
+#   - the tag is there already,
+#   - the file that it builds is not, byte for byte, the file that the job build of those
+#     checks built from the same commit. The two are builds in two runs, so this is also the
+#     check that the build gives one file.
+#
+# A release has three files: keep, keep.sha256 for sha256sum -c, and musl-copyright.txt, the
+# copyright notices of musl. musl is linked into keep, and its licence asks that they go with
+# a copy.
+#
+# The tag is made by the release, at the commit of the run. Actions are pinned by commit, and
+# .github/dependabot.yml proposes their updates.
+name: release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write   # the tag and the release
+      actions: read     # the result and the artifact of checks.yml
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The checks of this commit have passed
+        id: checks
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow checks.yml --commit "$GITHUB_SHA" \
+                    --status success --limit 1 --json databaseId --jq '.[].databaseId')
+          [ -n "$run" ] || { echo "checks.yml has not ended with success for $GITHUB_SHA" >&2; exit 1; }
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+      - name: Install musl
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends musl-tools
+      - name: Build keep
+        run: make keep
+      - name: The file is static and names a version that has no tag
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          file keep | tee /dev/stderr | grep -q 'statically linked\|static-pie linked'
+          ./keep -V
+          version=$(./keep -V | sed -n 's/^keep \([0-9][0-9.]*\) (.*/\1/p')
+          [ -n "$version" ] || { echo "this is no version of a release" >&2; exit 1; }
+          tag=v$version
+          there=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$tag" \
+                      --jq "map(select(.ref == \"refs/tags/$tag\")) | length")
+          [ "$there" = 0 ] || { echo "the tag $tag is there already" >&2; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - name: The file is the one that the checks built
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHECKS_RUN: ${{ steps.checks.outputs.run }}
+        run: |
+          gh run download "$CHECKS_RUN" --repo "$GITHUB_REPOSITORY" --name keep --dir "$RUNNER_TEMP/checked"
+          cmp "$RUNNER_TEMP/checked/keep" keep
+          sha256sum keep | tee keep.sha256
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHECKS_RUN: ${{ steps.checks.outputs.run }}
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          cp /usr/share/doc/musl-dev/copyright musl-copyright.txt
+          grep -q 'Permission is hereby granted' musl-copyright.txt
+          {
+              echo "\`$(./keep -V)\`, built by the pipeline from commit \`$GITHUB_SHA\`."
+              echo
+              echo '| File | |'
+              echo '|---|---|'
+              echo '| `keep` | The program: one static file for Linux on x86-64 |'
+              echo '| `keep.sha256` | Its SHA-256, for `sha256sum -c keep.sha256` |'
+              echo '| `musl-copyright.txt` | The copyright notices of musl, the C library that is linked into the file |'
+              echo
+              echo "SHA-256 of \`keep\`: \`$(cut -d ' ' -f 1 keep.sha256)\`"
+              echo
+              echo "Built on the runner image \`ubuntu-24.04\` with \`$(musl-gcc --version | head -n 1)\` and"
+              echo "\`$(dpkg-query -W -f='musl-dev ${Version}' musl-dev)\`. The file is, byte for byte, the one that"
+              echo "[the checks of this commit]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$CHECKS_RUN)"
+              echo "built in a run of their own."
+              echo
+              echo "How to check the download, how to build the file and how to use it:"
+              echo "[the pages of Keep](https://nafud.github.io/Keep/installation/)."
+          } > notes.md
+          cat notes.md
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+              --title "Keep $VERSION" --notes-file notes.md keep keep.sha256 musl-copyright.txt

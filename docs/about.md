@@ -111,7 +111,7 @@ Keep 1 was a shell script, `keytriage.sh`, on a tool medium with a static bash, 
 
 While the C program was written, the pipeline ran both on the same volumes, on its two machines and in the ten guests: the C program wrote the same line of the report for every volume, and header backups and keys that were the same byte for byte. With that shown, the script and its medium were taken out of the repository, where its history keeps them, and the program is now held against `cryptsetup` and `dmsetup` themselves.
 
-These pages describe `keep` 2.0-rc1, the release candidate of 2.0. Version 2.0 is not released.
+These pages describe `keep` 2.0. [Installation](installation.md#release) says where the file of that release is.
 
 ## The keys of these pages { #keys }
 

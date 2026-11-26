@@ -96,8 +96,8 @@ jobs:
           ./keep -h > /dev/null
           rc=0; ./keep -Z 2> /dev/null || rc=$?; [ "$rc" = 2 ]
           sha256sum keep | tee keep.sha256
-      # The program as this commit builds it, with its SHA-256. It is linked against musl
-      # alone, whose licence lets the file be passed on as it is.
+      # The program as this commit builds it, with its SHA-256. release.yml publishes a file
+      # only where it is this one byte for byte.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: keep

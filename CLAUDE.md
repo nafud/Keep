@@ -43,7 +43,7 @@ README.
 | `docs/`, `overrides/`, `mkdocs.yml` | GitHub Pages | The pages of Keep, built with Material for MkDocs: the home page `index.md` and the sections `installation.md`, `usage.md`, `systems.md` and `about.md`, the stylesheet `stylesheets/extra.css`, the page scripts in `javascripts/`, the fonts in `assets/fonts/`, and the templates in `overrides/` |
 | `requirements.in`, `requirements.txt` | pipeline, workstation | The packages that build the pages: MkDocs and Material, and in the second file every package they bring along, each with its version and its SHA-256 |
 | `tests/pages-check.sh` | test, workstation and pipeline | Builds the pages with `mkdocs build --strict` and reads what was built: the pages, the frame, that nothing is loaded from another host, the version, the references |
-| `.github/workflows/` | GitHub | `checks.yml` runs the self-test and the unit checks, builds and reads the pages, builds `keep` and keeps the file, and runs `compat-check.sh` on two runner images on every push. `distros.yml` runs it in guests of ten distribution releases. `pages.yml` builds the pages and publishes them from `main` |
+| `.github/workflows/` | GitHub | `checks.yml` runs the self-test and the unit checks, builds and reads the pages, builds `keep` and keeps the file, and runs `compat-check.sh` on two runner images on every push. `distros.yml` runs it in guests of ten distribution releases. `pages.yml` builds the pages and publishes them from `main`. `release.yml` publishes a release: `keep` as the pipeline builds it from `main`, with its SHA-256 |
 
 `kcore-keyscan.c` includes `src/keyscan.h`, and the `Makefile` at the root builds `keep` from
 `src/` and from `kcore-keyscan.c`, so the scanner stays at the root. `vkverify.py` stands
@@ -327,13 +327,21 @@ sha256sum keep          # for the notes of the examination
 
 - `keep` is C11 with the standard library, linked statically against musl with the warnings
   of the `Makefile` as errors. The build downloads nothing. A static program against musl
-  needs nothing of the system it runs on, and the licence of musl (MIT) lets the file be
-  passed on as it is.
+  needs nothing of the system it runs on. The licence of musl (MIT) lets the file be passed
+  on and asks that its copyright notices go with a copy: of the files of musl, only the
+  public headers and the start files may be used without them, as the `copyright` file of
+  the package `musl-dev` 1.2.4-2 of Ubuntu 24.04 states the terms. A release has that file
+  as `musl-copyright.txt`.
 - `make san` builds the program and its parts once more against the C library of the
   workstation with the address and undefined-behaviour sanitizers, for the checks.
 - The job `build` of `checks.yml` builds `keep` on every push and keeps the file with its
-  SHA-256 as an artifact of that run, for 30 days. There is no release yet, and no built file
-  is published.
+  SHA-256 as an artifact of that run, for 30 days. A release has the file as `release.yml`
+  builds it (see "The pipeline and the page").
+- The build gives one file for one compiler and one musl. Commit `519023c` gave the same
+  file, with the SHA-256 `890e3923...612fedf5`, in the job `build` of the pipeline and in two
+  directories of different names on another machine, each with gcc 13.3.0-6ubuntu2~24.04.1
+  and musl-dev 1.2.4-2 of Ubuntu 24.04. A build with another compiler or another musl was
+  not compared with it.
 - The examined system needs nothing installed: the program uses no `dmsetup`, no `cryptsetup`
   and no shell of that system.
 
@@ -1394,7 +1402,8 @@ image of its own:
 7. A change of behaviour raises the version of the file it is in: `KEEP_VERSION` in
    `src/triage.h` for the program, and `VERSION` in `kcore-keyscan.c` and in `vkverify.py`. The
    version of the program is written into every report of it and stands on the pages, that of
-   the scanner into its summary line, and that of `vkverify.py` into its report.
+   the scanner into its summary line, and that of `vkverify.py` into its report. A release
+   is a version of the program without a suffix, and its tag is `v` and that version.
 8. A statement about behaviour on a kernel, a cryptsetup release or a distribution is checked
    against the source of that exact version or against a run, and is otherwise marked as not
    verified. A distribution counts as supported only after `tests/compat-check.sh` ended with
@@ -1701,8 +1710,17 @@ from each the disk byte for byte and prove both keys.
   cryptsetup of its guest. An image is a dated build, pinned like any download (rule 6). Where
   a distribution removes the build, the job fails at the download, and the newer build and its
   published value are entered in the list.
-- No built file is published by the pipeline. The artifact of `build` is the record of what a
-  commit builds, and a release would attach that file with its SHA-256.
+- `release.yml` publishes a release. It is started by hand from `main` and takes no input:
+  the version is the one that the program names, and the tag is `v` and that version. It
+  ends without a release where `checks.yml` has not ended with success for the commit, where
+  the version is none of a release, as `2.0-rc1` is none, where the tag is there, and where
+  the file that it builds is not byte for byte the file that the job `build` of those checks
+  built from the same commit. A release has `keep`, `keep.sha256` and `musl-copyright.txt`,
+  and its text names the commit, the SHA-256, the compiler and the musl. The tag is made by
+  the release at that commit. `distros.yml` is no condition of the run, because it does not
+  run for every commit: who releases reads its last run.
+- The artifact of `build` is the record of what a commit builds, kept for 30 days. A release
+  of a commit whose artifact is gone needs a new run of `checks.yml` first.
 - Actions are pinned by commit hash with the release in a comment. `dependabot.yml` proposes
   their updates.
 - `pages.yml` builds the pages with `mkdocs build --strict` and publishes `site/`, from `main`
@@ -1737,7 +1755,8 @@ from each the disk byte for byte and prove both keys.
   - `index.md`, the home page: the word Keep, drawn in characters by `ascii-logo.js` from a
     blackletter typeface whose three glyphs are embedded in that script, two sentences on
     what Keep is, and one closing line.
-  - `installation.md`: what the build needs, the build, its check and the way to the scene.
+  - `installation.md`: the released file and how to check it, what the build needs, the
+    build, its check and the way to the scene.
   - `usage.md`: the three runs with samples of the screen, the verdicts, the files of a run,
     the options and the exit status. A sample of the screen is HTML inside the Markdown, a
     `div` with the classes `highlight keep-screen`, so that it can carry the tones.
@@ -1764,9 +1783,11 @@ from each the disk byte for byte and prove both keys.
     musl.libc.org could not be fetched from where the pages were written, and the files of
     the kernel are named by their release and path on GitHub and were not fetched there. The
     others were fetched and their titles compared.
-  - The build of Material for MkDocs 9.8.1 says of itself that it reaches its end of life
-    on May 5, 2027, with fixes until then, and names Zensical as its successor. Kiln is
-    built with the same release.
+  - The build of Material for MkDocs 9.8.2 says of itself that it reaches its end of life
+    on May 5, 2027, with fixes until then, and names Zensical as its successor. Keep took
+    the setup of Kiln over with 9.8.1. 9.8.2 came as a proposal of dependabot: its two
+    hashes are those that PyPI states for the release, and the pages it builds differ from
+    those of 9.8.1 in the line that names the generator and in nothing else.
 
 ## Systems checked
 

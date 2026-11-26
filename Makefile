@@ -9,7 +9,8 @@
 #   make clean
 #
 # musl-gcc is the package musl-tools of Debian and Ubuntu. A static program against musl needs
-# nothing of the system it runs on, and musl's licence (MIT) lets the file be passed on as it is.
+# nothing of the system it runs on, and musl's licence (MIT) lets the file be passed on with the
+# copyright notices of musl beside it.
 CC       = musl-gcc
 SANCC    = cc
 WARN     = -Wall -Wextra -Wshadow -Wpointer-arith -Wstrict-prototypes -Wmissing-prototypes -Wformat=2 -Werror
