@@ -882,7 +882,12 @@ image of its own:
   - The image of AVML held the digests of the header at one place, and the key was proven
     from them at the first attempt: the key that the triage captured afterwards, its
     schedules at the same addresses. udisks2 2.9.0 is installed there, and its daemon was
-    not running. The object `digests` began 473 bytes after the start of a page.
+    not running. The object `digests` began 473 bytes after the start of a page, which is
+    where it lies in the block of the metadata on the partition. After a restart, before
+    any tool had read the partition, the kernel named that block as one that its cache of
+    the partition holds (`mincore` on a mapping of the device: the blocks 0, 1, 3 and 7 of
+    its first eight). So it was the page cache that held the digests there. What had read
+    the block at boot was not looked at.
   - The LiME image of the program had 4274385184 bytes in 9 ranges and was written with
     direct writes to xfs in 7 s. The `System.map` of `/boot` was kept beside it. kdump was
     on, and the 256 MiB that the kernel keeps for it lie in a range of the image.
@@ -937,11 +942,12 @@ image of its own:
 - The proof from a dump alone is seen on one guest, with udisks2 2.10.1, and on the machine
   with Linux Mint 22.3, whose udisks2 was not noted, each time for a container on a loop
   device that was opened by hand, and on the guest with RHEL 8.10 for the root volume,
-  opened at boot, where the daemon of udisks2 was not running. What held the digests there
-  is not known. Whether a system without udisks2 holds the metadata of a LUKS2 header
-  anywhere is not known either, and neither is it for metadata with several keyslots or
-  tokens, where the object `digests` can lie across two pages that do not follow each other
-  in memory.
+  opened at boot, where the daemon of udisks2 was not running and the page cache held the
+  block of the metadata. That is one guest, minutes after its start: how long such a block
+  stays in the cache of a machine in use is not known, and what reads it at boot neither.
+  Not known either is what a machine holds of metadata with several keyslots or tokens,
+  where the object `digests` can lie across two pages that do not follow each other in
+  memory.
 - The colours and the line that is written over are checked on a pseudo-terminal, with the
   search of a dump, by the bytes that the program writes there. How they look was seen in
   the terminal emulator of Linux Mint 22.3, over SSH, for the search of a dump and for the
