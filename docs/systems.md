@@ -74,7 +74,7 @@ The guests have 2 GiB of memory and boot with BIOS under KVM, so kernel lockdown
 <dt>xts driver</dt><dd><code>xts-aes-aesni</code></dd>
 <dt>symbols</dt><dd>System.map kept</dd>
 </dl>
-<p>The oldest kernel on which Keep was run.</p>
+<p>The oldest kernel that the check runs on.</p>
 </div>
 <div class="system-card">
 <span class="system-card-title">Rocky Linux 10.3</span>
@@ -136,7 +136,9 @@ The same check runs on the two runner images of the pipeline itself, on every ch
 
 ## Run by hand { #hand }
 
-One machine that is no guest, with Secure Boot on. Keep was run on it by its options, without the check, and the screen and the report of each run were read.
+On these systems Keep was run by its options, without the check, and the screen and the report of each run were read. All of them have Secure Boot on, and with it kernel lockdown in the mode `integrity`.
+
+One is a machine that is no guest.
 
 <div class="home-grid">
 <div class="system-card">
@@ -151,15 +153,62 @@ One machine that is no guest, with Secure Boot on. Keep was run on it by its opt
 </div>
 </div>
 
+Four are guests under KVM with UEFI and 4 GiB of memory, each installed from the installer of its distribution, with the automatic partitioning and the encryption that the installer offers: a LUKS2 partition that holds the volume group of the system and is opened at boot. On each of them the root volume, its key in the kernel keyring, got <span class="reached">captured and proven</span> from memory, and Keep named the logical volumes on it as what it carries. An image that AVML took of the guest gave the same key with no file at all. The image of Keep was written with direct writes in 6 to 7 s.
+
+<div class="home-grid">
+<div class="system-card">
+<span class="system-card-title">Red Hat Enterprise Linux 8.10</span>
+<dl>
+<dt>kernel</dt><dd>4.18.0-553.el8_10.x86_64</dd>
+<dt>cryptsetup</dt><dd>2.3.7</dd>
+<dt>xts driver</dt><dd><code>xts-aes-aesni</code></dd>
+<dt>symbols</dt><dd>System.map kept</dd>
+</dl>
+<p>A Minimal Install, and the oldest kernel on which Keep was run. Four pages of RAM, 16384 bytes, are in no segment of <code>/proc/kcore</code> there, which the run counts: pages in which one range of the memory map ends and the next begins.</p>
+</div>
+<div class="system-card">
+<span class="system-card-title">Red Hat Enterprise Linux 9.9</span>
+<dl>
+<dt>kernel</dt><dd>5.14.0-741.20.1.el9_9.x86_64</dd>
+<dt>cryptsetup</dt><dd>2.8.6</dd>
+<dt>xts driver</dt><dd><code>xts-aes-aesni</code></dd>
+<dt>symbols</dt><dd>System.map kept</dd>
+</dl>
+<p>A Minimal Install. Four pages of RAM are in no segment of <code>/proc/kcore</code> here too.</p>
+</div>
+<div class="system-card">
+<span class="system-card-title">Red Hat Enterprise Linux 10.3</span>
+<dl>
+<dt>kernel</dt><dd>6.12.0-264.14.1.el10_3.x86_64</dd>
+<dt>cryptsetup</dt><dd>2.8.6</dd>
+<dt>xts driver</dt><dd><code>xts-aes-vaes-avx2</code></dd>
+<dt>symbols</dt><dd>System.map kept</dd>
+</dl>
+<p>A Minimal Install. The keys were taken before AVML ran and after it, with the same key each time.</p>
+</div>
+<div class="system-card">
+<span class="system-card-title">Ubuntu Server 26.04.1</span>
+<dl>
+<dt>kernel</dt><dd>7.0.0-44-generic</dd>
+<dt>cryptsetup</dt><dd>2.8.4</dd>
+<dt>xts driver</dt><dd><code>xts-aes-vaes-avx2</code></dd>
+<dt>symbols</dt><dd>System.map kept</dd>
+</dl>
+<p>Installed with its LVM group encrypted. The installer names the mapping <code>dm_crypt-0</code> and gives the root file system half of the volume group, so there is less room for an image than the disk suggests.</p>
+</div>
+</div>
+
+A search of `/proc/kcore` after AVML had run listed more key schedules than one before it: 50 where it had listed 24 on RHEL 10.3, and 153 for 46 on Ubuntu Server. AVML writes its image through the page cache, and of a file that it wrote on the guest with Ubuntu Server the cache held 645368 of 855168 pages. The runs of Keep added none. So after such an image an address that a run names for a schedule can be that of a copy.
+
 ## The drivers of XTS { #drivers }
 
 On x86-64 the kernel keeps the two key schedules of an `aes-xts` volume in one structure, the tweak schedule first and the data schedule 496 bytes after it. Keep pairs the schedules it finds in memory by that distance. The runs met four implementations, and with each of them the two halves of the key lay at that distance: `xts-aes-aesni`, `xts-aes-vaes-avx2`, `xts-aes-vaes-avx512` and `xts-aes-vaes-avx10_512`.
 
 ## Not checked { #not }
 
-- Red Hat Enterprise Linux itself. The pipeline runs AlmaLinux and Rocky Linux, which are made to be compatible with it.
-- Kernels before 5.14. What Keep asks of the kernel is read in the sources from Linux 4.18 on, the kernel of RHEL 8, and is not run there.
-- Linux Mint and a system with Secure Boot on are run by hand on one machine and not by the check, because Linux Mint has no cloud image.
+- Red Hat Enterprise Linux in the pipeline, which runs AlmaLinux and Rocky Linux, made to be compatible with it. On RHEL itself Keep was run by hand, on one LUKS2 volume with its key in the keyring.
+- Kernels before 5.14 in the pipeline. On Linux 4.18, the kernel of RHEL 8, Keep was run by hand on one guest: the keys of such a volume, an image and the search of a dump. A key in the table, LUKS1, a volume with integrity and one in re-encryption are not run there.
+- Linux Mint, which has no cloud image, and every system with Secure Boot on are run by hand and not by the check.
 - openSUSE Tumbleweed, which has no dated build to pin.
 - Kernel lockdown in the mode `confidentiality`, which refuses `/proc/kcore`. Keep then says so and ends with <span class="not">live copy only</span> for a volume whose key is in the keyring. This is read in the source of the kernel and not run.
 - Any processor that is not x86-64.

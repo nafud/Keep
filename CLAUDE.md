@@ -592,6 +592,10 @@ Read in Linux 4.18, 5.10, 6.12 and 6.18, cryptsetup 2.0.6, 2.3.7, 2.7.0 and 2.8.
     has taken `O_DIRECT` off the descriptor (`iwrite` in `dd.c`), and names the file to the
     kernel as one whose pages are not needed once it is flushed (`POSIX_FADV_DONTNEED` in
     `invalidate_cache`). The program does both.
+  - A page that the cache lets go is free memory and keeps its bytes until it is used
+    again. The kernel wipes a page that is freed only where `init_on_free` is on
+    (`free_pages_prepare` in `mm/page_alloc.c` of Linux 6.12). Linux 4.18 has no such
+    switch and writes over a freed page only with page poisoning, which is for debugging.
 - Colour on a terminal is the SGR sequences of ECMA-48. Read in Linux 4.18 and 6.12, git
   2.43.0, sudo 1.9.15p5 and the text of no-color.org:
   - The console of Linux takes 1 for bold, 30 to 37 for the eight colours and 0 for the end
@@ -718,8 +722,11 @@ Read in Linux 4.18, 5.10, 6.12 and 6.18, cryptsetup 2.0.6, 2.3.7, 2.7.0 and 2.8.
     the file system of the destination has no direct writes, the image goes through the
     cache, and the run and `direct_io` of the report say so. What is left at the end of a
     file and is no whole block of 4096 bytes goes through the cache as well: one page. A
-    file that is flushed has the pages that the cache holds of it let go, so that no copy
-    of the image, which holds the keys, stays in the memory of the machine.
+    file that is flushed has the pages that the cache holds of it let go, so that the
+    cache keeps no copy of the image, which holds the keys. A page that is let go keeps
+    its bytes until the kernel uses it again (see "What the sources say"), so this says
+    less for an image that went through the cache than the direct writes do, which put
+    no page of it there.
   - An image is started where the destination has room for it and 64 MiB more. A compressed
     image is started whatever room there is, as with `keytriage.sh`, except beside other
     images, where it must not take their room and needs room for the most it can take.
@@ -927,9 +934,9 @@ image of its own:
     schedules in the memory a second time, and the runs of the program leave none. After
     AVML the triage named the lower address of such a copy for the pair, and before it
     the address at which the image of AVML has the pair. Which memory holds the copies
-    was not found out: AVML reads each block into a buffer of its own before it writes
-    it, and it writes through the page cache (`copy_if_nonzero` in `image.rs` of AVML
-    0.21.0). The address that a run names for a schedule is one at which the schedule
+    was not looked at there, and was on the guest with Ubuntu Server (below): AVML reads
+    each block into a buffer of its own before it writes it, and it writes through the
+    page cache (`copy_if_nonzero` in `image.rs` of AVML 0.21.0). The address that a run names for a schedule is one at which the schedule
     lies, and not always the one that the kernel works with.
   - The LiME image of the program had 4274372832 bytes in 7 ranges, written with direct
     writes to xfs in 6 s, with the `System.map` of `/boot`. `/proc/iomem` names no range
@@ -943,7 +950,8 @@ image of its own:
   - The daemon of udisks2 2.10.91 was running there, the one guest of the four where it
     was. The cache of the partition held all of its first eight blocks before any tool
     had read it. The image of AVML held the digests 474 bytes after the start of a page,
-    and the key was proven from them at the first attempt.
+    which is where they lie in the block of the metadata on the partition, and the key
+    was proven from them at the first attempt.
   - The search of `/proc/kcore` listed 46 schedules before AVML ran, 153 after it and 146
     after a key run and a search of the image. The image of AVML held 100. So here too
     the run of AVML leaves the schedules a further time, and the image holds more of them
@@ -951,6 +959,16 @@ image of its own:
     the memory held what it had held before and once more what the image holds, 46 and
     100 here and 24 and 26 on RHEL 10.3, which fits the file of the image lying whole in
     the page cache.
+  - To see what the cache holds of such a file, AVML was run once more at the end. Its
+    first image had 2.25 GiB in 148 ranges. The second did not fit the room that was
+    left: AVML ended with `No space left on device` and left the part it had written,
+    855168 pages, 3.26 GiB. Before anything read that file, the kernel named 645368 of
+    its pages, 2.46 GiB, as pages that its cache holds (`mincore` on a mapping of the
+    file), on a machine with 3.30 GiB of memory. So the cache holds the file of AVML as
+    far as the memory has room for it, and with it the schedules that lie in those
+    pages. The part of the second image was larger than the whole first one, so the
+    memory held more blocks that are not zeros than at the first run. Which of the steps
+    between the two filled them was not told apart.
   - The LiME image of the program had 4274352352 bytes in 7 ranges, written with direct
     writes to ext4 in 6 s, with the `System.map` of `/boot`. `/proc/kcore` offered all of
     the RAM. The installer gives the root file system half of the volume group, so the
@@ -992,8 +1010,12 @@ image of its own:
   writes ends the direct writes of that file, which then goes through the cache. No file
   system that does this was found to check it on.
 - That the image of AVML, written through the cache, costs memory that it has yet to read is
-  what the fewer blocks of zeros in later images fit (see "Where it has run"). How much of
-  the memory of a machine an image through the cache overwrites was not measured.
+  what the fewer blocks of zeros in later images fit (see "Where it has run"). On the
+  installed guest with Ubuntu Server the cache held 2.46 GiB of a file of AVML on a
+  machine with 3.30 GiB of memory, and a second image of AVML had more blocks that are not
+  zeros than the first (see above). What lay before in the memory that such a file takes,
+  and so what an image through the cache costs of the remains of earlier work, was not
+  measured.
 - A destination with FAT32 takes no file of 4 GiB, so an image of a machine with that much
   memory fails there and is removed. A raw image on a file system that keeps no holes, as
   FAT and exFAT, has what lies between the ranges written as zeros. Neither is run.

@@ -43,7 +43,9 @@ A header whose keyslots were erased with `cryptsetup erase` keeps its digest. A 
 
 Nothing in the kernel keeps a LUKS header: dm-crypt is given the key and the cipher, and cryptsetup reads the header past the page cache where it can.<sup><a href="#ref-5">[5]</a> <a href="#ref-10">[10]</a></sup> What a machine holds of a header is what else read it. On a guest with Ubuntu 24.04.5, `udisksd` held the whole metadata of an open LUKS2 volume in its memory a minute after the volume was opened.
 
-So the search of a dump looks for a LUKS1 header at the start of a page and for the digests of a LUKS2 header, and proves keys against them. From such a dump alone, with no disk image, Keep proved the volume keys of the open containers. This is seen on one guest and on one machine with Linux Mint 22.3. Whether a system without udisks2, as a server installation, holds these metadata is not known.
+So the search of a dump looks for a LUKS1 header at the start of a page and for the digests of a LUKS2 header, and proves keys against them. From such a dump alone, with no disk image, Keep proved the volume keys of the open containers. This is seen on one guest and on one machine with Linux Mint 22.3, for a container that was opened by hand, and on four installed guests for the root volume, opened at boot.
+
+On three of those four, minimal installations of Red Hat Enterprise Linux 8.10, 9.9 and 10.3, `udisksd` was not running. There the page cache of the partition held the block of the metadata before any tool had read the partition, and the digests lay in the dump where they lie in that block. What reads the block at boot was not looked at, and how long it stays in the cache of a machine in use is not known.
 
 ### The keys first, then the image { #order }
 
@@ -51,7 +53,7 @@ An event can close the window of the keys within seconds. An image of the memory
 
 ### An image that does not overwrite what it reads { #direct }
 
-A file that is written in the usual way goes through the page cache: the kernel takes free memory for its pages, and what lay there is gone. Free memory is where the remains of earlier work lie, and an image of a large machine is a large file. Keep writes an image with direct writes, from the memory of the program to the device, where the file system of the destination has them, and lets the pages of a flushed file go.<sup><a href="#ref-13">[13]</a></sup> In the runs of the pipeline no page of any image lay in the cache after the run.
+A file that is written in the usual way goes through the page cache: the kernel takes free memory for its pages, and what lay there is gone. Free memory is where the remains of earlier work lie, and an image of a large machine is a large file. Keep writes an image with direct writes, from the memory of the program to the device, where the file system of the destination has them, and lets the pages of a flushed file go.<sup><a href="#ref-13">[13]</a></sup> In the runs of the pipeline no page of any image lay in the cache after the run. Of a file that AVML wrote through the cache on a guest with 3.30 GiB of memory, the cache held 2.46 GiB.
 
 The memory is read as AVML reads it, the ranges that `/proc/iomem` names as RAM through `/proc/kcore`, and the formats are those of LiME and AVML with the framed Snappy stream.<sup><a href="#ref-14">[14]</a> <a href="#ref-15">[15]</a> <a href="#ref-16">[16]</a></sup> AVML itself converts the images of Keep, byte for byte to the files that the formats define. `banners.Banners` of Volatility 3 has read one of its LiME images.<sup><a href="#ref-17">[17]</a></sup>
 
