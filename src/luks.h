@@ -35,7 +35,15 @@ struct luks_header {
 };
 
 /*
- * Read the header at the start of fd, a device or a file. Returns 0, 1 where there is no LUKS
+ * Open a device or a file for the reads of its header, read-only: with O_DIRECT, which reads
+ * past the page cache, as cryptsetup opens a device, and in the usual way where the open or a
+ * first read with it is refused. *direct says which. Returns the descriptor, or -1 with errno.
+ */
+int luks_open(const char *path, int *direct);
+
+/*
+ * Read the header at the start of fd, a device or a file. A descriptor that is open with
+ * O_DIRECT is read in whole blocks, past the page cache. Returns 0, 1 where there is no LUKS
  * header (err says what is there instead) and -1 where a read failed or a header is damaged.
  */
 int luks_read(int fd, struct luks_header *h, char err[LUKS_ERR_LEN]);
@@ -55,12 +63,20 @@ int luks_digests(const char *text, size_t len, struct luks_header *h);
    a disk. */
 int luks_read_at(int fd, uint64_t base, struct luks_header *h, char err[LUKS_ERR_LEN]);
 
+struct luks_copy {                      /* the copy of a header that luks_backup writes */
+    int direct;                         /* set by the caller: the file is open for direct writes (create_direct).
+                                           0 afterwards where a write had to go through the page cache */
+    uint64_t bytes;                     /* written */
+    uint8_t sha256[32];                 /* of a copy that is complete */
+    int write_failed;                   /* it failed at a write to the file, and not at a read of the device */
+};
+
 /*
- * Write to out what "cryptsetup luksHeaderBackup" writes for this header: the header and the
- * keyslot area as they are on the device, to a multiple of the page size. *written is the number
- * of bytes. Returns 0, or -1 with err.
+ * Write to out, an empty file, what "cryptsetup luksHeaderBackup" writes for this header: the
+ * header and the keyslot area as they are on the device, to a multiple of the page size.
+ * Returns 0, or -1 with err.
  */
-int luks_backup(int fd, const struct luks_header *h, int out, uint64_t *written, char err[LUKS_ERR_LEN]);
+int luks_backup(int fd, const struct luks_header *h, int out, struct luks_copy *copy, char err[LUKS_ERR_LEN]);
 
 /*
  * Whether a key gives a digest of the header. Returns the number of that digest, counted from 1,

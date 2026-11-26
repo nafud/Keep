@@ -24,6 +24,7 @@ struct run {
     int begun;                          /* a line was printed */
     time_t started;
     int write_failed;                   /* a write or a flush failed: the run ends with status 1 */
+    int line_lost;                      /* a line could not be put together for lack of memory: the same */
     struct run_file *files;             /* every file of the run, for the manifest */
     size_t nfiles;
     char **stems;                       /* the names that files of volumes and keys have taken */
@@ -57,6 +58,11 @@ enum run_tone {
    are written over. PLAIN is the option -n. */
 void run_screen(struct run *r, int plain);
 
+/* triage.txt of the folder of the run, which takes every line from here on. Each line is
+   written when it is whole, so that a run that is ended from outside leaves the lines it
+   had. Returns 0, or -1 with errno. */
+int run_report(struct run *r);
+
 /* One line as it is. */
 void run_say(struct run *r, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 /* The title of a block, with an empty line before it unless it is the first line. */
@@ -88,6 +94,19 @@ unsigned run_seconds(const struct run *r);
 /* A new file of the run, opened with FLAGS. It must not exist, so nothing of an earlier run is
    written over. Returns the descriptor, or -1 with errno. */
 int run_create(struct run *r, const char *rel, int flags, mode_t mode);
+
+/* The same for a file that is written with direct writes, which pass the page cache, where the
+   file system of the destination has them (create_direct of util.h). ACCESS is O_WRONLY or
+   O_RDWR, and *direct says which way the file is open. */
+int run_create_direct(struct run *r, const char *rel, int access, mode_t mode, int *direct);
+
+/* The SHA-256 of a file of run_create that was computed while it was written, so that the
+   manifest does not read the file again. */
+void run_hashed(struct run *r, const char *rel, const uint8_t sha256[32]);
+
+/* Take a file of run_create away again, from the folder and from the manifest: the part of a
+   file whose write failed, which would take the room of what is still to be written. */
+void run_remove(struct run *r, const char *rel);
 
 /* A file that was written without run_create and whose SHA-256 was computed on the way, for the
    manifest. Returns 0, or -1 without memory. */

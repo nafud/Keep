@@ -6,6 +6,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <sys/types.h>
 
 /* A text that grows. After a failed allocation it stays as it was and failed is set. */
 struct str {
@@ -45,5 +46,29 @@ int pathf(char *out, const char *fmt, ...) __attribute__((format(printf, 2, 3)))
 
 int write_all(int fd, const void *buf, size_t n);              /* 0, or -1 with errno */
 int flush_path(const char *path);                              /* fsync of a file or directory */
+
+/*
+ * Writes that pass the page cache (O_DIRECT). A file that is written in the usual way takes
+ * free memory of the machine for its pages, and what lay in that memory is gone. A direct write
+ * goes from the memory of the program to the device. It must be whole blocks: its place in the
+ * file, its length and the address of its memory are multiples of DIRECT_BLOCK, which is a
+ * multiple of the block of every device that Linux has up to a page.
+ */
+#define DIRECT_BLOCK 4096u
+
+/*
+ * Make the file PATH, which must not exist, with MODE, and open it as ACCESS says (O_WRONLY or
+ * O_RDWR) for direct writes. A file system without them refuses the file at open, and it is
+ * then opened for writes through the page cache, with *direct 0. Returns the descriptor, or -1
+ * with errno.
+ */
+int create_direct(const char *path, int access, mode_t mode, int *direct);
+
+/*
+ * Write n bytes at OFF of a file. Where *direct is set and the file system refuses the write
+ * (EINVAL), the descriptor has O_DIRECT taken off, *direct becomes 0 and the bytes go through
+ * the page cache, as all that follow. Returns 0, or -1 with errno.
+ */
+int pwrite_all(int fd, const void *buf, size_t n, uint64_t off, int *direct);
 
 #endif

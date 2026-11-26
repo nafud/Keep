@@ -770,7 +770,7 @@ int dump_run(const struct dump_options *o)
         return run_die("the path of the folder of this run is too long: %s/scan_%s_%s", dest, name, stamp);
     if (mkdir(r->out, 0700) || pathf(path, "%s/keys", r->out) || mkdir(path, 0700))
         return run_die("cannot create %s: %s", r->out, strerror(errno));
-    if ((fd = run_create(r, "triage.txt", O_WRONLY, 0600)) < 0 || !(r->report = fdopen(fd, "w")))
+    if (run_report(r))
         return run_die("cannot create %s/triage.txt: %s", r->out, strerror(errno));
 
     run_title(r, "keep %s", KEEP_VERSION);
@@ -1011,6 +1011,10 @@ int dump_run(const struct dump_options *o)
     free(targets);
     if (r->write_failed) {
         fprintf(stderr, "keep: a write or a flush to the destination FAILED, the folder is not complete\n");
+        return status ? status : 1;
+    }
+    if (r->line_lost) {
+        fprintf(stderr, "keep: a line of the report could not be put together for lack of memory, triage.txt is not whole\n");
         return status ? status : 1;
     }
     run_tell(r, "keep: every file of this run is flushed to the destination");

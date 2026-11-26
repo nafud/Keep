@@ -77,7 +77,7 @@
 #define BLOCK (16u << 20)       /* read and handed to the formats at once. The block of AVML */
 #define PIECE (1u << 20)        /* asked of the source at once */
 #define PAGE  4096u
-#define ALIGN 4096u             /* of a direct write: its place in the file, its length, its memory */
+#define ALIGN DIRECT_BLOCK      /* of a direct write: its place in the file, its length, its memory */
 #define CHUNK (1u << 20)        /* written to a file at once, a multiple of ALIGN */
 #define NO_ADDRESS (~(uint64_t)0)       /* p_paddr of a segment that is not physical memory */
 
@@ -334,49 +334,13 @@ uint64_t image_size(enum image_format f, const struct image_source *src, int *ex
 
 int image_open(struct image_file *f, const char *path)
 {
-    const int flags = O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW;
-
-    f->direct = 1;
-    if ((f->fd = open(path, flags | O_DIRECT, 0600)) >= 0 || errno != EINVAL)
-        return f->fd < 0 ? -1 : 0;
-    /* A file system without direct writes. The kernel made the file before it refused it
-       (the file is created in lookup_open, and refused in do_dentry_open after that). */
-    f->direct = 0;
-    if (unlink(path) && errno != ENOENT)
-        return -1;
-    return (f->fd = open(path, flags, 0600)) < 0 ? -1 : 0;
+    return (f->fd = create_direct(path, O_WRONLY, 0600, &f->direct)) < 0 ? -1 : 0;
 }
 
 /* N bytes of the buffer of a file to the offset where they belong. */
 static int out_write(struct image_file *f, size_t n)
 {
-    const uint8_t *p = f->out;
-    uint64_t off = f->at;
-
-    while (n) {
-        ssize_t put = pwrite(f->fd, p, n, (off_t)off);
-
-        if (put < 0 && errno == EINTR)
-            continue;
-        if (put < 0 && errno == EINVAL && f->direct) {
-            /* a file system that opens a file for direct writes and takes none of ours */
-            int fl = fcntl(f->fd, F_GETFL);
-
-            if (fl < 0 || fcntl(f->fd, F_SETFL, fl & ~O_DIRECT))
-                return -1;
-            f->direct = 0;
-            continue;
-        }
-        if (put <= 0) {
-            if (!put)
-                errno = EIO;
-            return -1;
-        }
-        p += put;
-        off += (uint64_t)put;
-        n -= (size_t)put;
-    }
-    return 0;
+    return pwrite_all(f->fd, f->out, n, f->at, &f->direct);
 }
 
 /* Write the buffer where it is full, or with PAD also the blocks that have begun, their rest

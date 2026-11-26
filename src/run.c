@@ -54,6 +54,20 @@ void run_screen(struct run *r, int plain)
     r->started = time(NULL);
 }
 
+int run_report(struct run *r)
+{
+    int fd = run_create(r, "triage.txt", O_WRONLY, 0600);
+
+    if (fd < 0)
+        return -1;
+    if (!(r->report = fdopen(fd, "w"))) {
+        close(fd);
+        return -1;
+    }
+    setvbuf(r->report, NULL, _IOLBF, 0);
+    return 0;
+}
+
 unsigned run_seconds(const struct run *r)
 {
     return (unsigned)(time(NULL) - r->started);
@@ -106,6 +120,10 @@ static void part(struct run *r, const char *text, size_t at, size_t len, const s
     }
     fwrite(text + from, 1, end - from, stdout);
 }
+
+/* The text of a line that could not be put together, which only a lack of memory does. The
+   report is then not whole, which the status of the run says. */
+static char no_memory[] = "(no memory for this line)";
 
 /* The last space of TEXT at or before FROM and behind LOW, the first of its run, or LOW. */
 static size_t space_back(const char *text, size_t low, size_t from)
@@ -181,6 +199,8 @@ static void line(struct run *r, char *text, size_t hang, const struct span *span
     size_t len = strlen(text), at = 0, i;
     int first = 1;
 
+    if (text == no_memory)
+        r->line_lost = 1;
     clear_progress(r);
     for (i = 0; i < len; i++)
         if ((unsigned char)text[i] < 0x20 || text[i] == 0x7f)
@@ -214,9 +234,6 @@ static void line(struct run *r, char *text, size_t hang, const struct span *span
     fflush(stdout);
     r->begun = 1;
 }
-
-/* The text of a line that could not be put together, which only a lack of memory does. */
-static char no_memory[] = "(no memory for this line)";
 
 void run_say(struct run *r, const char *fmt, ...)
 {
@@ -412,6 +429,49 @@ int run_create(struct run *r, const char *rel, int flags, mode_t mode)
         return -1;
     }
     return fd;
+}
+
+int run_create_direct(struct run *r, const char *rel, int access, mode_t mode, int *direct)
+{
+    char path[PATH_MAX];
+    int fd;
+
+    if (pathf(path, "%s/%s", r->out, rel)) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    if ((fd = create_direct(path, access, mode, direct)) < 0)
+        return -1;
+    if (add(r, rel, "")) {
+        close(fd);
+        errno = ENOMEM;
+        return -1;
+    }
+    return fd;
+}
+
+void run_hashed(struct run *r, const char *rel, const uint8_t sha256[32])
+{
+    size_t i;
+
+    for (i = 0; i < r->nfiles; i++)
+        if (!strcmp(r->files[i].name, rel))
+            hex_encode(sha256, 32, r->files[i].sha256);
+}
+
+void run_remove(struct run *r, const char *rel)
+{
+    char path[PATH_MAX];
+    size_t i;
+
+    if (!pathf(path, "%s/%s", r->out, rel))
+        unlink(path);
+    for (i = 0; i < r->nfiles; i++)
+        if (!strcmp(r->files[i].name, rel)) {
+            free(r->files[i].name);
+            r->files[i] = r->files[--r->nfiles];
+            return;
+        }
 }
 
 int run_add(struct run *r, const char *rel, const uint8_t sha256[32])

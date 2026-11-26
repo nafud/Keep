@@ -13,17 +13,32 @@
  * with the higher sequence number is the one in use. Where cryptsetup finds one copy damaged it
  * writes it anew from the other. This code only reads.
  *
- * The device is read through the page cache. cryptsetup writes a header with direct I/O, which
- * drops the cached pages of what it wrote, so both ways give the bytes of the device.
+ * How it is read. cryptsetup reads a header past the page cache where it can: it opens the
+ * device with O_DIRECT, reads a block to see that the device takes such reads, and opens it in
+ * the usual way where the open or that read is refused (device_ready and device_read_test in
+ * lib/utils_device.c). luks_open does the same. A read through the cache would take free
+ * memory of the machine for the pages of the header, 16 MiB for a LUKS2 header as cryptsetup
+ * makes it, and what lay there is gone before a memory image has read it.
+ *
+ * A direct read of a block device is whole blocks of the device: its place, its length and, in
+ * Linux 4.18, the address of its memory are multiples of the logical block size
+ * (blkdev_direct_IO in fs/block_dev.c of Linux 4.18, blkdev_dio_invalid in block/fops.c of
+ * 6.12). cryptsetup reads such blocks into aligned memory and copies what was asked for out of
+ * them (read_lseek_blockwise in lib/utils_io.c), and so does read_at. Whether a descriptor
+ * reads that way is asked of the descriptor itself.
  */
 #include "luks.h"
 #include "json.h"
 #include "util.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
+#include <sys/mount.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #define SECTOR                  512
@@ -39,7 +54,8 @@
 #define LUKS_SALT               32
 #define LUKS_DIGEST             20
 #define LARGEST_AREA            (256ull << 20)  /* beyond every header that cryptsetup writes */
-#define COPY_CHUNK              (1u << 20)
+#define COPY_CHUNK              (1u << 20)      /* a multiple of DIRECT_BLOCK */
+#define PIECE                   (1u << 20)      /* read with O_DIRECT at once */
 
 static const uint8_t magic_first[6] = { 'L', 'U', 'K', 'S', 0xba, 0xbe };
 static const uint8_t magic_second[6] = { 'S', 'K', 'U', 'L', 0xba, 0xbe };
@@ -48,23 +64,97 @@ static uint16_t be16(const uint8_t *p) { return (uint16_t)(p[0] << 8 | p[1]); }
 static uint32_t be32(const uint8_t *p) { return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3]; }
 static uint64_t be64(const uint8_t *p) { return (uint64_t)be32(p) << 32 | be32(p + 4); }
 
-/* Read n bytes at off. Returns 0, 1 where the device or file ends before them, -1 on an error. */
-static int read_at(int fd, void *buf, size_t n, uint64_t off)
+struct source {                         /* a device or file, and how its descriptor reads */
+    int fd;
+    size_t block;                       /* what a direct read is whole multiples of, 0 for reads through the page cache */
+    uint8_t *piece;                     /* PIECE bytes at an address that a direct read takes */
+};
+
+/* How fd reads. Returns 0, or -1 with errno. */
+static int source_open(struct source *s, int fd)
+{
+    struct stat st;
+    void *piece = NULL;
+    int flags = fcntl(fd, F_GETFL), size = 0;
+
+    s->fd = fd;
+    s->block = 0;
+    s->piece = NULL;
+    if (flags < 0 || fstat(fd, &st))
+        return -1;
+    if (!(flags & O_DIRECT))
+        return 0;
+    /* The blocks of the reads: DIRECT_BLOCK, or the logical block size of a device (BLKSSZGET)
+       where that is larger. */
+    if (S_ISBLK(st.st_mode) && ioctl(fd, BLKSSZGET, &size))
+        return -1;
+    if (size < 0 || (size_t)size > PIECE || (size & (size - 1))) {
+        errno = EINVAL;
+        return -1;
+    }
+    s->block = (size_t)size > DIRECT_BLOCK ? (size_t)size : DIRECT_BLOCK;
+    if (posix_memalign(&piece, s->block, PIECE)) {
+        errno = ENOMEM;
+        return -1;
+    }
+    s->piece = piece;
+    return 0;
+}
+
+static void source_close(struct source *s)
+{
+    free(s->piece);
+    s->piece = NULL;
+}
+
+/* Read n bytes at off. Returns 0, 1 where the device or file ends before them, -1 on an error.
+   A direct read takes the blocks that hold the bytes, and the bytes are copied out of them. */
+static int read_at(const struct source *s, void *buf, size_t n, uint64_t off)
 {
     uint8_t *p = buf;
 
     while (n) {
-        ssize_t got = pread(fd, p, n, (off_t)off);
+        uint64_t from = s->block ? off - off % s->block : off;
+        size_t skip = (size_t)(off - from), want = n, take;
+        ssize_t got;
 
+        if (s->block) {
+            want = (skip + n + s->block - 1) / s->block * s->block;
+            if (want > PIECE)
+                want = PIECE;
+        }
+        got = pread(s->fd, s->block ? s->piece : p, want, (off_t)from);
         if (got < 0 && errno == EINTR)
             continue;
         if (got < 0)
             return -1;
-        if (got == 0)
+        if ((size_t)got <= skip)
             return 1;
-        p += got; n -= (size_t)got; off += (uint64_t)got;
+        take = (size_t)got - skip < n ? (size_t)got - skip : n;
+        if (s->block)
+            memcpy(p, s->piece + skip, take);
+        p += take; n -= take; off += take;
     }
     return 0;
+}
+
+int luks_open(const char *path, int *direct)
+{
+    struct source s;
+    uint8_t first[SECTOR];
+    int fd, r;
+
+    *direct = 1;
+    if ((fd = open(path, O_RDONLY | O_CLOEXEC | O_DIRECT)) >= 0) {
+        /* device_read_test of cryptsetup: a device can take the open and refuse the read */
+        r = source_open(&s, fd) ? -1 : read_at(&s, first, sizeof first, 0);
+        source_close(&s);
+        if (r >= 0)
+            return fd;
+        close(fd);
+    }
+    *direct = 0;
+    return open(path, O_RDONLY | O_CLOEXEC);
 }
 
 /* A text field of a header, which need not end with a zero byte. */
@@ -150,7 +240,8 @@ struct copy {                           /* one of the two copies of the header *
 
 /* hdr_read_disk and hdr_disk_sanity_check_pre of cryptsetup. A copy that does not hold counts as
    not valid, a failed read is an error. */
-static int read_copy(int fd, uint64_t base, uint64_t offset, int second, struct copy *c, char err[LUKS_ERR_LEN])
+static int read_copy(const struct source *s, uint64_t base, uint64_t offset, int second, struct copy *c,
+                     char err[LUKS_ERR_LEN])
 {
     const struct hash_alg *alg;
     struct hash_ctx ctx;
@@ -159,7 +250,7 @@ static int read_copy(int fd, uint64_t base, uint64_t offset, int second, struct 
     int r;
 
     memset(c, 0, sizeof *c);
-    if ((r = read_at(fd, c->bin, LUKS2_BIN, base + offset)) < 0)
+    if ((r = read_at(s, c->bin, LUKS2_BIN, base + offset)) < 0)
         goto unreadable;
     if (r || memcmp(c->bin, second ? magic_second : magic_first, 6) || be16(c->bin + 6) != 2 ||
         be64(c->bin + 256) != offset)
@@ -175,7 +266,7 @@ static int read_copy(int fd, uint64_t base, uint64_t offset, int second, struct 
         snprintf(err, LUKS_ERR_LEN, "no memory for the metadata of a LUKS2 header");
         return -1;
     }
-    if ((r = read_at(fd, c->json, c->size - LUKS2_BIN, base + offset + LUKS2_BIN)) < 0)
+    if ((r = read_at(s, c->json, c->size - LUKS2_BIN, base + offset + LUKS2_BIN)) < 0)
         goto unreadable;
     if (!r) {
         memcpy(zeroed, c->bin, LUKS2_BIN);
@@ -295,7 +386,7 @@ static void digest(const struct json *j, const struct json *meta, struct luks_he
     h->ndigests++;
 }
 
-static int luks2(int fd, uint64_t base, struct luks_header *h, char err[LUKS_ERR_LEN])
+static int luks2(const struct source *s, uint64_t base, struct luks_header *h, char err[LUKS_ERR_LEN])
 {
     static const uint64_t second_at[] = { 0x4000, 0x8000, 0x10000, 0x20000, 0x40000, 0x80000,
                                           0x100000, 0x200000, 0x400000 };      /* LUKS2_HDR2_OFFSETS */
@@ -308,14 +399,14 @@ static int luks2(int fd, uint64_t base, struct luks_header *h, char err[LUKS_ERR
     int r = -1;
 
     memset(&second, 0, sizeof second);
-    if (read_copy(fd, base, 0, 0, &first, err))
+    if (read_copy(s, base, 0, 0, &first, err))
         return -1;
     if (first.valid) {
-        if (read_copy(fd, base, first.size, 1, &second, err))
+        if (read_copy(s, base, first.size, 1, &second, err))
             goto out;
     } else {
         for (i = 0; i < sizeof second_at / sizeof second_at[0] && !second.valid; i++)
-            if (read_copy(fd, base, second_at[i], 1, &second, err))
+            if (read_copy(s, base, second_at[i], 1, &second, err))
                 goto out;
     }
     if (!first.valid && !second.valid) {
@@ -405,20 +496,19 @@ int luks_digests(const char *text, size_t len, struct luks_header *h)
     return h->ndigests ? 0 : -1;
 }
 
-int luks_read_at(int fd, uint64_t base, struct luks_header *h, char err[LUKS_ERR_LEN])
+static int header_at(const struct source *s, uint64_t base, struct luks_header *h, char err[LUKS_ERR_LEN])
 {
     uint8_t b[LUKS1_PHDR] = { 0 };
     int r;
 
-    memset(h, 0, sizeof *h);
-    if ((r = read_at(fd, b, sizeof b, base)) < 0) {
+    if ((r = read_at(s, b, sizeof b, base)) < 0) {
         snprintf(err, LUKS_ERR_LEN, "read at offset %llu: %s", (unsigned long long)base, strerror(errno));
         return -1;
     }
     if (!r && !memcmp(b, magic_first, 6) && be16(b + 6) == 1)
         return luks1(b, h, err);
     /* A LUKS2 header whose first copy is overwritten still has its second one. */
-    if ((r = luks2(fd, base, h, err)) <= 0)
+    if ((r = luks2(s, base, h, err)) <= 0)
         return r;
     memset(h, 0, sizeof *h);
     if (memcmp(b, magic_first, 6)) {
@@ -432,21 +522,48 @@ int luks_read_at(int fd, uint64_t base, struct luks_header *h, char err[LUKS_ERR
     return -1;
 }
 
-int luks_backup(int fd, const struct luks_header *h, int out, uint64_t *written, char err[LUKS_ERR_LEN])
+int luks_read_at(int fd, uint64_t base, struct luks_header *h, char err[LUKS_ERR_LEN])
 {
-    uint64_t page = (uint64_t)sysconf(_SC_PAGESIZE), total = (h->area + page - 1) / page * page, off;
-    uint8_t *buf = malloc(COPY_CHUNK);
-    int r = -1;
+    struct source s;
+    int r;
 
-    *written = 0;
-    if (!buf) {
-        snprintf(err, LUKS_ERR_LEN, "no memory for the copy of the header");
+    memset(h, 0, sizeof *h);
+    if (source_open(&s, fd)) {
+        snprintf(err, LUKS_ERR_LEN, "the reads of the header cannot be set up: %s", strerror(errno));
         return -1;
     }
+    r = header_at(&s, base, h, err);
+    source_close(&s);
+    return r;
+}
+
+int luks_backup(int fd, const struct luks_header *h, int out, struct luks_copy *copy, char err[LUKS_ERR_LEN])
+{
+    uint64_t page = (uint64_t)sysconf(_SC_PAGESIZE), total = (h->area + page - 1) / page * page, off;
+    struct hash_ctx hash;
+    struct source s;
+    void *aligned = NULL;
+    uint8_t *buf;
+    int r = -1;
+
+    copy->bytes = 0;
+    copy->write_failed = 0;
+    if (source_open(&s, fd)) {
+        snprintf(err, LUKS_ERR_LEN, "the reads of the header cannot be set up: %s", strerror(errno));
+        return -1;
+    }
+    /* at an address that a direct write takes: each write below is whole pages */
+    if (posix_memalign(&aligned, DIRECT_BLOCK, COPY_CHUNK)) {
+        snprintf(err, LUKS_ERR_LEN, "no memory for the copy of the header");
+        source_close(&s);
+        return -1;
+    }
+    buf = aligned;
+    hash_init(&hash, hash_by_name("sha256"));
     for (off = 0; off < total; off += COPY_CHUNK) {
         size_t n = total - off < COPY_CHUNK ? (size_t)(total - off) : COPY_CHUNK;
         size_t have = off >= h->area ? 0 : h->area - off < n ? (size_t)(h->area - off) : n;
-        int got = have ? read_at(fd, buf, have, off) : 0;
+        int got = have ? read_at(&s, buf, have, off) : 0;
 
         if (got) {
             snprintf(err, LUKS_ERR_LEN, got < 0 ? "read of the header at offset %llu: %s"
@@ -461,15 +578,19 @@ int luks_backup(int fd, const struct luks_header *h, int out, uint64_t *written,
 
             memset(buf + from, 0, (size_t)(to - from));
         }
-        if (write_all(out, buf, n)) {
+        if (pwrite_all(out, buf, n, off, &copy->direct)) {
             snprintf(err, LUKS_ERR_LEN, "write of the copy of the header: %s", strerror(errno));
+            copy->write_failed = 1;
             goto out;
         }
-        *written += n;
+        hash_update(&hash, buf, n);
+        copy->bytes += n;
     }
     r = 0;
 out:
+    hash_final(&hash, copy->sha256);
     free(buf);
+    source_close(&s);
     return r;
 }
 

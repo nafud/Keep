@@ -55,6 +55,8 @@ An event can close the window of the keys within seconds. An image of the memory
 
 A file that is written in the usual way goes through the page cache: the kernel takes free memory for its pages, and what lay there is gone. Free memory is where the remains of earlier work lie, and an image of a large machine is a large file. Keep writes an image with direct writes, from the memory of the program to the device, where the file system of the destination has them, and lets the pages of a flushed file go.<sup><a href="#ref-13">[13]</a></sup> In the runs of the pipeline no page of any image lay in the cache after the run. Of a file that AVML wrote through the cache on a guest with 3.30 GiB of memory, the cache held 2.46 GiB.
 
+The header of a volume goes the same way. cryptsetup reads a header past the page cache, and so does Keep, and the copy of the header is written with direct writes.<sup><a href="#ref-5">[5]</a></sup> A LUKS2 header as cryptsetup makes it has 16 MiB, which a read in the usual way leaves in the cache of the device for as long as the volume is open, and a write in the usual way once more for the copy.
+
 The memory is read as AVML reads it, the ranges that `/proc/iomem` names as RAM through `/proc/kcore`, and the formats are those of LiME and AVML with the framed Snappy stream.<sup><a href="#ref-14">[14]</a> <a href="#ref-15">[15]</a> <a href="#ref-16">[16]</a></sup> AVML itself converts the images of Keep, byte for byte to the files that the formats define. `banners.Banners` of Volatility 3 has read one of its LiME images.<sup><a href="#ref-17">[17]</a></sup>
 
 ### One file that starts nothing { #one }
@@ -69,6 +71,7 @@ Because it asks cryptsetup nothing, it takes none of its locks. On a volume whos
 - Volume keys and the lists of schedules, which are key material too, are written only below a `keys/` directory, with `umask 077`.
 - Keep writes into the destination directory and nowhere else, and what it asks of the kernel changes nothing there. No name of the examined system is used in a file name as it is.
 - The memory of the process is locked, so that no key reaches the swap space, and the process writes no core file.
+- A run is not ended by the loss of its screen: it goes on when the reader of a pipe goes away and when its terminal hangs up. A limit of the size of a file that the shell of the examined system had is taken off, so that it does not cut an image.
 - A control character in a text of the examined system, as in the name of a mapping, is printed as a space.
 - The search of a dump and the lab tools only read the dump and the images they are given.
 
@@ -104,7 +107,7 @@ A statement on these pages about a kernel, a cryptsetup release or a distributio
 
 Keep 1 is a shell script, `keytriage.sh`, on a tool medium with a static bash, busybox, the scanner and AVML. It uses the `dmsetup` and the `cryptsetup` of the examined system. Keep 2 is the one C program of these pages, which does the work of that medium and starts no program.
 
-Version 2.0 is not released. These pages describe `keep` 2.0-pre10. The script is in the repository beside it, and the pipeline runs both on the same volumes: the C program must write the same line of the report for every volume, and header backups and keys that are the same byte for byte.
+Version 2.0 is not released. These pages describe `keep` 2.0-pre11. The script is in the repository beside it, and the pipeline runs both on the same volumes: the C program must write the same line of the report for every volume, and header backups and keys that are the same byte for byte.
 
 ## The keys of these pages { #keys }
 

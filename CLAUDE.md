@@ -36,7 +36,7 @@ README.
 | `tests/make-compat-vm.sh` | test, workstation | Starts a libvirt guest that stays, from a distribution's cloud image, for work by hand |
 | `tests/selftest.sh` | test, workstation and pipeline | Runs every check that needs neither root nor device-mapper, `keytriage.sh` included on stand-ins for the examined system, and ends with `RESULT: PASS` or `RESULT: FAIL` |
 | `tests/unit-check.sh` | test, workstation and pipeline | Builds the parts of the C program twice, statically and with the sanitizers of the compiler, and checks each against an independent source: `hashlib`, Python's `json`, `cryptsetup` |
-| `tests/keep-unit.c` | test | Runs one part of the C program at a time, for `unit-check.sh` and for a comparison with `dmsetup` on a guest, and counts the pages of a file that lie in the page cache |
+| `tests/keep-unit.c` | test | Runs one part of the C program at a time, for `unit-check.sh` and for a comparison with `dmsetup` on a guest, and counts the pages of a file or of a block device that lie in the page cache |
 | `docs/`, `overrides/`, `mkdocs.yml` | GitHub Pages | The pages of Keep, built with Material for MkDocs: the home page `index.md` and the sections `installation.md`, `usage.md`, `systems.md` and `about.md`, the stylesheet `stylesheets/extra.css`, the page scripts in `javascripts/`, the fonts in `assets/fonts/`, and the templates in `overrides/` |
 | `requirements.in`, `requirements.txt` | pipeline, workstation | The packages that build the pages: MkDocs and Material, and in the second file every package they bring along, each with its version and its SHA-256 |
 | `tests/pages-check.sh` | test, workstation and pipeline | Builds the pages with `mkdocs build --strict` and reads what was built: the pages, the frame, that nothing is loaded from another host, the version, the references |
@@ -438,6 +438,21 @@ sudo ./keep -m [-f FORMAT | -F]         # the keys, then a memory image: lime (d
   the machine, where the file system of the destination has them, and when it is flushed
   the pages that the cache holds of it are let go. The run says which way each file was
   written.
+- The header of a volume is read past the page cache of its device, as cryptsetup reads it,
+  and its copy is written with direct writes and its pages are let go, so that a header
+  takes no free memory of the machine on its way: 16 MiB for a LUKS2 header as cryptsetup
+  makes it, for the device and once more for the copy. Where a device takes no direct reads
+  or the file system of the destination no direct writes, the run says so in a line
+  `header`. A copy that cannot be written to its end is removed, so that its part does not
+  take the room of the keys.
+- A run that has begun is brought to its end and to its status, whatever becomes of its
+  screen. It goes on when the reader of a pipe goes away and when its terminal hangs up, as
+  that of a session over a network that is lost: the lines are in `triage.txt`. A limit of
+  the size of a file or of processor time that its shell had is taken off where the process
+  may, which root may, and where it may not, a write beyond the limit fails like any write.
+  An interrupt from the keyboard and `SIGTERM` end a run at once. Each key that was written
+  before is flushed, `triage.txt` holds the lines up to there, an image is the part that was
+  written, and there is no `verdict.json` and no manifest.
 - `-s DUMP` searches a dump as `kcore-keyscan` does and proves which of the keys is the
   volume key of each LUKS header in the `FILE`s, as `vkverify.py` does. A `FILE` is a header
   backup, the raw image of a partition or of a whole disk, or a device: its start is read as a
@@ -469,6 +484,10 @@ sudo ./keep -m [-f FORMAT | -F]         # the keys, then a memory image: lime (d
 - A wrong option, an option without its value, an argument that belongs to no option and
   options that do not go together end with status 2 and the usage. The commands `triage` and
   `scan` and the dialogue of the versions before 2.0-pre4 are gone.
+- The status of a run on the running system is 1 also where the table of a mapped device
+  could not be read, so that a volume in it is not examined, and that of either run where a
+  line of the report could not be put together for lack of memory. The line stands in the
+  report as `(no memory for this line)`.
 
 ### What stands in whose place
 
@@ -476,7 +495,7 @@ sudo ./keep -m [-f FORMAT | -F]         # the keys, then a memory image: lime (d
 |---|---|---|
 | `dmsetup ls --target crypt`, `dmsetup table --showkeys` | `src/dm.c`: the ioctls `DM_LIST_DEVICES` and `DM_TABLE_STATUS` of `/dev/mapper/control` | `dmsetup` 1.02.185 on kernel 6.8: the same devices, tables, UUIDs and keys |
 | `cryptsetup status` | `src/triage.c` and `src/volume.c`: the type from the UUID of the mapping and the header, the cipher, the key size and the key location from the table line, the device from `/sys/dev/block`. Which devices are one volume, and where its header lies, is read off the tables as `_init_by_name_crypt` of cryptsetup does it | `keytriage.sh` on the same mappings: the same line of `verdict.json` for every volume. For a volume in re-encryption, where `keytriage.sh` gives less, the keys that `dmsetup table --showkeys` shows |
-| `cryptsetup luksHeaderBackup` | `src/luks.c`: the header and the keyslot area read from the backing device | `cryptsetup` 2.4.3 and 2.7.0: the same file byte for byte, for LUKS1 and LUKS2 |
+| `cryptsetup luksHeaderBackup` | `src/luks.c`: the header and the keyslot area read from the backing device, past its page cache | `cryptsetup` 2.4.3 and 2.7.0: the same file byte for byte, for LUKS1 and LUKS2, read and written past the page cache and through it |
 | `cryptsetup open --test-passphrase` | `src/luks.c` and `src/hash.c`: PBKDF2 of the key against the digest of the header backup | `cryptsetup` 2.7.0 on the same headers and keys, and Python's `hashlib` |
 | `kcore-keyscan` | `kcore-keyscan.c` linked in without its `main` | the scanner before the change: the same output, messages and status on every format |
 | `offline-keyscan.sh` and `vkverify.py`, for a header backup and a raw image | `src/dump.c`: the search of a dump, the headers of the files, and the proof of the candidate keys against each | `vkverify.py` on the same schedules and headers: the same verdicts and the same keys. On a guest, the keys of two open containers from the image that the program took of that machine |
@@ -512,6 +531,34 @@ Read in Linux 4.18, 5.10, 6.12 and 6.18, cryptsetup 2.0.6, 2.3.7, 2.7.0 and 2.8.
 - Where one copy of a LUKS2 header is damaged, cryptsetup writes it anew from the other when it
   reads the header. The program reads the copy that holds and writes nothing.
 - A process that is not dumpable writes no core file (`do_coredump`).
+- cryptsetup reads a header past the page cache where it can. It opens the device with
+  `O_DIRECT`, reads a block as a test, and opens the device in the usual way where the open
+  or that read is refused (`device_ready` and `device_read_test` in `lib/utils_device.c`).
+  It reads whole blocks into aligned memory and copies out of them what was asked for
+  (`read_lseek_blockwise` in `lib/utils_io.c`). This is so in the four releases.
+- A direct read of a block device is whole blocks of the device: in Linux 4.18 its place,
+  its length and the address of its memory are multiples of the logical block size
+  (`blkdev_direct_IO` in `fs/block_dev.c`), in 6.12 its place and its length, and its memory
+  as the device states it (`blkdev_dio_invalid` in `block/fops.c`).
+- The kernel drops the page cache of a block device when its last opener closes it
+  (`__blkdev_put` in `fs/block_dev.c` of Linux 4.18, `blkdev_flush_mapping` in `block/bdev.c`
+  of 6.12). dm-crypt holds the device of an open volume open, so what is read from such a
+  device in the usual way stays in the cache. Measured on Linux 6.18, with a loop device on
+  a LUKS2 container that a second descriptor held open: after the header was copied in the
+  usual way the cache held 5248 pages of the device, after direct reads none, and none
+  either way once the last descriptor was closed.
+- A signal whose default is to end the process ends a run in the middle (signal(7)). The
+  kernel sends `SIGPIPE` to a process that writes to a pipe without a reader (`pipe_write`
+  in `fs/pipe.c` of Linux 4.18 and 6.12), `SIGHUP` to the session leader and to the
+  foreground processes of a terminal that hangs up (`tty_signal_session_leader` in
+  `drivers/tty/tty_jobctrl.c` of 6.12), and `SIGXFSZ` to a process that writes at or beyond
+  its limit of the size of a file (`generic_write_checks` in `mm/filemap.c` of 4.18,
+  `generic_write_check_limits` in `fs/read_write.c` of 6.12). With the signal not taken the
+  write fails with `EPIPE`, `EIO` or `EFBIG`. Seen with the program before 2.0-pre11: a
+  reader that ended after one line, a hang-up and `ulimit -f 1` each ended the search of a
+  dump with no key file or one, an empty or short `triage.txt` and no report.
+- The kernel answers a request for the table of a mapped device that is not there with
+  `ENXIO` (`find_device` and `table_status` in `dm-ioctl.c` of Linux 4.18 and 6.12).
 - LUKS2 with integrity is two mapped devices (`create_or_reload_device_with_integrity`): `NAME`
   with a crypt target on `NAME_dif`, and `NAME_dif` with one integrity target on the device.
   The header lies on that device, and cryptsetup finds it by the option
@@ -634,7 +681,7 @@ Read in Linux 4.18, 5.10, 6.12 and 6.18, cryptsetup 2.0.6, 2.3.7, 2.7.0 and 2.8.
 
 | File | What it does |
 |---|---|
-| `src/main.c` | The options. Makes the process not dumpable |
+| `src/main.c` | The options. Makes the process not dumpable, and one that the loss of its screen and a limit of its shell do not end |
 | `src/dump.c` | The search of a memory dump that exists: its schedules, the LUKS headers of the files that are given, the proof of the keys against them, and the pairs that no header proves |
 | `src/run.c` | The folder of a run: its screen and its report, which hold the same lines, its files, their flushing and the manifest |
 | `src/memory.c` | The memory image of a run: the room it needs, its files, and what the lab needs beside it to name the kernel |
@@ -643,11 +690,11 @@ Read in Linux 4.18, 5.10, 6.12 and 6.18, cryptsetup 2.0.6, 2.3.7, 2.7.0 and 2.8.
 | `src/triage.c` | The run: destination, system, volumes, the ladder for each key, verdicts, `triage.txt`, `verdict.json`, `manifest.sha256`. Locks the memory of the process |
 | `src/dm.c` | The list of the mapped devices and the table of one, from the kernel |
 | `src/volume.c` | Which mapped devices are a volume, which further devices are part of it, which keys it has and where its header lies, read off the tables |
-| `src/luks.c` | The header of LUKS1 and LUKS2: reading, the copy for the evidence, the proof of a key |
+| `src/luks.c` | The header of LUKS1 and LUKS2: reading, past the page cache where the device has direct reads, the copy for the evidence, the proof of a key |
 | `src/hash.c` | SHA-1, SHA-224, SHA-256, SHA-384, SHA-512, HMAC and PBKDF2, with a self-test against the examples of the standards at every start. SHA-256 with the SHA instructions of the processor where it has them |
 | `src/json.c` | A reader of JSON as RFC 8259 defines it, for the metadata of LUKS2 |
 | `src/sys.c` | Mounts, what a volume carries, lockdown, Secure Boot, the name of the system, each from a named file |
-| `src/util.c` | Texts that grow, names for the screen and for files, hexadecimal, flushing |
+| `src/util.c` | Texts that grow, names for the screen and for files, hexadecimal, flushing, a file that is made for direct writes and written with them |
 | `kcore-keyscan.c` | The scanner. `-DKEYSCAN_LIBRARY` leaves out its `main`, and `src/keyscan.h` declares what remains. It hands the memory it reads to the program, which searches it for headers, and says what its search read |
 | `tests/keep-unit.c` | Runs one part at a time, for `tests/unit-check.sh` |
 
@@ -694,12 +741,24 @@ Read in Linux 4.18, 5.10, 6.12 and 6.18, cryptsetup 2.0.6, 2.3.7, 2.7.0 and 2.8.
 - It asks cryptsetup nothing and takes none of its locks. `cryptsetup status` waited without
   end on a volume whose re-encryption was paused in a step, and the C program read the same
   volume. A header that cryptsetup writes at that moment is read from the copy that holds.
-- The header is read through the page cache of the device (`find_header` in `triage.c` opens
-  the device without `O_DIRECT`), where cryptsetup reads past the cache. So after a key
-  run the cache of the device holds what the backup holds, 16777216 bytes for the LUKS2
-  headers of the installed guests, and an image that is taken afterwards holds the
-  metadata of the header whatever the machine held of them before. The search of a dump
-  reads the dump and its `FILE`s through the page cache as well.
+- From 2.0-pre11 on the header is read past the page cache of the device, as cryptsetup
+  reads it (see "What the sources say"), and its copy is written with direct writes, with
+  its SHA-256 computed on the way, so that the manifest does not read the copy again. The
+  copy is read back for the proof with direct reads, and what the cache holds of it is let
+  go. Up to 2.0-pre10 the device was read in the usual way and the copy written in the
+  usual way: after a key run the cache held the header twice, 16777216 bytes each for the
+  LUKS2 headers of the installed guests, and an image that was taken afterwards held the
+  metadata of the header whatever the machine had held of them before. `keytriage.sh`
+  leaves the copy of `cryptsetup luksHeaderBackup` in the cache. The search of a dump
+  reads the dump and its `FILE`s through the page cache: it is work of the lab.
+- A copy of a header that cannot be written to its end, as on a destination without room
+  for it, is removed, and the run ends with status 1. The key of the table and the list of
+  the schedules are written all the same, without a proof on scene. `keytriage.sh` leaves
+  what `cryptsetup luksHeaderBackup` leaves.
+- The run is not ended by `SIGPIPE`, `SIGHUP` or `SIGXFSZ`, and takes the limits of the
+  size of a file and of processor time off where it may. `keytriage.sh` is ended by each.
+- A table of a mapped device that cannot be read is named on the screen, and the run ends
+  with status 1. Only a device that was removed since the list was read is passed over.
 - The search of a dump proves against header backups, raw images and devices. The disk file
   of a virtual machine and an EnCase image are read by `vkverify.py` only, and so is a header
   whose digest uses a function that `hash.c` does not compute.

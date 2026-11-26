@@ -231,3 +231,49 @@ int flush_path(const char *path)
     errno = saved;
     return r;
 }
+
+int create_direct(const char *path, int access, mode_t mode, int *direct)
+{
+    const int flags = access | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW;
+    int fd;
+
+    *direct = 1;
+    if ((fd = open(path, flags | O_DIRECT, mode)) >= 0 || errno != EINVAL)
+        return fd;
+    /* A file system without direct writes. The kernel made the file before it refused it
+       (the file is created in lookup_open, and refused in do_dentry_open after that). */
+    *direct = 0;
+    if (unlink(path) && errno != ENOENT)
+        return -1;
+    return open(path, flags, mode);
+}
+
+int pwrite_all(int fd, const void *buf, size_t n, uint64_t off, int *direct)
+{
+    const uint8_t *p = buf;
+
+    while (n) {
+        ssize_t put = pwrite(fd, p, n, (off_t)off);
+
+        if (put < 0 && errno == EINTR)
+            continue;
+        if (put < 0 && errno == EINVAL && *direct) {
+            /* a file system that opens a file for direct writes and takes none of ours */
+            int fl = fcntl(fd, F_GETFL);
+
+            if (fl < 0 || fcntl(fd, F_SETFL, fl & ~O_DIRECT))
+                return -1;
+            *direct = 0;
+            continue;
+        }
+        if (put <= 0) {
+            if (!put)
+                errno = EIO;
+            return -1;
+        }
+        p += put;
+        off += (uint64_t)put;
+        n -= (size_t)put;
+    }
+    return 0;
+}

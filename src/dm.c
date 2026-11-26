@@ -81,7 +81,8 @@ static void decode_dev(uint64_t dev, unsigned *major, unsigned *minor)
 
 /*
  * One request. The buffer is doubled as long as the kernel says that its answer did not fit.
- * On success the buffer is the caller's, with its length in *len.
+ * On success the buffer is the caller's, with its length in *len. Returns 0, 1 where the kernel
+ * has no device of that name (ENXIO: find_device in dm-ioctl.c of Linux 4.18 and 6.12), or -1.
  */
 static int request(int fd, unsigned long cmd, const char *what, const char *name, uint32_t flags,
                    struct dm_ioctl **out, size_t *len, char err[DM_ERR_LEN])
@@ -102,9 +103,11 @@ static int request(int fd, unsigned long cmd, const char *what, const char *name
         if (name)
             memcpy(io->name, name, strlen(name));
         if (ioctl(fd, cmd, io) < 0) {
+            int gone = errno == ENXIO;
+
             snprintf(err, DM_ERR_LEN, "%s: %s", what, strerror(errno));
             wipe_free(io, n);
-            return -1;
+            return gone ? 1 : -1;
         }
         if (!(io->flags & DM_BUFFER_FULL_FLAG)) {
             *out = io;
@@ -215,15 +218,16 @@ int dm_table(int fd, const char *name, struct dm_table *t, char err[DM_ERR_LEN])
 {
     struct dm_ioctl *io;
     size_t len;
+    int r;
 
     memset(t, 0, sizeof *t);
     if (!*name || strlen(name) >= DM_NAME_LEN) {
         snprintf(err, DM_ERR_LEN, "the table of a mapped device: a name of %zu bytes", strlen(name));
         return -1;
     }
-    if (request(fd, DM_TABLE_STATUS, "the table of a mapped device", name,
-                DM_STATUS_TABLE_FLAG | DM_SECURE_DATA_FLAG, &io, &len, err))
-        return -1;
+    if ((r = request(fd, DM_TABLE_STATUS, "the table of a mapped device", name,
+                     DM_STATUS_TABLE_FLAG | DM_SECURE_DATA_FLAG, &io, &len, err)))
+        return r;
     return dm_table_answer(io, len, t, err);
 }
 

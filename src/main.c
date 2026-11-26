@@ -53,10 +53,12 @@
 #include "triage.h"
 
 #include <errno.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/prctl.h>
+#include <sys/resource.h>
 #include <unistd.h>
 
 static const char usage[] =
@@ -130,6 +132,37 @@ static int number(const char *s, unsigned *out)
     return 0;
 }
 
+/*
+ * A run that has begun is brought to its end, with its files in the destination and its
+ * status, whatever becomes of its screen and whatever limit the shell of the examined system
+ * had. Three signals would end the program in the middle by their default, which is to
+ * terminate (signal(7)), and are not taken:
+ *
+ *   SIGPIPE   the screen is a pipe whose reader has gone (pipe_write in fs/pipe.c). The write
+ *             then fails with EPIPE, and the lines are in triage.txt.
+ *   SIGHUP    the terminal has hung up, as that of a session over a network that is lost
+ *             (tty_signal_session_leader in drivers/tty/tty_jobctrl.c of Linux 6.12).
+ *   SIGXFSZ   a write beyond the limit of the size of a file (RLIMIT_FSIZE:
+ *             generic_write_checks in mm/filemap.c of Linux 4.18, generic_write_check_limits
+ *             in fs/read_write.c of 6.12). The write then fails with EFBIG, as any write
+ *             that fails.
+ *
+ * That limit, and the limit of processor time, whose signal SIGXCPU cannot be refused for
+ * good, are taken off where the process may, which root may: they are settings of a shell of
+ * the examined system, and would cut a memory image or a long proof. An interrupt from the
+ * keyboard and SIGTERM end the run as before: they are the examiner's.
+ */
+static void undisturbed(void)
+{
+    const struct rlimit none = { RLIM_INFINITY, RLIM_INFINITY };
+
+    signal(SIGPIPE, SIG_IGN);
+    signal(SIGHUP, SIG_IGN);
+    signal(SIGXFSZ, SIG_IGN);
+    setrlimit(RLIMIT_FSIZE, &none);
+    setrlimit(RLIMIT_CPU, &none);
+}
+
 static int wrong(const char *what)
 {
     if (what)
@@ -149,6 +182,7 @@ int main(int argc, char **argv)
        written to the examined system (do_coredump in fs/coredump.c), and no other user's
        process can read its memory. */
     prctl(PR_SET_DUMPABLE, 0);
+    undisturbed();
     while ((c = getopt(argc, argv, "+d:b:s:mf:FnhV")) != -1) {
         switch (c) {
         case 'd':

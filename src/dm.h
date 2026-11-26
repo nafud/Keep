@@ -43,6 +43,8 @@ struct dm_table {
 
 int dm_open(char err[DM_ERR_LEN]);                              /* returns the descriptor */
 int dm_list(int fd, struct dm_dev **devs, size_t *ndevs, char err[DM_ERR_LEN]);
+/* The table of the device NAME. Also returns 1, where the kernel has no device of that name:
+   one that was removed since the list was read. */
 int dm_table(int fd, const char *name, struct dm_table *t, char err[DM_ERR_LEN]);
 void dm_table_free(struct dm_table *t);                         /* wipes the buffer */
 

@@ -10,8 +10,16 @@
  *   keep-unit pbkdf2 NAME KEY SALT ITERATIONS LENGTH    KEY and SALT in hexadecimal
  *   keep-unit json                              the JSON text of standard input, written anew
  *   keep-unit luks FILE                         what the LUKS header at the start of FILE says
- *   keep-unit luks-backup FILE OUT              the copy of that header, as luksHeaderBackup
+ *   keep-unit luks-backup FILE OUT              the copy of that header, as luksHeaderBackup,
+ *                                               its size and its SHA-256, the way FILE was read
+ *                                               and OUT written, and how many pages of OUT lay
+ *                                               in the page cache after its writes, before it
+ *                                               is flushed and its pages are let go
  *   keep-unit luks-prove FILE KEYFILE           whether the key of KEYFILE gives its digest
+ *                                               These three read FILE and write OUT past the
+ *                                               page cache where the file system has direct
+ *                                               reads and writes, as the program does, and
+ *                                               through it with KEEP_UNIT_CACHE set to a value
  *   keep-unit mount-of MOUNTINFO PATH           the mount that holds PATH
  *   keep-unit in-use SYSFS MOUNTINFO SWAPS MAJOR MINOR    what that block device carries
  *   keep-unit other-fs MOUNTS                   the file systems that encrypt by themselves
@@ -31,14 +39,20 @@
  *                                               with direct writes, and how many of its pages
  *                                               lay in the page cache after its writes, before
  *                                               it is flushed and its pages are let go
- *   keep-unit cached FILE                       how many pages of FILE lie in the page cache
+ *   keep-unit cached FILE                       how many pages of FILE, a file or a block
+ *                                               device, lie in the page cache
+ *   keep-unit forget FILE                       flush FILE and let the pages go that the page
+ *                                               cache holds of it
  *   keep-unit snappy                            standard input as a framed Snappy stream
  *   keep-unit dm-answer list|table FILE         FILE as an answer of the kernel to one of the two
  *                                               requests, printed like the two lines below
  *   keep-unit dm-list                           the mapped devices, as "dmsetup ls" prints them
- *   keep-unit dm-table NAME                     the table, as "dmsetup table NAME" prints it,
+ *   keep-unit dm-table NAME [CONTROL]           the table, as "dmsetup table NAME" prints it,
  *                                               and for a crypt target the length of its key
- *                                               and the first 16 digits of the key's SHA-256
+ *                                               and the first 16 digits of the key's SHA-256.
+ *                                               Status 3 where the kernel has no such device.
+ *                                               CONTROL is asked in place of
+ *                                               /dev/mapper/control
  *
  * The device-mapper requests need root and change nothing. No key is printed: like dmsetup
  * without --showkeys, the key of a crypt target is replaced by zeros.
@@ -60,7 +74,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/mount.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -195,10 +211,78 @@ static int cmd_json(void)
     return 0;
 }
 
+/* The pages of a file or of a block device that lie in the page cache, as the kernel says with
+   mincore. Returns 0,
+   or -1 with errno. */
+static int cached(const char *path, size_t *in, size_t *pages)
+{
+    unsigned char *vec = NULL;
+    void *map = MAP_FAILED;
+    struct stat st;
+    uint64_t size = 0;
+    size_t i;
+    int fd, r = -1;
+
+    *in = *pages = 0;
+    if ((fd = open(path, O_RDONLY)) < 0)
+        return -1;
+    if (fstat(fd, &st))
+        goto out;
+    size = (uint64_t)st.st_size;
+    if (S_ISBLK(st.st_mode) && ioctl(fd, BLKGETSIZE64, &size))
+        goto out;
+    *pages = (size_t)((size + 4095) / 4096);
+    if (!*pages) {
+        r = 0;
+        goto out;
+    }
+    map = mmap(NULL, (size_t)size, PROT_READ, MAP_SHARED, fd, 0);
+    vec = malloc(*pages);
+    if (map == MAP_FAILED || !vec || mincore(map, (size_t)size, vec))
+        goto out;
+    for (i = 0; i < *pages; i++)
+        *in += vec[i] & 1;
+    r = 0;
+out:
+    free(vec);
+    if (map != MAP_FAILED)
+        munmap(map, (size_t)size);
+    close(fd);
+    return r;
+}
+
+/* Flush a file or a device and name it to the kernel as one whose pages are not needed, so
+   that a count of its pages in the page cache begins at none. */
+static int cmd_forget(const char *path)
+{
+    int fd = open(path, O_RDONLY), r;
+
+    if (fd < 0 || fsync(fd)) {
+        fprintf(stderr, "keep-unit: %s: %s\n", path, strerror(errno));
+        if (fd >= 0)
+            close(fd);
+        return 1;
+    }
+    if ((r = posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED)))    /* returns the error itself */
+        fprintf(stderr, "keep-unit: %s: %s\n", path, strerror(r));
+    close(fd);
+    return r ? 1 : 0;
+}
+
+/* KEEP_UNIT_CACHE in the environment, set to a value: the files of the luks commands are read
+   and written through the page cache, so that both ways are run on a file system that has
+   direct reads and writes. */
+static int through_cache(void)
+{
+    const char *v = getenv("KEEP_UNIT_CACHE");
+
+    return v && v[0];
+}
+
 static int open_header(const char *path, struct luks_header *h)
 {
     char err[LUKS_ERR_LEN];
-    int fd = open(path, O_RDONLY | O_CLOEXEC), r;
+    int direct = 0, fd = through_cache() ? open(path, O_RDONLY | O_CLOEXEC) : luks_open(path, &direct), r;
 
     if (fd < 0) {
         perror(path);
@@ -238,20 +322,37 @@ static int cmd_luks_backup(const char *path, const char *outpath)
 {
     char err[LUKS_ERR_LEN];
     struct luks_header h;
-    uint64_t written;
+    struct luks_copy copy = { 0 };
     int fd = open_header(path, &h), out, r;
 
     if (fd < 0)
         return 1;
-    if ((out = open(outpath, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600)) < 0) {
+    out = through_cache() ? open(outpath, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600)
+                          : create_direct(outpath, O_WRONLY, 0600, &copy.direct);
+    if (out < 0) {
         perror(outpath);
         close(fd);
         return 1;
     }
-    if ((r = luks_backup(fd, &h, out, &written, err)))
-        printf("failed: %s\n", err);
-    else
-        printf("%llu bytes\n", (unsigned long long)written);
+    if ((r = luks_backup(fd, &h, out, &copy, err))) {
+        printf("failed%s: %s\n", copy.write_failed ? " at a write" : "", err);
+    } else {
+        size_t in = 0, pages = 0;
+        int flags = fcntl(fd, F_GETFL);
+
+        printf("%llu bytes, sha256 ", (unsigned long long)copy.bytes);
+        print_hex(copy.sha256, sizeof copy.sha256);
+        printf("read %s\n", flags >= 0 && flags & O_DIRECT ? "with direct reads" : "through the page cache");
+        if (!cached(outpath, &in, &pages))
+            printf("written %s, %zu of %zu pages in the page cache after its writes\n",
+                   copy.direct ? "with direct writes" : "through the page cache", in, pages);
+        /* as the program does with the copy: flushed, and what the cache holds of it let go */
+        if (fsync(out)) {
+            perror(outpath);
+            r = -1;
+        }
+        posix_fadvise(out, 0, 0, POSIX_FADV_DONTNEED);
+    }
     close(out);
     close(fd);
     return r ? 1 : 0;
@@ -389,15 +490,20 @@ static void print_table(struct dm_table *tp)
     dm_table_free(tp);
 }
 
-static int cmd_dm_table(const char *name)
+static int cmd_dm_table(const char *control, const char *name)
 {
     char err[DM_ERR_LEN];
     struct dm_table t;
-    int fd = dm_open(err);
+    int fd = control ? open(control, O_RDONLY | O_CLOEXEC) : dm_open(err), r;
 
-    if (fd < 0 || dm_table(fd, name, &t, err)) {
-        fprintf(stderr, "keep-unit: %s\n", err);
+    if (fd < 0) {
+        fprintf(stderr, "keep-unit: %s\n", control ? strerror(errno) : err);
         return 1;
+    }
+    if ((r = dm_table(fd, name, &t, err))) {
+        fprintf(stderr, "keep-unit: %s%s\n", r > 0 ? "no such device: " : "", err);
+        close(fd);
+        return r > 0 ? 3 : 1;
     }
     print_table(&t);
     close(fd);
@@ -592,41 +698,6 @@ static int cmd_image_source(const char *iomem_path, const char *core_path)
     return 0;
 }
 
-/* The pages of a file that lie in the page cache, as the kernel says with mincore. Returns 0,
-   or -1 with errno. */
-static int cached(const char *path, size_t *in, size_t *pages)
-{
-    unsigned char *vec = NULL;
-    void *map = MAP_FAILED;
-    struct stat st;
-    size_t i;
-    int fd, r = -1;
-
-    *in = *pages = 0;
-    if ((fd = open(path, O_RDONLY)) < 0)
-        return -1;
-    if (fstat(fd, &st))
-        goto out;
-    *pages = ((size_t)st.st_size + 4095) / 4096;
-    if (!*pages) {
-        r = 0;
-        goto out;
-    }
-    map = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_SHARED, fd, 0);
-    vec = malloc(*pages);
-    if (map == MAP_FAILED || !vec || mincore(map, (size_t)st.st_size, vec))
-        goto out;
-    for (i = 0; i < *pages; i++)
-        *in += vec[i] & 1;
-    r = 0;
-out:
-    free(vec);
-    if (map != MAP_FAILED)
-        munmap(map, (size_t)st.st_size);
-    close(fd);
-    return r;
-}
-
 static int cmd_cached(const char *path)
 {
     size_t in, pages;
@@ -768,6 +839,8 @@ int main(int argc, char **argv)
         return cmd_image(argc - 2, argv + 2);
     if (argc == 3 && !strcmp(argv[1], "cached"))
         return cmd_cached(argv[2]);
+    if (argc == 3 && !strcmp(argv[1], "forget"))
+        return cmd_forget(argv[2]);
     if (argc == 3 && !strcmp(argv[1], "names"))
         return cmd_names(argv[2]);
     if (argc == 4 && !strcmp(argv[1], "line")) {
@@ -786,12 +859,12 @@ int main(int argc, char **argv)
         return cmd_dm_volumes();
     if (argc == 2 && !strcmp(argv[1], "dm-list"))
         return cmd_dm_list();
-    if (argc == 3 && !strcmp(argv[1], "dm-table"))
-        return cmd_dm_table(argv[2]);
+    if ((argc == 3 || argc == 4) && !strcmp(argv[1], "dm-table"))
+        return cmd_dm_table(argc == 4 ? argv[3] : NULL, argv[2]);
     fprintf(stderr, "usage: keep-unit [plain] selftest | cpu | hash NAME | pbkdf2 NAME KEY SALT ITERATIONS LENGTH | json | luks FILE | "
             "luks-backup FILE OUT | luks-prove FILE KEYFILE | mount-of MOUNTINFO PATH | in-use SYSFS MOUNTINFO SWAPS MAJOR MINOR | other-fs MOUNTS | "
             "lockdown FILE | secure-boot DIR | os-name FILE FILE | memory FILE | names NAME | image-source IOMEM CORE | "
-            "image IOMEM CORE FORMAT OUT... | cached FILE | snappy | dm-answer list|table FILE | volumes FILE... | "
-            "dm-list | dm-table NAME | dm-volumes\n");
+            "image IOMEM CORE FORMAT OUT... | cached FILE | forget FILE | snappy | dm-answer list|table FILE | volumes FILE... | "
+            "dm-list | dm-table NAME [CONTROL] | dm-volumes\n");
     return 2;
 }

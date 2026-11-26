@@ -102,7 +102,7 @@ case ${1:-} in
 esac
 R=$(cd "$(dirname "$0")/.." && pwd)
 T=$(mktemp -d) || exit 1
-trap '[ -z "${RAMFS:-}" ] || ${SUDO:-} umount "$RAMFS"; rm -rf "$T"' EXIT
+trap '[ -z "${RAMFS:-}" ] || ${SUDO:-} umount "$RAMFS"; [ -z "${LOOPDEV:-}" ] || ${SUDO:-} losetup -d "$LOOPDEV"; rm -rf "$T"' EXIT
 cd "$R" || exit 1
 
 FAILED=0
@@ -631,7 +631,18 @@ for kind, base in (("list", listing(devs)), ("list", listing(devs, new=False)), 
             bad += 1; print("a changed", kind, "answer ended with status", rc, ":", goterr[-400:])
 sys.exit(1 if bad else 0)
 EOF
+# A table that the kernel does not give. A device that was removed since the list was read is
+# none any more (the kernel says ENXIO, which needs a kernel with device-mapper and is looked
+# at by compat-check.sh). Any other refusal is a table that could not be read, and a run with
+# one is not whole: here the request goes to a device that knows no such request.
+table_refused() {
+    local u=$1 rc
+    "$u" dm-table kc_x /dev/null > "$T/dmt.txt" 2>&1; rc=$?
+    [ "$rc" = 1 ] && ! grep -q 'no such device' "$T/dmt.txt" && grep -q '^keep-unit: the table of a mapped device: ' "$T/dmt.txt" ||
+        { echo "status $rc:"; cat "$T/dmt.txt"; return 1; }
+}
 for u in "${UNITS[@]}"; do
+    check "kernel: ${u##*/} takes a request that is refused as a table that cannot be read, and not as a device that is gone" table_refused "$u"
     check "kernel: ${u##*/} reads the answers of device-mapper and refuses damaged ones without a fault" python3 -I "$T/kernel.py" "$u" "$T" answers
     check "kernel: ${u##*/} finds the volumes among tables: one device, with integrity, in re-encryption, with changed bytes" python3 -I "$T/kernel.py" "$u" "$T" volumes
 done
@@ -1354,9 +1365,20 @@ one_header() {
     if "$u" luks-prove "$T/$n.img" "$T/other"; then echo "another key is proven"; r=1; fi
     return $r
 }
+# Every check of a header is run twice: past the page cache, as the program reads a device and
+# writes its copy where they take direct reads and writes, and through it (KEEP_UNIT_CACHE), as
+# it does elsewhere. The temporary directory decides whether the first way is the direct one.
+header_ways() {         # header_ways NAME FUNCTION ARGUMENT... : a check, once for each way
+    local name=$1; shift
+    unset KEEP_UNIT_CACHE
+    check "$name, past the page cache" "$@"
+    export KEEP_UNIT_CACHE=1
+    check "$name, through the page cache" "$@"
+    unset KEEP_UNIT_CACHE
+}
 for u in "${UNITS[@]}"; do
     for h in "${HEADERS[@]}"; do
-        check "headers: ${u##*/}, ${h%%:*}: the copy equals luksHeaderBackup, the key is proven and another is not" \
+        header_ways "headers: ${u##*/}, ${h%%:*}: the copy equals luksHeaderBackup, the key is proven and another is not" \
             one_header "$u" "${h%%:*}" "${h##*:}"
     done
 done
@@ -1371,7 +1393,7 @@ other_hash() {
     grep -q 'no digest that is computed here.*ripemd160' "$T/prove.txt"
 }
 if container l1rmd k64 --type luks1 --cipher aes-xts-plain64 --key-size 512 --hash ripemd160; then
-    for u in "${UNITS[@]}"; do check "headers: ${u##*/}, a LUKS1 header with ripemd160 is copied, and its proof is named as not computed" other_hash "$u"; done
+    for u in "${UNITS[@]}"; do header_ways "headers: ${u##*/}, a LUKS1 header with ripemd160 is copied, and its proof is named as not computed" other_hash "$u"; done
 else
     skip "headers: a LUKS1 header with ripemd160 (this cryptsetup makes none)"
 fi
@@ -1420,12 +1442,110 @@ unusable() {
 uuid_rule() {   # the UUID of a mapping against the header, as crypt_uuid_cmp of cryptsetup
     "$1" luks "$T/l2.img" | grep -q '^LUKS2 uuid ........-....-....-....-............ area 16777216$'
 }
+# The page cache after a header was read and copied. With direct reads and writes no page of
+# the container and none of the copy may lie in it, also after the copy was read back for the
+# proof. Through the cache the count must find the pages of both, so that a count of none says
+# something.
+header_cached() {
+    local u=$1 n
+    rm -f "$T/ours.hdr"
+    "$u" forget "$T/l2.img" || return 1
+    n=$("$u" cached "$T/l2.img"); [ "${n%% *}" = 0 ] || { echo "the container is not let go from the page cache: $n"; return 1; }
+    "$u" luks-backup "$T/l2.img" "$T/ours.hdr" > "$T/way.txt" || { cat "$T/way.txt"; return 1; }
+    grep -qx 'read with direct reads' "$T/way.txt" &&
+        grep -qx 'written with direct writes, 0 of 4096 pages in the page cache after its writes' "$T/way.txt" ||
+        { echo "the header was not read and copied past the page cache:"; cat "$T/way.txt"; return 1; }
+    "$u" luks-prove "$T/ours.hdr" "$T/k64" || return 1
+    n=$("$u" cached "$T/l2.img"); [ "${n%% *}" = 0 ] || { echo "the container after the direct reads: $n"; return 1; }
+    n=$("$u" cached "$T/ours.hdr"); [ "${n%% *}" = 0 ] || { echo "the copy after its direct writes and the direct reads of the proof: $n"; return 1; }
+    rm -f "$T/ours.hdr"
+    KEEP_UNIT_CACHE=1 "$u" luks-backup "$T/l2.img" "$T/ours.hdr" > "$T/way.txt" || { cat "$T/way.txt"; return 1; }
+    grep -qx 'read through the page cache' "$T/way.txt" &&
+        grep -qx 'written through the page cache, 4096 of 4096 pages in the page cache after its writes' "$T/way.txt" ||
+        { echo "the count of the copy that was written in the usual way:"; cat "$T/way.txt"; return 1; }
+    n=$("$u" cached "$T/l2.img"); [ "${n%% *}" -ge 4096 ] || { echo "the container after a read in the usual way: $n"; return 1; }
+}
+# A file system without direct reads and writes: the same copy, through the cache, and said so.
+header_ramfs() {
+    local u=$1 r=0 f
+    mkdir -p "$T/ram" && $SUDO mount -t ramfs none "$T/ram" && RAMFS=$T/ram || { echo "a ramfs cannot be mounted"; return 1; }
+    $SUDO chmod 1777 "$T/ram"
+    for f in l1 l2; do
+        cp "$T/$f.img" "$T/ram/$f.img" && cryptsetup luksHeaderBackup "$T/$f.img" --header-backup-file "$T/ram/$f.theirs" || r=1
+        "$u" luks-backup "$T/ram/$f.img" "$T/ram/$f.ours" > "$T/way.txt" || r=1
+        cmp "$T/ram/$f.ours" "$T/ram/$f.theirs" || { echo "$f: the copy differs from the file of luksHeaderBackup"; r=1; }
+        grep -qx 'read through the page cache' "$T/way.txt" && grep -q '^written through the page cache, ' "$T/way.txt" ||
+            { echo "$f: not named as read and written through the page cache:"; cat "$T/way.txt"; r=1; }
+        "$u" luks-prove "$T/ram/$f.ours" "$T/k64" || { echo "$f: the key is not proven against the copy"; r=1; }
+    done
+    $SUDO umount "$T/ram" && RAMFS=
+    return $r
+}
+# A block device, which is what the program reads the header of a volume from. The kernel
+# drops the cache of a device when its last opener closes it (blkdev_flush_mapping in
+# block/bdev.c of Linux 6.12, __blkdev_put in fs/block_dev.c of 4.18), and dm-crypt holds the
+# device of an open volume. So this shell holds a loop device on the container open: after
+# direct reads the cache holds no page of it, and after reads in the usual way the pages of the
+# header.
+LOOPDEV=
+header_device() {
+    local u=$1 r=0 n
+    rm -f "$T/ours.hdr" "$T/theirs.hdr"
+    cryptsetup luksHeaderBackup "$T/l2.img" --header-backup-file "$T/theirs.hdr" || return 1
+    LOOPDEV=$($SUDO losetup -f --show "$T/l2.img") && $SUDO chmod 666 "$LOOPDEV" && exec 9< "$LOOPDEV" ||
+        { echo "no loop device on the container"; return 1; }
+    "$u" forget "$LOOPDEV" || r=1
+    n=$("$u" cached "$LOOPDEV"); [ "${n%% *}" = 0 ] || { echo "the device is not let go from the page cache: $n"; r=1; }
+    "$u" luks-backup "$LOOPDEV" "$T/ours.hdr" > "$T/way.txt" || r=1
+    grep -qx 'read with direct reads' "$T/way.txt" || { echo "the device was not read with direct reads:"; cat "$T/way.txt"; r=1; }
+    "$u" luks-prove "$LOOPDEV" "$T/k64" || r=1
+    n=$("$u" cached "$LOOPDEV"); [ "${n%% *}" = 0 ] || { echo "the device after the direct reads: $n"; r=1; }
+    cmp "$T/ours.hdr" "$T/theirs.hdr" || { echo "the copy differs from the file of luksHeaderBackup"; r=1; }
+    rm -f "$T/ours.hdr"
+    KEEP_UNIT_CACHE=1 "$u" luks-backup "$LOOPDEV" "$T/ours.hdr" > "$T/way.txt" || r=1
+    n=$("$u" cached "$LOOPDEV"); [ "${n%% *}" -ge 4096 ] || { echo "the device after reads in the usual way: $n"; r=1; }
+    cmp "$T/ours.hdr" "$T/theirs.hdr" || { echo "the copy through the page cache differs from the file of luksHeaderBackup"; r=1; }
+    exec 9<&-
+    $SUDO losetup -d "$LOOPDEV" && LOOPDEV=
+    return $r
+}
+# A file system without room for the copy: the write fails, and it is named as a write that
+# failed, which is what makes a run end with status 1 and take the part away again.
+header_full() {
+    local u=$1 r=0
+    mkdir -p "$T/ram" && $SUDO mount -t tmpfs -o size=1m,mode=1777 none "$T/ram" && RAMFS=$T/ram || { echo "a tmpfs cannot be mounted"; return 1; }
+    "$u" luks-backup "$T/l2.img" "$T/ram/ours.hdr" > "$T/way.txt" 2>&1 && { echo "a copy of 16 MiB was made in 1 MiB"; r=1; }
+    grep -q '^failed at a write: write of the copy of the header: No space left on device$' "$T/way.txt" ||
+        { echo "not named as a write that failed for lack of room:"; cat "$T/way.txt"; r=1; }
+    $SUDO umount "$T/ram" && RAMFS=
+    return $r
+}
 for u in "${UNITS[@]}"; do
     for how in magic zeros metadata; do
-        check "headers: ${u##*/}, first copy damaged ($how): read from the second copy, proven, the file unchanged" damaged "$u" "$how"
+        header_ways "headers: ${u##*/}, first copy damaged ($how): read from the second copy, proven, the file unchanged" damaged "$u" "$how"
     done
-    check "headers: ${u##*/}, both copies damaged, files that end early and random bytes are named and not read" unusable "$u"
+    header_ways "headers: ${u##*/}, both copies damaged, files that end early and random bytes are named and not read" unusable "$u"
     check "headers: ${u##*/}, a default LUKS2 header has an area of 16 MiB" uuid_rule "$u"
+    if [ "$KEEP_WAY" = "direct writes" ]; then
+        check "headers: ${u##*/} leaves no page of a header or of its copy in the page cache: direct reads and writes" header_cached "$u"
+    else
+        skip "headers: the page cache after a header was copied (the temporary directory is on $(stat -f -c %T "$T"), not on ext4, xfs or btrfs)"
+    fi
+    if [ "$ROOT" = 1 ]; then
+        check "headers: ${u##*/} makes the same copy on a ramfs, which has no direct reads and writes, through the page cache" header_ramfs "$u"
+    else
+        skip "headers: on a file system without direct reads and writes (root, or sudo without a password, to mount a ramfs)"
+    fi
+    if [ "$ROOT" = 1 ]; then
+        check "headers: ${u##*/} names a copy that the file system has no room for as a write that failed" header_full "$u"
+    else
+        skip "headers: on a file system without room for the copy (root, or sudo without a password, to mount a tmpfs)"
+    fi
+    if [ "$ROOT" = 1 ] && have losetup; then
+        check "headers: ${u##*/} reads the header of a block device that is held open past the page cache, and leaves no page of it there" header_device "$u"
+    else
+        skip "headers: on a block device (root, or sudo without a password, and losetup, for a loop device)"
+    fi
 done
 
 # A header in re-encryption has two volume keys and a digest for each, and a third digest that
@@ -1464,7 +1584,7 @@ head -c 64 /dev/urandom > "$T/knew"
 if cp "$T/l2.img" "$T/re.img" && cryptsetup reencrypt --init-only -q --key-file "$T/pass" "$VK" "$T/knew" \
         --pbkdf pbkdf2 --pbkdf-force-iterations 1000 "$T/re.img" 2> "$T/re.err"; then
     for u in "${UNITS[@]}"; do
-        check "headers: ${u##*/}, a header in re-encryption: the copy equals luksHeaderBackup, the old and the new key each give their digest" reencrypted "$u"
+        header_ways "headers: ${u##*/}, a header in re-encryption: the copy equals luksHeaderBackup, the old and the new key each give their digest" reencrypted "$u"
     done
 else
     skip "headers: a header in re-encryption (this cryptsetup starts none on a file: $(head -n 1 "$T/re.err"))"
@@ -1775,5 +1895,95 @@ if [ -x keep ] && [ -x keep-san ]; then
     done
 else
     skip "dump: the program (make, musl-gcc and cc)"
+fi
+# ---- a run that is disturbed ---------------------------------------------------------------------
+# A run that has begun is brought to its end and to its status, whatever becomes of its screen
+# and whatever limit its shell had. Each of these ended the program in the middle before
+# 2.0-pre11, by a signal: a reader of the screen that goes away (SIGPIPE), a terminal that
+# hangs up (SIGHUP), and a limit of the size of a file (SIGXFSZ). The screen is a pipe that
+# holds one page, so the run waits for its reader and is alive when the two happen.
+cat > "$T/gone.py" <<'EOF'
+# gone.py KEEP DUMP DEST FILE... : the search of a dump with a screen that hangs up and goes away
+import fcntl, glob, os, signal, struct, subprocess, sys, termios, time
+keep, dump, dest, files = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4:]
+r, w = os.pipe()
+fcntl.fcntl(w, 1031, 4096)                              # F_SETPIPE_SZ
+p = subprocess.Popen([keep, "-n", "-s", dump, "-d", dest] + files, stdout=w, stderr=subprocess.DEVNULL)
+os.close(w)
+first = os.read(r, 16)
+def report():
+    found = glob.glob(dest + "/scan_*/triage.txt")
+    return open(found[0], "rb").read() if found else b""
+# It waits for its reader when the pipe is full: a line is written whole or not at all, so
+# the pipe then lacks less than a line, and what it holds stays as it is.
+def queued():
+    return struct.unpack("i", fcntl.ioctl(r, termios.FIONREAD, b"\0\0\0\0"))[0]
+full, held = 0, -1
+for _ in range(6000):
+    now = queued()
+    full = full + 1 if now == held and now >= 3600 else 0
+    held = now
+    if full >= 10 or p.poll() is not None:
+        break
+    time.sleep(0.02)
+before = report()
+if p.poll() is not None:
+    sys.exit("the run ended with status %d before its screen was read: it did not wait" % p.returncode)
+# the report holds the lines that the screen has had, each whole, before the run is over
+if not first.startswith(b"keep ") or len(before) < 3500 or not before.endswith(b"\n"):
+    sys.exit("while the run waits, triage.txt holds %d bytes and ends with %r" % (len(before), before[-20:]))
+os.kill(p.pid, signal.SIGHUP)
+time.sleep(0.3)
+if p.poll() is not None:
+    sys.exit("the run ended with status %d when its terminal hung up" % p.returncode)
+os.close(r)                                             # the reader of the screen is gone
+try:
+    rc = p.wait(timeout=120)
+except subprocess.TimeoutExpired:
+    p.kill()
+    sys.exit("the run did not end after its screen was gone")
+if rc != 0:
+    sys.exit("the run ended with status %d after its screen was gone" % rc)
+if not report().rstrip().endswith(b" s") or b"\nresult\n" not in report():
+    sys.exit("triage.txt does not hold the run to its end")
+EOF
+disturbed() {
+    local k=$1 r=0 d rc i f caps
+    local -a files=()
+    case $k in /*) ;; *) k=$R/$k ;; esac
+    rm -rf "$T/gone"; mkdir "$T/gone" "$T/gone/1" "$T/gone/2" || return 1
+    # sixteen headers, so that the screen is longer than the pipe holds
+    for _ in 1 2 3 4 5 6 7 8; do files+=("$T/l2.img" "$T/l1.img"); done
+    python3 -I "$T/gone.py" "$k" "$T/dump.lime" "$T/gone/1" "${files[@]}" || r=1
+    d=$(ls -d "$T"/gone/1/scan_* 2> /dev/null | head -n 1)
+    i=0
+    for f in "$d"/keys/*.vk; do cmp -s "$f" "$T/k64" && i=$(( i + 1 )); done
+    [ "$i" = 16 ] || { echo "of the 16 keys of a run whose screen went away, $i are kept"; ls "$d/keys" 2>&1; r=1; }
+    ( cd "$d" 2> /dev/null && sha256sum -c --quiet manifest.sha256 > /dev/null 2>&1 ) || { echo "the manifest of a run whose screen went away"; r=1; }
+    python3 -I -c 'import json, sys; sys.exit(0 if len(json.load(open(sys.argv[1]))["volumes"]) == 16 else 1)' "$d/verdict.json" ||
+        { echo "the report of a run whose screen went away"; r=1; }
+
+    # A limit of the size of a file, as a shell of the examined system can have it. A process
+    # that may raise its limits (CAP_SYS_RESOURCE, bit 24 of its capabilities), as root on a
+    # machine, takes it off, and the run is whole. Another cannot: a write then fails, which
+    # the run says with its status, and no signal ends it.
+    ( ulimit -f 1 && "$k" -n -s "$T/dump.lime" -d "$T/gone/2" "$T/l2.img" > "$T/gone/2.txt" 2> "$T/gone/2.err" ); rc=$?
+    d=$(ls -d "$T"/gone/2/scan_* 2> /dev/null | head -n 1)
+    caps=$(sed -n 's/^CapEff:[[:space:]]*//p' /proc/self/status)
+    if [ $(( 0x${caps:-0} >> 24 & 1 )) = 1 ]; then
+        [ "$rc" = 0 ] && cmp -s "$d/keys/l2.img.vk" "$T/k64" && ( cd "$d" && sha256sum -c --quiet manifest.sha256 > /dev/null 2>&1 ) ||
+            { echo "a limit of the size of a file that the process may take off: status $rc"; cat "$T/gone/2.err"; r=1; }
+    else
+        [ "$rc" = 1 ] && grep -q 'a write or a flush to the destination FAILED' "$T/gone/2.err" ||
+            { echo "a limit of the size of a file: status $rc"; cat "$T/gone/2.err"; r=1; }
+    fi
+    return $r
+}
+if [ -x keep ] && [ -x keep-san ] && [ -f "$T/dump.lime" ]; then
+    for k in keep keep-san; do
+        check "disturbed: $k ends its run and keeps every key when its terminal hangs up and its screen goes away, and under a limit of the size of a file" disturbed "$k"
+    done
+else
+    skip "disturbed: the program and the image of the search (make, musl-gcc and cc)"
 fi
 finish

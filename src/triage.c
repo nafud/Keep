@@ -212,18 +212,19 @@ static void type_of_uuid(const char *uuid, char type[16])
  * The LUKS header of a mapping: open the backing device and read the header at its start. A
  * mapping whose device holds no header of its type, or the header of another volume, is taken
  * as one without a header, as cryptsetup takes it (_init_by_name_crypt), and its type is then
- * "n/a". Returns the descriptor of the device, or -1 with what is to say of the header, and
+ * "n/a". The device is read past the page cache where it takes such reads, which *direct
+ * says. Returns the descriptor of the device, or -1 with what is to say of the header, and
  * with *failed where the backup failed and the device could well hold the header.
  */
 static int find_header(struct volume *v, const char *uuid, unsigned major, unsigned minor,
-                       struct luks_header *on_device, struct str *why, int *failed)
+                       struct luks_header *on_device, struct str *why, int *failed, int *direct)
 {
     char err[LUKS_ERR_LEN];
     struct stat st;
     int dev, found;
 
     *failed = 1;
-    if ((dev = open(v->device, O_RDONLY | O_CLOEXEC)) < 0) {
+    if ((dev = luks_open(v->device, direct)) < 0) {
         str_addf(why, "the backup of %s: %s", v->device, strerror(errno));
         return -1;
     }
@@ -249,33 +250,50 @@ static int find_header(struct volume *v, const char *uuid, unsigned major, unsig
 
 /*
  * Copy the header to headers/ and read the copy, which is what the proof is made against: a
- * key that is proven is proven against the file that is kept.
+ * key that is proven is proven against the file that is kept. The copy passes the page cache
+ * as the read of the device does, where the file system of the destination has direct writes,
+ * so that the header takes no free memory of the machine on its way. Where one of the two went
+ * through the cache, the run says so.
  */
-static void back_up_header(struct run *r, struct volume *v, int dev, const struct luks_header *on_device,
+static void back_up_header(struct run *r, struct volume *v, int dev, int dev_direct, const struct luks_header *on_device,
                            struct luks_header *h)
 {
     char err[LUKS_ERR_LEN], rel[PATH_MAX];
-    uint64_t written = 0;
+    struct luks_copy copy = { 0 };
     int out;
 
     if (on_device->secondary)
         run_field(r, "header", "the first copy of the LUKS2 header is damaged and the second one is in use, both are copied as they are");
-    if (pathf(rel, "headers/%s.hdr", v->file) || (out = run_create(r, rel, O_RDWR, 0400)) < 0) {
+    if (pathf(rel, "headers/%s.hdr", v->file) || (out = run_create_direct(r, rel, O_RDWR, 0400, &copy.direct)) < 0) {
         run_mark(r, "header", RUN_NOT, "FAILED", "the backup of %s: %s", v->device, strerror(errno));
         r->write_failed = 1;
         return;
     }
-    if (luks_backup(dev, on_device, out, &written, err)) {
-        run_mark(r, "header", RUN_NOT, "FAILED", "the backup of %s: %s", v->device, err);
-    } else {
-        run_field(r, "header", "%s, %llu bytes", rel, (unsigned long long)written);
-        if (run_flush(r, out, "headers"))
-            run_mark(r, "header", RUN_NOT, "FAILED", "the backup could not be flushed to the destination");
-        if (luks_read(out, h, err))
-            run_mark(r, "header", RUN_NOT, "FAILED", "the backup cannot be read back: %s", err);
-        else
-            v->has_header = 1;
+    if (luks_backup(dev, on_device, out, &copy, err)) {
+        /* The part is no copy of the header, and it can hold the room that the keys need: a
+           key is a few bytes, and the copy of a LUKS2 header as cryptsetup makes it 16 MiB. */
+        run_mark(r, "header", RUN_NOT, "FAILED", "the backup of %s: %s. The part that was written is removed", v->device, err);
+        if (copy.write_failed)
+            r->write_failed = 1;
+        close(out);
+        run_remove(r, rel);
+        return;
     }
+    run_hashed(r, rel, copy.sha256);
+    run_field(r, "header", "%s, %llu bytes", rel, (unsigned long long)copy.bytes);
+    if (!dev_direct)
+        run_field(r, "header", "read through the page cache: the device takes no direct reads");
+    if (!copy.direct)
+        run_field(r, "header", "its copy written through the page cache: the file system of the destination takes "
+                  "no direct writes");
+    if (run_flush(r, out, "headers"))
+        run_mark(r, "header", RUN_NOT, "FAILED", "the backup could not be flushed to the destination");
+    if (luks_read(out, h, err))
+        run_mark(r, "header", RUN_NOT, "FAILED", "the backup cannot be read back: %s", err);
+    else
+        v->has_header = 1;
+    /* what the cache holds of the copy is let go, as for an image (image_settle) */
+    posix_fadvise(out, 0, 0, POSIX_FADV_DONTNEED);
     close(out);
 }
 
@@ -522,7 +540,7 @@ static void one_volume(struct run *r, struct volume *v, const struct vol *f)
     char size_of[32], label[32];
     unsigned taken = 0;
     size_t i;
-    int have_device, luks, dev = -1, header_failed = 0;
+    int have_device, luks, dev = -1, dev_direct = 0, header_failed = 0;
 
     run_title(r, "%s", v->shown);
     log_tables(r, v, f);
@@ -546,7 +564,7 @@ static void one_volume(struct run *r, struct volume *v, const struct vol *f)
     /* the header decides with the UUID what the mapping is, so it is read before the type is named */
     luks = !strcmp(v->type, "LUKS1") || !strcmp(v->type, "LUKS2");
     if (luks && have_device)
-        dev = find_header(v, f->top->uuid, f->major, f->minor, &on_device, &why, &header_failed);
+        dev = find_header(v, f->top->uuid, f->major, f->minor, &on_device, &why, &header_failed, &dev_direct);
     else if (luks && f->has_device)
         str_addf(&why, "the backup: no device node for %u:%u", f->major, f->minor);
     else if (luks)
@@ -592,7 +610,7 @@ static void one_volume(struct run *r, struct volume *v, const struct vol *f)
         run_field(r, "header", "%s", str_text(&why));
     str_free(&why);
     if (dev >= 0) {
-        back_up_header(r, v, dev, &on_device, &header);
+        back_up_header(r, v, dev, dev_direct, &on_device, &header);
         close(dev);
     }
 
@@ -683,10 +701,12 @@ static void json_key(FILE *f, const struct key_result *k, int part)
  * The tables of all mapped devices, read once: they are what the volumes are found in. The
  * control device is opened only where the kernel has device-mapper: its node can exist without
  * it, and opening it would then load the module (the alias devname:mapper/control of dm-mod).
- * Returns 0, with *present 0 where the kernel has no device-mapper, or -1 with err. The tables
- * can hold keys: free_tables wipes them.
+ * Returns 0, with *present 0 where the kernel has no device-mapper, or -1 with err. A device
+ * that was removed since the list was read has no table and is none any more. A table that
+ * cannot be read for another reason is named in UNREAD: a volume in it is not examined, which
+ * the run has to say. The tables can hold keys: free_tables wipes them.
  */
-static int load_tables(struct dm_table **tabs, size_t *ntabs, int *present, char err[DM_ERR_LEN])
+static int load_tables(struct dm_table **tabs, size_t *ntabs, int *present, struct str *unread, char err[DM_ERR_LEN])
 {
     struct dm_dev *devs = NULL;
     size_t ndevs = 0, i;
@@ -709,8 +729,14 @@ static int load_tables(struct dm_table **tabs, size_t *ntabs, int *present, char
         close(dm);
         return -1;
     }
-    for (i = 0; i < ndevs; i++)
-        *ntabs += !dm_table(dm, devs[i].name, &(*tabs)[*ntabs], err);  /* else removed since the list was read */
+    for (i = 0; i < ndevs; i++) {
+        int r = dm_table(dm, devs[i].name, &(*tabs)[*ntabs], err);
+
+        if (!r)
+            ++*ntabs;
+        else if (r < 0)
+            str_addf(unread, "%s%s (%s)", unread->len ? ", " : "", devs[i].name, err);
+    }
     free(devs);
     close(dm);
     return 0;
@@ -737,13 +763,13 @@ int triage_run(const struct triage_options *o)
     struct sys_mount mount;
     struct statvfs vfs;
     struct utsname un;
-    struct str medium = { 0 }, where = { 0 };
+    struct str medium = { 0 }, where = { 0 }, unread = { 0 };
     struct memory_result mem = { 0 };
     const char *bad;
     size_t ntabs = 0, nvols = 0, i, k;
     FILE *json;
     char unlocked[160] = "", size_of[32], label[32];
-    int fd, present = 1, no_memory = 0, listed = 1, names = 0, words = 0;
+    int fd, present = 1, no_memory = 0, listed = 1, names = 0, words = 0, tables_unread;
 
     /* Keys pass through the memory of this process. Locked memory is not written to the swap
        space of the examined system. */
@@ -781,7 +807,7 @@ int triage_run(const struct triage_options *o)
     for (i = 0; i < 3; i++)
         if (pathf(path, "%s/%s", r->out, i == 0 ? "headers" : i == 1 ? "keys" : "log") || mkdir(path, 0700))
             return run_die("cannot create %s: %s", path, strerror(errno));
-    if ((fd = run_create(r, "triage.txt", O_WRONLY, 0600)) < 0 || !(r->report = fdopen(fd, "w")))
+    if (run_report(r))
         return run_die("cannot create %s/triage.txt: %s", r->out, strerror(errno));
 
     sys_lockdown("/sys/kernel/security/lockdown", r->lockdown, sizeof r->lockdown);
@@ -819,7 +845,7 @@ int triage_run(const struct triage_options *o)
     /* The open crypt volumes: every mapped device with a crypt target in its table, which is
        what "dmsetup ls --target crypt" lists, and a device whose crypt targets cryptsetup has
        put into a helper device below it (volume.c). */
-    if (load_tables(&tabs, &ntabs, &present, err)) {
+    if (load_tables(&tabs, &ntabs, &present, &unread, err)) {
         run_mark(r, "volumes", RUN_NOT, "FAILED", "the mapped devices cannot be listed: %s", err);
         r->write_failed = 1;
         listed = 0;
@@ -831,6 +857,13 @@ int triage_run(const struct triage_options *o)
         r->write_failed = 1;
         listed = 0;
     }
+    tables_unread = unread.len || unread.failed;
+    if (tables_unread) {
+        if (unread.s)
+            name_clean(unread.s);
+        run_mark(r, "tables", RUN_NOT, "FAILED", "not read, so a volume in them is not examined: %s", str_text(&unread));
+    }
+    str_free(&unread);
     if (nvols && !(vols = calloc(nvols, sizeof *vols)))
         no_memory = 1;
     for (i = 0; vols && i < nvols; i++) {
@@ -1011,6 +1044,14 @@ int triage_run(const struct triage_options *o)
     str_free(&medium);
     if (r->write_failed) {
         fprintf(stderr, "keep: a write or a flush to the destination FAILED, the folder is not complete\n");
+        return 1;
+    }
+    if (r->line_lost) {
+        fprintf(stderr, "keep: a line of the report could not be put together for lack of memory, triage.txt is not whole\n");
+        return 1;
+    }
+    if (tables_unread) {
+        fprintf(stderr, "keep: the table of a mapped device could not be read, so not every volume is examined\n");
         return 1;
     }
     run_tell(r, "keep: every file of this run is flushed to the destination");

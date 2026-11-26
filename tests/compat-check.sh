@@ -34,7 +34,11 @@
 #             is, which on a guest without encrypted volumes is the run with none. It is
 #             also run once with -d and the FAT file system as the destination, where its
 #             screen must name each key that it holds by its file, its length and the start
-#             of its SHA-256.
+#             of its SHA-256. It reads a header past the page cache and writes its copy
+#             past it: with the cache of each device let go before a run, c/keep-unit may
+#             count no page of such a device there after it, and none of a copy. With a
+#             destination of 1 MiB, which has no room for the copy of a header, the part
+#             of each copy must be gone and the keys kept all the same, with status 1.
 #             With -m or -c it also takes the memory image, once for each word of
 #             KEEP_IMAGES (default "lime raw avml all"), while the two containers are open.
 #             A word is a format, or "all" for every format from one read (-F). An image
@@ -115,6 +119,7 @@ cleanup() {
     cryptsetup close kc_it 2>/dev/null
     cryptsetup close kc_ik 2>/dev/null
     umount "$W/fat" 2>/dev/null
+    umount "$W/small" 2>/dev/null
     close_lvm
     cryptsetup close kc_l2 2>/dev/null
     cryptsetup close kc_l1 2>/dev/null
@@ -128,9 +133,11 @@ rm -rf "$W"; mkdir -p "$W/dest" "$W/cdest" || fail "cannot create $W"
 chmod 700 "$W"; cd "$W" && W=$(pwd -P) || exit 1
 
 # The C program on the guest as it is, before a mapping is made: on a guest without encrypted
-# volumes this is the run with none, which must end in order like any other.
+# volumes this is the run with none, which must end in order like any other. Its shell has a
+# limit of the size of a file of one block, as a shell of an examined system can have one: the
+# program takes the limit off, which root may, and no file of the run is cut.
 mkdir "$W/empty"
-( cd "$W/empty" && "$KIT/c/keep" ) > "$W/empty/screen.txt" 2>&1; RCE=$?
+( cd "$W/empty" && ulimit -f 1 && "$KIT/c/keep" ) > "$W/empty/screen.txt" 2>&1; RCE=$?
 E=$(ls -d "$W"/empty/triage_* 2>/dev/null | tail -n 1)
 EMPTY=FAIL
 [ "$RCE" = 0 ] && grep -q '"volumes": \[' "$E/verdict.json" 2>/dev/null && (cd "$E" && sha256sum -c --quiet manifest.sha256 >/dev/null 2>&1) && EMPTY=PASS
@@ -242,13 +249,31 @@ fi
 # verdict.json with the same fields in the same order, so the lines must be the same. RULE is
 # a rule of sed for the lines of the C program, for a field that the two name differently.
 beside() {
-    local sh=$1 dest=$2 label=$3 rule=${4:-} c rc ok=1 f
+    local sh=$1 dest=$2 label=$3 rule=${4:-} c rc ok=1 f n devs pages=0
+    # The C program reads a header past the page cache and writes its copy past it. So the
+    # cache of each device with a header is let go before the run, and after it, before
+    # anything else reads them, no page of such a device and none of a copy may lie there.
+    devs=$(sed -n 's/^    {"name": .*, "device": "\(\/dev\/[^"]*\)", .*"header_backup": "headers\/.*/\1/p' "$sh/verdict.json" | sort -u)
+    for f in $devs; do "$KIT/c/keep-unit" forget "$f" || ok=0; done
     ( cd "$dest" && "$KIT/c/keep" ) > "$dest/screen-c.txt" 2>&1; rc=$?
     c=$(ls -d "$dest"/triage_* 2>/dev/null | tail -n 1)
     [ "$rc" = 0 ] && [ -f "$c/verdict.json" ] || ok=0
+    : > "$dest/diff.txt"
+    for f in $devs "$c"/headers/*.hdr; do
+        [ -e "$f" ] || continue
+        n=$("$KIT/c/keep-unit" cached "$f" 2>&1)
+        case $n in
+        "0 of "*) pages=$(( pages + $(printf '%s' "$n" | sed 's/^0 of \([0-9]*\) .*/\1/') )) ;;
+        *) ok=0; echo "in the page cache after the run, $f: $n" >> "$dest/diff.txt" ;;
+        esac
+    done
+    [ -n "$devs" ] || { ok=0; echo "no device with a header in $sh/verdict.json" >> "$dest/diff.txt"; }
+    if grep -q 'through the page cache' "$dest/screen-c.txt"; then
+        ok=0; echo "a header went through the page cache" >> "$dest/diff.txt"
+    fi
     # a volume is a line with a name and a type, which the two lines of "binaries" lack
     if ! diff <(grep '^    {"name": .*, "type": ' "$sh/verdict.json" | sed 's/,$//') \
-              <(grep '^    {"name": .*, "type": ' "$c/verdict.json" 2>/dev/null | sed -e 's/,$//' -e "$rule") > "$dest/diff.txt" 2>&1; then
+              <(grep '^    {"name": .*, "type": ' "$c/verdict.json" 2>/dev/null | sed -e 's/,$//' -e "$rule") >> "$dest/diff.txt" 2>&1; then
         ok=0
     fi
     for f in "$sh"/headers/*.hdr "$sh"/keys/*.vk; do
@@ -262,11 +287,20 @@ beside() {
     fi
     if [ "$ok" = 1 ]; then
         echo "PASS   $(sed -n '1p' "$dest/screen-c.txt"), $label: $(grep -c '^    {"name": .*, "type": ' "$c/verdict.json") volumes as keytriage.sh gave them in every field, $(ls "$sh"/headers/*.hdr 2>/dev/null | wc -l) header backups and $(ls "$sh"/keys/*.vk 2>/dev/null | wc -l) keys byte for byte the same, manifest${KEEP_SAN:+, also with the sanitizers}"
+        echo "       of the $pages pages of the devices with a header and of the copies, none in the page cache after the run"
     else
         echo "FAIL   the C program, $label, status $rc"; sed 's/^/       /' "$dest/diff.txt" "$dest/screen-c.txt"; PASS=0
     fi
 }
 beside "$O" "$W/cdest" "the same mappings"
+# A mapped device that was removed since the list was read has no table, and the kernel says
+# so with an error of its own, which the program tells apart from a table that cannot be read.
+"$KIT/c/keep-unit" dm-table kc_no_such_device > /dev/null 2> "$W/gone.txt"; rcg=$?
+if [ "$rcg" = 3 ]; then
+    echo "PASS   a mapped device that is not there is named as such by the kernel, and not as a table that cannot be read"
+else
+    echo "FAIL   the table of a mapped device that is not there: status $rcg, $(cat "$W/gone.txt")"; PASS=0
+fi
 
 # The memory image of the C program. AVML took its image of the same machine in the main run,
 # with the same containers open, and the scanner listed what it holds in image-candidates.txt.
@@ -392,6 +426,16 @@ if command -v mkfs.vfat >/dev/null && mkfs.vfat fat.img >/dev/null 2>&1 && mount
     "$KIT/c/keep" -d "$W/fat/c" > "$W/screen-cfat.txt" 2>&1; rcm=$?
     M=$(ls -d "$W"/fat/c/triage_* 2>/dev/null | tail -n 1)
     ok=1
+    # FAT takes a direct write that makes a file longer through the page cache by itself, and
+    # the kernel drops those pages (fat_direct_IO, direct_write_fallback): none may be left
+    fatpages=""
+    for f in "$M"/headers/*.hdr; do
+        [ -e "$f" ] || continue
+        n=$("$KIT/c/keep-unit" cached "$f" 2>&1)
+        fatpages="$fatpages ${f##*/} $n,"
+        case $n in "0 of "*) ;; *) ok=0 ;; esac
+    done
+    grep -q 'through the page cache' "$W/screen-cfat.txt" && ok=0
     [ "$rcm" = 0 ] && grep -q '^  destination  .*, vfat, mounted at .*, [0-9.]* [GMiBbytes]* free$' "$W/screen-cfat.txt" &&
         grep -q '^  memory       [0-9.]* [GM]iB$' "$W/screen-cfat.txt" && grep -q '^  kernel       [^ ]' "$W/screen-cfat.txt" || ok=0
     grep -q '^  volumes      [0-9]* open dm-crypt volumes: .*kc_l1.*kc_l2' "$W/screen-cfat.txt" || ok=0
@@ -404,11 +448,45 @@ if command -v mkfs.vfat >/dev/null && mkfs.vfat fat.img >/dev/null 2>&1 && mount
     (cd "$M" 2>/dev/null && sha256sum -c --quiet manifest.sha256 >/dev/null 2>&1) || ok=0
     if [ "$ok" = 1 ]; then
         echo "PASS   the C program with -d and a destination on FAT: the system and the open volumes are named, three keys equal the ground truth and are named by file, length and SHA-256, manifest"
+        echo "       the copies of the headers on FAT, before anything read them:$fatpages"
     else
-        echo "FAIL   the C program with -d and a destination on FAT, status $rcm"; sed 's/^/       /' "$W/screen-cfat.txt"; PASS=0
+        echo "FAIL   the C program with -d and a destination on FAT, status $rcm, pages of the copies in the page cache:$fatpages"; sed 's/^/       /' "$W/screen-cfat.txt"; PASS=0
     fi
 else
     echo "SKIP   no mkfs.vfat or no FAT in this kernel, the destination with FAT is not run"
+fi
+# A destination without room for the copy of a header: a megabyte, where the copy of the
+# LUKS1 header takes two and that of the LUKS2 header sixteen. A part of a copy that stayed
+# would take the room of the keys, which are what cannot be had again. So each part must be
+# gone, the key of the table and the list of the schedules must be kept all the same, the
+# run must say that a write failed, with status 1, and its manifest must verify.
+mkdir "$W/small"
+if mount -t tmpfs -o size=1m,mode=700 none "$W/small" 2>/dev/null; then
+    "$KIT/c/keep" -d "$W/small" > "$W/screen-small.txt" 2>&1; rcs=$?
+    M=$(ls -d "$W"/small/triage_* 2>/dev/null | tail -n 1)
+    : > "$W/small.txt"
+    [ "$rcs" = 1 ] || echo "status $rcs, not 1" >> "$W/small.txt"
+    [ "$(tr -s '\n ' '  ' < "$W/screen-small.txt" | grep -o 'write of the copy of the header: No space left on device. The part that was written is removed' | wc -l)" = 2 ] ||
+        echo "not two copies that failed at a write and were removed" >> "$W/small.txt"
+    [ -z "$(ls "$M"/headers 2>/dev/null)" ] || echo "a part of a copy stayed: $(ls -l "$M"/headers | tail -n +2 | tr '\n' ' ')" >> "$W/small.txt"
+    for n in kc_l1 No; do
+        cmp -s "$M/keys/$n.vk" "$n.vk" || echo "the key of $n is not kept" >> "$W/small.txt"
+    done
+    [ -s "$M/keys/kcore-candidates.txt" ] || echo "the list of the schedules is not kept" >> "$W/small.txt"
+    grep -q '^    {"name": "kc_l1", .*"header_backup": null, .*"verdict": "captured, not proven"' "$M/verdict.json" 2>/dev/null ||
+        echo "kc_l1 is not captured, not proven, without a header backup" >> "$W/small.txt"
+    grep -q '^    {"name": "kc_l2", .*"header_backup": null, .*"verdict": "needs a memory read"' "$M/verdict.json" 2>/dev/null ||
+        echo "kc_l2 does not need a memory read, without a header backup" >> "$W/small.txt"
+    (cd "$M" 2>/dev/null && sha256sum -c --quiet manifest.sha256 >/dev/null 2>&1) || echo "the manifest does not verify" >> "$W/small.txt"
+    grep -q '^keep: a write or a flush to the destination FAILED' "$W/screen-small.txt" || echo "the run does not say that a write failed" >> "$W/small.txt"
+    if [ ! -s "$W/small.txt" ]; then
+        echo "PASS   the C program with a destination of 1 MiB: the parts of two header copies are removed, the key of the table, the key of the plain mapping and the list of the schedules are kept, status 1, manifest"
+    else
+        echo "FAIL   the C program with a destination of 1 MiB"; sed 's/^/       /' "$W/small.txt" "$W/screen-small.txt"; PASS=0
+    fi
+    umount "$W/small"
+else
+    echo "FAIL   a tmpfs of 1 MiB cannot be mounted"; PASS=0
 fi
 # LVM on LUKS: the stack of an encrypted installation
 mkdir "$W/lvm"
