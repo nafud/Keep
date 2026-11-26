@@ -833,6 +833,29 @@ badly, and nothing wrong in what the program gave: `16777216` at the end of a li
 the rule above. `unit-check.sh` has both lines as cases and compares 400 texts with the
 rule as it is written there in Python.
 
+Before 2.0 the code was read once more as a whole, by its author and by two readers that
+had not written it, with the analyzers of gcc 13.3 (`-fanalyzer`), clang 18.1 and cppcheck
+2.13, with valgrind 3.22, with every allocation of a search of a dump made to fail in its
+turn, with a destination of 4 KiB to 40 KiB, and with the screen taken away. No read or
+write outside a buffer and no fault was found: what the analyzers named was looked at and
+is none. With one allocation failed, or every one from a place on, no run of 450 crashed,
+and none ended with status 0 with a key, a report or a manifest missing. With a
+destination that ran full every run ended with status 1 and said so. What was found, and
+is corrected in 2.0-pre11, each with its check:
+
+- Three signals ended a run in the middle (see "What the sources say"): `SIGPIPE`,
+  `SIGHUP` and `SIGXFSZ`. A run now takes none of them.
+- `triage.txt` was written a block at a time, so a run that was ended from outside left a
+  report without its last lines, or an empty one. It is now written a line at a time.
+- A line of the report that could not be put together for lack of memory was replaced by a
+  note, and the run ended with status 0. It now ends with status 1.
+- The copy of a header that could not be written to its end stayed as a part. On a
+  destination without room for it, that part took the room of the keys. The run also
+  ended with status 0 after such a write had failed. The part is now removed, and the
+  status is 1.
+- The table of a mapped device that could not be read was passed over without a word, as
+  a device is that was removed since the list was read. It is now named, with status 1.
+
 One defect of `keytriage.sh` was found on the way: it stated no key size for a LUKS2 volume
 with integrity. It is corrected in 1.5.1, with its check in `selftest.sh`.
 
@@ -1075,13 +1098,25 @@ image of its own:
   guests (see above), and not by the check. In the mode `confidentiality` the kernel refuses
   `/proc/kcore`, which the run then says, and that is not run.
 - RAM that a driver added is a case of `unit-check.sh`. No machine with such RAM was run.
-- The small files of a run, the report, the header backups and the keys, go through the
-  page cache of the examined system, and so does an image on a file system without direct
-  writes. On FAT, and on btrfs from Linux 6.18 on, the kernel takes the direct writes
+- The small files of a run, the report, the list of the schedules and the keys, go through
+  the page cache of the examined system, and so do an image and the copy of a header on a
+  file system without direct writes. On FAT, and on btrfs from Linux 6.18 on, the kernel takes the direct writes
   through the cache and drops the pages after each, so the cache holds a mebibyte of the
   image at a time and not the image. For btrfs this is run (see "Where it has run"), for
   FAT it is read in the source, and no image was written to FAT in a run. An image on exFAT
   or NTFS is not run either. On tmpfs a file lies in memory whichever way it is written.
+- A run that is ended by an interrupt from the keyboard or by `SIGTERM` leaves the keys it
+  had written, the lines of `triage.txt` up to there and the part of an image, and neither
+  `verdict.json` nor a manifest. It does not end its work in order. This is read in the
+  code and not run.
+- That a table which cannot be read is named and ends the run with status 1 is not run: no
+  way was found to make the kernel refuse the table of a device that it lists. What is run
+  is that the program tells such a refusal from a device that is gone.
+- That root takes a limit of the size of a file off is run by `compat-check.sh`. The limit
+  of processor time is taken off by the same call and is not run.
+- The device of a volume is read without a look at whether it is a mapped device that is
+  suspended, which cryptsetup looks at (`device_ready`). A read of such a device waits until
+  it is resumed, and the run with it. No volume on a suspended device was run.
 - A write that a file system refuses with `EINVAL` after it has opened the file for direct
   writes ends the direct writes of that file, which then goes through the cache. No file
   system that does this was found to check it on.
@@ -1203,7 +1238,18 @@ compared with `cryptsetup` on LUKS1 and LUKS2 containers made there: the copy mu
 `luksHeaderBackup` byte for byte, and a key must be proven exactly where `cryptsetup open
 --test-passphrase` accepts it, also for headers with erased keyslots. A LUKS2 header whose first
 copy is damaged must be read from the second, with the file left as it is. Files that end
-inside a header and random bytes must be named and not read. The code that reads the answers of
+inside a header and random bytes must be named and not read. Each of these checks of a header
+is run twice, with the files read and written past the page cache, as the program reads a
+device and writes its copy, and through it. After direct reads and writes `keep-unit` may
+count no page of the container and none of the copy in the page cache, also after the copy
+was read for the proof, and after reads and writes in the usual way the pages of both. As
+root, or with `sudo` that asks no password, the same is done on a ramfs, which has neither
+and must give the same copy through the cache, on a tmpfs of 1 MiB, where the copy must be
+named as one that failed at a write, and on a loop device that the check holds open as
+dm-crypt holds the device of a volume: after direct reads no page of the device may lie in
+the cache, and after reads in the usual way the pages of the header. A request for a table
+that a device refuses must be taken as a table that cannot be read, and not as a mapped
+device that is gone. The code that reads the answers of
 device-mapper is given answers laid out as `list_devices` and `retrieve_status` of the kernel lay
 them out, before and from Linux 4.13, and then the same with bytes changed and ends cut off,
 1600 times: each must be read or refused, and the sanitizers report a read outside the buffer.
@@ -1252,6 +1298,13 @@ The options are given to both
 builds of the program: what does not go together must end with status 2 and write nothing,
 the search of a dump must write the list of the scanner into `keys/` of its folder with no
 key on the screen, and a cut image must end the run with the status of the search.
+A run is disturbed as a scene can disturb it. Its screen is a pipe that holds one page, so
+that the search of a dump with sixteen headers waits for its reader: while it waits,
+`triage.txt` must hold the lines that the screen has had, each whole. Then its terminal
+hangs up (`SIGHUP`) and the reader goes away (`SIGPIPE`), and the run must end with status
+0, all sixteen keys, a report and a manifest that verifies. Under a limit of the size of a
+file of one block (`ulimit -f 1`) a process that may take the limit off must give the whole
+run, and another must end with status 1 and say that a write failed: no signal may end it.
 The screen is looked at byte by byte. On a pseudo-terminal, which Python's `pty` gives, it
 must have the titles bold, the labels cyan and the verdicts in their colours, no escape
 sequence but those five, and a line of progress that is written over and taken away. With
@@ -1287,7 +1340,16 @@ both volume keys must be proven and written as they are. It is searched once mor
 file, and what it holds of a header by itself is told and not judged: the containers of the
 check lie in files, whose cache holds their headers. It is run once with `-d` and the FAT file system as the destination, where its
 screen must name the system, the open volumes and each key it holds by its file, its length
-and the start of its SHA-256. Before the two parts that follow, the two volumes with their keys in the
+and the start of its SHA-256. Before each run beside `keytriage.sh` the cache of every device
+with a header is let go, and after it `c/keep-unit` may count no page of such a device and
+none of a copy of a header in the page cache, on FAT as elsewhere, and no line of the screen
+may say that a header went through the cache. The run before any mapping is made has a
+limit of the size of a file of one block in its shell, which the program must take off. A
+run with a tmpfs of 1 MiB as the destination, which has no room for the copy of a header,
+must remove the part of each copy, keep the key of the table, the key of the plain mapping
+and the list of the schedules, say that a write failed, and end with status 1 and a
+manifest that verifies. `c/keep-unit` must name a mapped device that is not there as such.
+Before the two parts that follow, the two volumes with their keys in the
 keyring are closed, because every run with one of them open searches the whole memory once
 more. Two LUKS2 containers with integrity are made, one opened with
 `--disable-keyring`: both tools must give `captured and proven` with the key of 96 bytes it
