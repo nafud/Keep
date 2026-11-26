@@ -540,6 +540,13 @@ Read in Linux 4.18, 5.10, 6.12 and 6.18, cryptsetup 2.0.6, 2.3.7, 2.7.0 and 2.8.
   `confidentiality` (`LOCKDOWN_KCORE` stands behind `LOCKDOWN_INTEGRITY_MAX` in
   `security.h`). `/dev/mem` is refused from the mode `integrity` on, and with
   `STRICT_DEVMEM` it hands out no page that is RAM (`devmem_is_allowed`), so it is no source.
+- A RAM segment of `/proc/kcore` is whole pages: the kernel takes the start of a range of
+  RAM up to the next page and its end down (`walk_system_ram_range` in `kernel/resource.c`
+  of Linux 4.18, which `kcore_update_ram` calls). What the boot loader hands the kernel as
+  setup data is a range of its own in the memory map, begins and ends where its bytes do,
+  and is named `System RAM` like the memory around it (`e820__reserve_setup_data` and
+  `e820_type_to_string` in `arch/x86/kernel/e820.c`). So a page in which one such range
+  ends and the next begins is in no segment, and no reader of `/proc/kcore` has it.
 - `/proc/iomem` names the ranges of physical addresses, each as `start-end : name` with the
   end included, and shows 0 for every address to a reader without `CAP_SYS_ADMIN` (`r_show`
   in `kernel/resource.c`). RAM is named `System RAM`. RAM that a driver added to the running
@@ -720,7 +727,8 @@ Read in Linux 4.18, 5.10, 6.12 and 6.18, cryptsetup 2.0.6, 2.3.7, 2.7.0 and 2.8.
     `keytriage.sh` ends with 0.
   - What `/proc/iomem` names as RAM and `/proc/kcore` does not offer is counted on the
     screen. On a machine with BIOS it is the last part of the first range, which ends inside
-    a page: 3072 bytes on the guest of the first run.
+    a page: 3072 bytes on the guest of the first run. On a guest with UEFI it was four
+    pages, 16384 bytes (see "Where it has run").
   - A line on the screen every quarter of a minute says how far the read is.
   - The report names the format of a compressed image `avml compressed`, as `keytriage.sh`
     does, and has the further images of one read in `further_images` of `memory`.
@@ -858,6 +866,30 @@ it lockdown `integrity`. The screen and the report of each run were read:
   90 keys of the image, 5108 attempts in 510 s, and only then was the header behind it
   looked at.
 
+On a guest that was installed from the installer of its distribution, with the automatic
+partitioning and the encryption that the installer offers, the program was run by hand in
+the same way: under KVM with UEFI and Secure Boot on, with 4 GiB of memory. AVML 0.21.0 took
+an image first, which was searched with no file, and then the program took the keys and an
+image of its own:
+
+- Red Hat Enterprise Linux 8.10, a Minimal Install, kernel 4.18.0-553.el8_10.x86_64,
+  cryptsetup 2.3.7, lockdown `integrity`. It is the oldest kernel that the program has run
+  on.
+  - The root volume, LUKS2 on a partition with the volume group of the system on it, opened
+    at boot, got `captured and proven` on the memory route. What it carries was named as
+    `rhel-root at /, rhel-swap as swap`. The XTS driver was `xts-aes-aesni`, and the two
+    schedules lay 496 bytes apart.
+  - The image of AVML held the digests of the header at one place, and the key was proven
+    from them at the first attempt: the key that the triage captured afterwards, its
+    schedules at the same addresses. udisks2 2.9.0 is installed there, and its daemon was
+    not running. The object `digests` began 473 bytes after the start of a page.
+  - The LiME image of the program had 4274385184 bytes in 9 ranges and was written with
+    direct writes to xfs in 7 s. The `System.map` of `/boot` was kept beside it. kdump was
+    on, and the 256 MiB that the kernel keeps for it lie in a range of the image.
+  - 16384 bytes of RAM were in no segment of `/proc/kcore`: the four pages in which one
+    range of `/proc/iomem` ends and the next begins, around three ranges that begin and end
+    inside a page (see "What the sources say").
+
 ### Not handled or not checked
 
 - LUKS2 with integrity is run with `--integrity hmac-sha256`. With a cipher that authenticates
@@ -874,13 +906,14 @@ it lockdown `integrity`. The screen and the report of each run were read:
   The header on the device goes on changing until cryptsetup ends.
 - LUKS2 with integrity on openSUSE Leap 16.1, where the container could not be made (see
   above).
-- Kernels before 5.14, the oldest of the list above. The requests to the kernel are read in the
-  sources from 4.18 on, which is the kernel of RHEL 8, and are not run there.
-- A LUKS2 header whose second copy is the one in use is read in `unit-check.sh` from a file,
-  not from a device of a mapping.
-- A memory image under lockdown `integrity` is taken by hand on one machine (see above) and
-  not by the check. In the mode `confidentiality` the kernel refuses `/proc/kcore`, which
-  the run then says, and that is not run.
+- Kernels before 5.14, the oldest of the list above, are not run by the check. On Linux
+  4.18, the kernel of RHEL 8, the program was run by hand on one guest (see above): the
+  key run on one LUKS2 volume with its key in the keyring, a LiME image and the search of
+  a dump. A key in the table, LUKS1, a volume with integrity and one in re-encryption are
+  not run there.
+- A memory image under lockdown `integrity` is taken by hand, on one machine and on one
+  guest (see above), and not by the check. In the mode `confidentiality` the kernel refuses
+  `/proc/kcore`, which the run then says, and that is not run.
 - RAM that a driver added is a case of `unit-check.sh`. No machine with such RAM was run.
 - The small files of a run, the report, the header backups and the keys, go through the
   page cache of the examined system, and so does an image on a file system without direct
@@ -903,16 +936,18 @@ it lockdown `integrity`. The screen and the report of each run were read:
   was given to it.
 - The proof from a dump alone is seen on one guest, with udisks2 2.10.1, and on the machine
   with Linux Mint 22.3, whose udisks2 was not noted, each time for a container on a loop
-  device that was opened by hand. Whether a system
-  without udisks2, as a server installation, holds the metadata of a LUKS2 header anywhere is
-  not known, and neither is it for a volume that was opened at boot, for other releases of
-  udisks2, or for metadata with several keyslots or tokens, where the object `digests` can
-  lie across two pages that do not follow each other in memory.
+  device that was opened by hand, and on the guest with RHEL 8.10 for the root volume,
+  opened at boot, where the daemon of udisks2 was not running. What held the digests there
+  is not known. Whether a system without udisks2 holds the metadata of a LUKS2 header
+  anywhere is not known either, and neither is it for metadata with several keyslots or
+  tokens, where the object `digests` can lie across two pages that do not follow each other
+  in memory.
 - The colours and the line that is written over are checked on a pseudo-terminal, with the
-  search of a dump, by the bytes that the program writes there. How they look was seen on no
-  terminal: not on the console of Linux, not on a serial line and not in a terminal
-  emulator. The screen of the key run is made by the same functions and is checked through
-  a pipe only.
+  search of a dump, by the bytes that the program writes there. How they look was seen in
+  the terminal emulator of Linux Mint 22.3, over SSH, for the search of a dump and for the
+  key run with an image: the examiner read them well. They were seen neither on the console
+  of Linux nor on a serial line. By the check the screen of the key run, which is made by
+  the same functions, is looked at through a pipe only.
 - A line is measured in bytes. A name with characters of several bytes is taken as wider
   than it is and broken earlier.
 - A digest that a dump holds and has no key for costs every pair of the keys of the dump:
@@ -1284,7 +1319,8 @@ cryptsetup 2.8.4), Ubuntu 22.04.5 with kernel 5.15 and cryptsetup 2.4.3, and Deb
 kernel 5.10 and cryptsetup 2.3.7.
 
 Linux Mint has no cloud image and is not in the list: `compat-check.sh` has not run there.
-The C program was run on Linux Mint 22.3 by hand (see "Where it has run"). openSUSE
+The C program was run by hand on Linux Mint 22.3 and on a guest installed from Red Hat
+Enterprise Linux 8.10, under Secure Boot (see "Where it has run"). openSUSE
 Tumbleweed has no dated build to pin and is not checked. `compat-check.sh` has run on no
 system with Secure Boot on, where lockdown is `integrity`, with a version from 1.3 on.
 
@@ -1302,7 +1338,8 @@ system with Secure Boot on, where lockdown is `integrity`, with a version from 1
   it lists a helper device in place of the volume. The C program does both keys.
   `vkverify.py` takes the first digest of such a header, so it proves one of the two keys.
 - LVM on LUKS is checked with a volume group on a loop device. A root file system on LVM on
-  LUKS, as an installer lays it out, is not checked.
+  LUKS, as an installer lays it out, is not checked by `compat-check.sh`. The C program was
+  run by hand on one, a guest with RHEL 8.10.
 - A mapping whose name holds a line break is not listed. A mapping whose name begins with `-` is
   not tested.
 - The memory image is taken in every run of the pipeline, to the disk of the runner or guest.
