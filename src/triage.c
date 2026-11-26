@@ -1,5 +1,5 @@
 /*
- * triage.c: the triage of the running system, the work of keytriage.sh in one program.
+ * triage.c: the triage of the running system, the keys of its open volumes.
  *
  * For every open dm-crypt volume the first route that is open is taken:
  *
@@ -148,13 +148,14 @@ static int keep_key(struct run *r, struct key_result *k, const uint8_t *key, siz
 static void scan_once(struct run *r)
 {
     FILE *keys = NULL, *msg = NULL;
+    const struct keyscan_summary *sum;
     const char *const *said;
     char held[BUFSIZ];
     int kfd, mfd, failed = 0, status, n;
 
     if (r->scanned) {
         if (!r->scan_ok)
-            run_mark(r, "search", RUN_NOT, "FAILED", "the search of /proc/kcore, as above");
+            run_mark(r, "search", RUN_NOT, r->scan_cut ? "interrupted" : "FAILED", "the search of /proc/kcore, as above");
         return;
     }
     r->scanned = 1;
@@ -170,10 +171,21 @@ static void scan_once(struct run *r)
         return;
     }
     setvbuf(keys, held, _IOFBF, sizeof held);   /* keys pass through it: it is wiped below */
+    keyscan_until(&run_interrupted);
     status = keyscan_run("/proc/kcore", 0, 1, keys, msg, &failed);
     if (written(keys) | written(msg))
         r->write_failed = 1;
-    if (status == 0) {
+    if (status && (sum = keyscan_summary()) && sum->halted) {
+        /* The list is of the part that was read, and stays for the lab. No schedule of it is
+           tried here: the run was asked to end. */
+        keyscan_hits(&n);
+        r->scan_cut = 1;
+        snprintf(r->scan_error, sizeof r->scan_error, "the search of /proc/kcore was ended by a signal");
+        run_mark(r, "search", RUN_NOT, "interrupted", "/proc/kcore was not read to its end. The %d AES schedules of the part "
+                 "that was read are in keys/kcore-candidates.txt, and none is tried", n);
+        if (run_flush(r, kfd, "keys"))
+            run_mark(r, "search", RUN_NOT, "FAILED", "the list could not be flushed to the destination");
+    } else if (status == 0) {
         keyscan_hits(&n);
         r->scan_ok = 1;
         run_field(r, "search", "/proc/kcore, %d AES schedules in keys/kcore-candidates.txt", n);
@@ -310,7 +322,7 @@ static void memory_route(struct run *r, struct key_result *k, const struct luks_
     const char *hash = NULL;
     uint8_t key[64];
     unsigned bits = xts ? k->bits / 2 : k->bits, tried = 0;
-    int n, i, j, nk = bits == 128 ? 4 : bits == 256 ? 8 : 0, count = 0, proven = 0, uncomputed = 0;
+    int n, i, j, nk = bits == 128 ? 4 : bits == 256 ? 8 : 0, count = 0, proven = 0, uncomputed = 0, cut = 0;
 
     hits = keyscan_hits(&n);
     for (i = 0; i < n; i++)
@@ -322,6 +334,10 @@ static void memory_route(struct run *r, struct key_result *k, const struct luks_
 
         if (hits[i].nk != nk)
             continue;
+        if (run_interrupted) {
+            cut = 1;
+            break;
+        }
         if (xts) {
             /* The volume key is the data key and then the tweak key. The kernel keeps the tweak
                schedule first and the data schedule 496 bytes after it, so for a tweak schedule
@@ -361,6 +377,10 @@ static void memory_route(struct run *r, struct key_result *k, const struct luks_
         run_field(r, "proof", "none: the digest of the header uses %s, which this program does not compute",
                   hash ? hash : "no known function");
         settle(k, V_MEMORY, NULL, "no proof on scene, the candidate list is kept for the lab verifier");
+    } else if (cut) {
+        run_mark(r, "proof", RUN_NOT, "interrupted", "none in %u attempt%s, with schedules that were not tried", tried,
+                 tried == 1 ? "" : "s");
+        settle(k, V_MEMORY, NULL, "the attempts were ended by a signal, the candidate list is kept for the lab verifier");
     } else if (!proven) {
         run_field(r, "proof", "none in %u attempt%s, of at most %u (-b)", tried, tried == 1 ? "" : "s", r->budget);
         settle(k, V_MEMORY, NULL, "the candidate list is kept for the lab verifier");
@@ -492,7 +512,8 @@ static void one_key(struct run *r, const struct volume *v, struct key_result *k,
             if (!r->scan_ok && r->scan_refused) {
                 settle(k, V_LIVE, NULL, "the kernel refused the read of /proc/kcore");
             } else if (!r->scan_ok) {
-                settle(k, V_MEMORY, NULL, "the search of /proc/kcore failed");
+                settle(k, V_MEMORY, NULL, r->scan_cut ? "the search of /proc/kcore was ended by a signal"
+                                                      : "the search of /proc/kcore failed");
             } else if (!v->has_header || !k->has_bits) {
                 run_field(r, "proof", "none: no header backup or no key size to prove against");
                 settle(k, V_MEMORY, NULL, "no proof on scene, the candidate list is kept for the lab verifier");
@@ -646,7 +667,8 @@ static void one_volume(struct run *r, struct volume *v, const struct vol *f)
 /* The fields of a key in verdict.json, in the three places where they stand in the line of a
    volume: the cipher, the size and the location, then the route, then the name of the key. */
 /* One memory image as an object of the report, without its closing brace. The first of a run
-   has the fields that keytriage.sh has for the image that AVML wrote, in their order. */
+   has what is said once for all of them: the seconds of the read and the file that
+   System.map is a copy of. */
 static void json_image(FILE *f, const struct memory_image *m, const struct memory_result *first)
 {
     fputs("{\"status\": ", f); run_json(f, m->status);
@@ -664,7 +686,7 @@ static void json_image(FILE *f, const struct memory_image *m, const struct memor
     fputs(", \"sha256\": ", f); run_json(f, m->sha256);
     fprintf(f, ", \"direct_io\": %s", !m->file[0] ? "null" : m->direct ? "true" : "false");
     if (first) {
-        fputs(", \"tool\": \"keep " KEEP_VERSION "\", \"system_map\": ", f);
+        fputs(", \"system_map\": ", f);
         run_json(f, first->system_map);
     }
     fputs(", \"note\": ", f); run_json(f, m->note);
@@ -757,13 +779,13 @@ int triage_run(const struct triage_options *o)
     struct sys_mount mount;
     struct statvfs vfs;
     struct utsname un;
-    struct str medium = { 0 }, where = { 0 }, unread = { 0 };
+    struct str where = { 0 }, unread = { 0 };
     struct memory_result mem = { 0 };
     const char *bad;
     size_t ntabs = 0, nvols = 0, i, k;
     FILE *json;
     char unlocked[160] = "", size_of[32], label[32];
-    int fd, present = 1, no_memory = 0, listed = 1, names = 0, words = 0, tables_unread, readonly = 0;
+    int fd, present = 1, no_memory = 0, listed = 1, names = 0, words = 0, tables_unread, readonly = 0, cut;
 
     /* Keys pass through the memory of this process. Locked memory is not written to the swap
        space of the examined system. */
@@ -778,24 +800,22 @@ int triage_run(const struct triage_options *o)
         return run_die("the destination directory %s: %s", o->dest, strerror(errno));
     if (access(dest, W_OK))
         return run_die("%s is not writable", dest);
-    /* The file system that holds the destination, for the report. Where the destination lies is
-       the examiner's decision and is not tested. A destination that the mount table does not
-       name, as in a root that is no mount point, is one all the same. */
+    /* The file system that holds the destination, for the screen and the report. Where the
+       destination lies is the examiner's decision and is not tested. A destination that the
+       mount table does not name, as in a root that is no mount point, is one all the same. */
     if (sys_mount_of("/proc/self/mountinfo", dest, &mount)) {
-        str_add(&medium, "unknown: no mount in /proc/self/mountinfo holds it");
         str_add(&where, "a file system that /proc/self/mountinfo does not name");
     } else {
-        str_addf(&medium, "%s (%s) mounted at %s", mount.source, mount.type, mount.point);
         str_addf(&where, "%s, %s, mounted at %s", mount.source, mount.type, mount.point);
         readonly = mount.readonly;
         sys_mount_free(&mount);
     }
-    if (medium.failed || where.failed) {
+    if (where.failed) {
         run_die("no memory");
         goto refused;
     }
     if (readonly) {
-        run_die("%s is on a file system that is mounted read-only: %s", dest, medium.s);
+        run_die("%s is on a file system that is mounted read-only: %s", dest, where.s);
         goto refused;
     }
 
@@ -847,7 +867,6 @@ int triage_run(const struct triage_options *o)
         size_text((uint64_t)vfs.f_bavail * vfs.f_frsize, size_of);
         run_field(r, "destination", "%s, %s free", where.s, size_of);
     }
-    str_free(&where);
     if (unlocked[0])
         run_field(r, "note", "%s", unlocked);
 
@@ -972,33 +991,38 @@ int triage_run(const struct triage_options *o)
         run_row(r, label, names, memory_tone(m), m->status, words, "%s", m->file[0] ? m->file : m->note);
     }
     run_say(r, "%s", "");
+    /* From here on no step is left that a signal could end, so what the report says of it
+       is what the status says. */
+    cut = run_interrupted;
+    if (cut)
+        run_say(r, "interrupted %s: the steps that this ended say so above", run_signal_name(cut));
     run_utc(finished, 0);
     run_say(r, "finished %s, %u s", finished, run_seconds(r));
     if (written(r->report) || fsync(fileno(r->report)))
         r->write_failed = 1;
     fclose(r->report);
 
-    /* the same verdicts for a program, schema keep-report/1. No key is in this file. */
+    /* the same verdicts for a program, schema keep-report/2. No key is in this file. */
     if ((fd = run_create(r, "verdict.json", O_WRONLY, 0600)) < 0 || !(json = fdopen(fd, "w"))) {
         r->write_failed = 1;
         if (fd >= 0)
             close(fd);
     } else {
-        fprintf(json, "{\n  \"schema\": \"keep-report/1\",\n  \"tool\": \"keep %s\",\n  \"host\": ", KEEP_VERSION);
+        fprintf(json, "{\n  \"schema\": \"keep-report/2\",\n  \"tool\": \"keep %s\",\n  \"host\": ", KEEP_VERSION);
         run_json(json, host);
         fputs(",\n  \"kernel\": ", json); run_json(json, un.release);
         fputs(",\n  \"os\": ", json); run_json(json, os);
-        fputs(",\n  \"cryptsetup\": null,\n  \"other_filesystems\": ", json); run_json(json, other);
-        fprintf(json, ",\n  \"started_utc\": \"%s\",\n  \"finished_utc\": \"%s\",\n  \"lockdown\": ", started, finished);
+        fputs(",\n  \"other_filesystems\": ", json); run_json(json, other);
+        fprintf(json, ",\n  \"started_utc\": \"%s\",\n  \"finished_utc\": \"%s\",\n  \"interrupted\": %s,\n  \"lockdown\": ",
+                started, finished, cut ? "true" : "false");
         run_json(json, r->lockdown);
         fputs(",\n  \"secure_boot\": ", json); run_json(json, secure_boot);
-        fputs(",\n  \"source\": \"/proc/kcore\",\n  \"evidence_medium\": ", json); run_json(json, medium.s);
+        fputs(",\n  \"source\": \"/proc/kcore\",\n  \"destination\": ", json); run_json(json, where.s);
         fputs(",\n  \"memory\": ", json);
         if (!mem.nimages) {
             fputs("null", json);
         } else {
-            /* The image, with the fields that keytriage.sh has for the one that AVML wrote.
-               Of several from one read, the further ones follow in further_images. */
+            /* Of several images from one read, the further ones follow in further_images. */
             json_image(json, &mem.images[0], &mem);
             for (i = 1; i < mem.nimages; i++) {
                 fputs(i == 1 ? ", \"further_images\": [" : ", ", json);
@@ -1007,7 +1031,7 @@ int triage_run(const struct triage_options *o)
             }
             fputc('}', json);
         }
-        fputs(",\n  \"binaries\": [\n  ],\n  \"volumes\": [", json);
+        fputs(",\n  \"volumes\": [", json);
         for (i = 0; i < nvols; i++) {
             static const struct key_result none;
             const struct volume *v = &vols[i];
@@ -1062,7 +1086,7 @@ int triage_run(const struct triage_options *o)
     run_free(r);
     free(vols);
     free(other);
-    str_free(&medium);
+    str_free(&where);
     if (r->write_failed) {
         fprintf(stderr, "keep: a write or a flush to the destination FAILED, the folder is not complete\n");
         return 1;
@@ -1075,6 +1099,11 @@ int triage_run(const struct triage_options *o)
         fprintf(stderr, "keep: the table of a mapped device could not be read, so not every volume is examined\n");
         return 1;
     }
+    if (cut) {
+        fprintf(stderr, "keep: the run was ended by a signal. What it did not do is named in its report, and every file "
+                "of it is flushed to the destination\n");
+        return 1;
+    }
     run_tell(r, "keep: every file of this run is flushed to the destination");
     if (mem.captured < mem.nimages) {
         fprintf(stderr, "keep: a memory image that was asked for is not there\n");
@@ -1082,7 +1111,6 @@ int triage_run(const struct triage_options *o)
     }
     return 0;
 refused:
-    str_free(&medium);
     str_free(&where);
     return 1;
 }

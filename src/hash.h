@@ -23,7 +23,6 @@ struct hash_ctx {
 /* The function of a name as cryptsetup writes it into a header: sha1, sha224, sha256, sha384,
    sha512. NULL for a name that is not computed here. */
 const struct hash_alg *hash_by_name(const char *name);
-const char *hash_name(const struct hash_alg *alg);
 size_t hash_len(const struct hash_alg *alg);
 
 void hash_init(struct hash_ctx *c, const struct hash_alg *alg);

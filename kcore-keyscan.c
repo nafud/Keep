@@ -224,6 +224,20 @@ void keyscan_watch(void (*fn)(void *arg, const uint8_t *p, size_t n, uint64_t ph
     watcher_arg = arg;
 }
 
+/* A program that links the search can end it before its end. */
+static const char HALTED[] = "the search was interrupted";
+static const volatile sig_atomic_t *halt;
+
+void keyscan_until(const volatile sig_atomic_t *stop)
+{
+    halt = stop;
+}
+
+static int halted(void)
+{
+    return halt && *halt;
+}
+
 /* Search the buffered bytes. Unless LAST, the final 239 bytes wait for the bytes after them. */
 static void sweep(int last)
 {
@@ -263,8 +277,8 @@ static ssize_t read_some(int fd, void *p, size_t n, uint64_t off)
 
 /*
  * Read LEN bytes of the file from offset OFF. PHYS and VIRT are the addresses of the first byte.
- * Returns 0, or 1 where the file ends before them, with the offset of its end in *ENDED: the
- * bytes up to there are searched.
+ * Returns 0, or 1 where the file ends before them or the search is ended (halted), with the
+ * offset of that place in *ENDED: the bytes up to there are searched.
  *
  * A stretch that cannot be read counts as zeros. A read that fails says nothing about the pages
  * before the one it failed at (read_kcore_iter of the kernel returns the error alone), so its
@@ -280,6 +294,10 @@ static int scan(int fd, uint64_t off, uint64_t len, uint64_t phys, uint64_t virt
         sweep(1);
     if (!have) { bphys = phys; bvirt = virt; }
     while (done < len) {
+        if (halted()) {
+            *ended = off + done;
+            return 1;
+        }
         want = len - done < CHUNK ? (size_t)(len - done) : CHUNK;
         n = read_some(fd, buf + have, want, off + done);
         if (n == 0 && off + done >= file_size) {
@@ -435,6 +453,7 @@ static uint64_t avml_range(int fd, uint64_t off, uint64_t len, uint64_t phys, co
     long n;
 
     for (; done < len; *stop = at) {
+        if (halted()) { *why = HALTED; return 0; }
         if (!full_read(fd, h, 4, at)) { *why = "the file ends inside a range"; return 0; }
         size = h[1] | (uint32_t)h[2] << 8 | (uint32_t)h[3] << 16;
         if (h[0] >= 0x80) {                             /* the stream identifier, padding, skippable chunks */
@@ -569,7 +588,8 @@ int keyscan_run(const char *path, int raw, unsigned every, FILE *keys, FILE *msg
 
     if (raw) {
         format = "raw";
-        scan(fd, 0, file_size, 0, NONE, &stopped);
+        if (scan(fd, 0, file_size, 0, NONE, &stopped) && halted())
+            why = HALTED;
         nseg = 1;
     } else if (!memcmp(head, ELFMAG, SELFMAG) && head[EI_CLASS] == ELFCLASS64 && head[EI_DATA] == ELFDATA2LSB) {
         Elf64_Ehdr eh;
@@ -591,7 +611,7 @@ int keyscan_run(const char *path, int raw, unsigned every, FILE *keys, FILE *msg
             /* an image taken from outside the guest has no kernel addresses: 0 or the physical one */
             if (scan(fd, ph.p_offset, ph.p_filesz, ph.p_paddr,
                      ph.p_vaddr && ph.p_vaddr != ph.p_paddr ? ph.p_vaddr : NONE, &stopped)) {
-                why = "the file ends inside a segment";
+                why = halted() ? HALTED : "the file ends inside a segment";
                 break;
             }
             nseg++;
@@ -617,7 +637,7 @@ int keyscan_run(const char *path, int raw, unsigned every, FILE *keys, FILE *msg
                 packed_ranges++;
             } else {
                 if (scan(fd, off + 32, e - s + 1, s, NONE, &stopped)) {
-                    why = "the file ends inside a range";
+                    why = halted() ? HALTED : "the file ends inside a range";
                     break;
                 }
                 off += 32 + (e - s + 1);
@@ -628,7 +648,8 @@ int keyscan_run(const char *path, int raw, unsigned every, FILE *keys, FILE *msg
         format = packed_ranges ? "AVML compressed" : "LiME";
     } else {
         format = "raw";
-        scan(fd, 0, file_size, 0, NONE, &stopped);
+        if (scan(fd, 0, file_size, 0, NONE, &stopped) && halted())
+            why = HALTED;
         nseg = 1;
     }
     sweep(1);
@@ -645,6 +666,7 @@ int keyscan_run(const char *path, int raw, unsigned every, FILE *keys, FILE *msg
     summary.segments = nseg;
     summary.bytes = nbytes;
     summary.seconds = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
+    summary.halted = why == HALTED;
     summarised = 1;
     fprintf(msg_out, "kcore-keyscan %s: %s, %s, %d segment%s, %llu bytes (%.2f GiB), %.1f seconds\n",
             VERSION, path, format, nseg, nseg == 1 ? "" : "s", nbytes, nbytes / 1073741824.0, summary.seconds);
@@ -656,6 +678,10 @@ int keyscan_run(const char *path, int raw, unsigned every, FILE *keys, FILE *msg
         say("chunks that differ from their checksum: %llu. Their data is searched as it is\n", nbadcrc);
     if (unwritten)
         say("the list of the schedules could not be written to its end\n");
+    if (why == HALTED) {
+        say("%s, at file offset %llu: what lies behind that place is not searched.\n", why, (unsigned long long)stopped);
+        goto out;
+    }
     if (why) {
         say("the image is damaged or ends early at file offset %llu: %s. "
                 "%llu bytes of the file from there on are not searched.\n",

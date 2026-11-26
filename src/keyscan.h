@@ -4,6 +4,7 @@
 #ifndef KEEP_KEYSCAN_H
 #define KEEP_KEYSCAN_H
 
+#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 
@@ -22,6 +23,11 @@ const struct keyscan_hit *keyscan_hits(int *n);         /* in the order they wer
 void keyscan_watch(void (*fn)(void *arg, const uint8_t *p, size_t n, uint64_t phys), void *arg);
 void keyscan_wipe(void);
 
+/* Before a search: the search then ends before its next read once *STOP is not 0. The
+   schedules up to there are listed, the search says at which offset of the file it ended,
+   and its status is 1. NULL ends it. */
+void keyscan_until(const volatile sig_atomic_t *stop);
+
 /* What the last search read, as its message says it: the format it took the file for, the
    segments or ranges of memory, their bytes and the time. NULL for a search that read no
    memory: a file that could not be opened or was refused. */
@@ -30,6 +36,7 @@ struct keyscan_summary {
     int segments;
     unsigned long long bytes;
     double seconds;
+    int halted;                 /* the search was ended before its end (keyscan_until) */
 };
 const struct keyscan_summary *keyscan_summary(void);
 

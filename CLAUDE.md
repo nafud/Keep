@@ -12,9 +12,15 @@ prove them against a disk image.
 Keep is for lawful examination of systems the examiner is authorised to examine. It is not a
 general artefact collector and it depends on no other collector.
 
-The scene side is being written anew as one static C program that starts no other program. Until
-it gives what the scripts give on every system of the list, the scripts on the tool medium are
-Keep. The section "The C program" says how far that work is.
+Keep is one static C program, `keep`, that starts no other program: an examiner copies one
+file to the scene and starts it. The lab has one further tool, `vkverify.py`.
+
+Before 2.0, Keep was a shell script, `keytriage.sh`, on a tool medium with a static bash,
+busybox, the scanner and AVML, which used the `dmsetup` and the `cryptsetup` of the examined
+system. While the program was written, the pipeline ran both on the same volumes, until the
+program gave what the script gave on every system of the list. The script, its medium and
+its driver for the lab are removed with 2.0-rc1. The history of the repository keeps them:
+the last commit that has them is `8305ec0`, with `keytriage.sh` 1.5.1.
 
 This file is the repository's description and the working rules for it. The repository has no
 README.
@@ -23,50 +29,46 @@ README.
 
 | File | Runs | Purpose |
 |---|---|---|
-| `keytriage.sh` | scene, as root | The triage itself. Enumerates the open dm-crypt volumes, backs up LUKS headers, walks the route ladder, prints one verdict per volume, writes the folder of the run into the destination |
-| `kcore-keyscan.c` | scene and lab | Static C scanner. Finds AES-128 and AES-256 key schedules in `/proc/kcore` or in a memory image |
-| `src/`, `Makefile` | scene, in work | The C program `keep`, which is to take the place of the medium. `make` builds it statically against musl |
-| `vkverify.py` | lab | Verifier. Proves which scanner candidates are the volume key of a LUKS1 or LUKS2 header |
-| `offline-keyscan.sh` | lab | Driver for a dump collected earlier. Runs the scanner on the dump and `vkverify.py` against disk images |
-| `build-toolkit.sh` | workstation | Assembles the scene tool medium and writes it as an ISO |
+| `src/`, `Makefile` | scene, as root, and lab | The program `keep`: the keys of the open volumes of the running system, a memory image after them, and the search of a memory dump that exists. `make` builds it statically against musl |
+| `kcore-keyscan.c` | part of `keep`, and lab | The scanner. Finds AES-128 and AES-256 key schedules in `/proc/kcore` or in a memory image. `keep` links it, and a C compiler builds it as a program of its own |
+| `vkverify.py` | lab | Verifier. Proves which scanner candidates are the volume key of a LUKS1 or LUKS2 header, also in the disk file of a virtual machine and in an EnCase image |
 | `tests/make-schedule-fixture.py` | test | Writes a memory image with the schedules of known keys and five traps, as raw, ELF, LiME or compressed AVML |
-| `tests/compat-check.sh` | test, throwaway guest only | Checks `keytriage.sh` on real device-mapper: containers and mappings of known keys, the null cipher, LVM on LUKS, LUKS2 with integrity, the memory image, and the destination by default and on FAT. Runs the C program beside it, and alone on a volume in re-encryption |
-| `tests/compat-guest.sh` | test, workstation and pipeline | Boots a distribution's cloud image as a throwaway guest in QEMU, runs `compat-check.sh` in it and prints its output |
+| `tests/compat-check.sh` | test, throwaway guest only | Checks `keep` on real device-mapper against the `cryptsetup` and the `dmsetup` of that system: containers and mappings of known keys, the null cipher, LVM on LUKS, LUKS2 with integrity, a volume in re-encryption, the destination by default, on FAT and without room, a run that is asked to end, and the memory images against the image of AVML |
+| `tests/compat-guest.sh` | test, workstation and pipeline | Boots a distribution's cloud image as a throwaway guest in QEMU, copies the programs into it, runs `compat-check.sh` there and prints its output |
 | `tests/compat-images.txt` | test | The cloud images for `compat-guest.sh`: a name, the address of one dated build and its published SHA-256 or SHA-512 |
-| `tests/make-compat-vm.sh` | test, workstation | Starts a libvirt guest that stays, from a distribution's cloud image, for work by hand |
-| `tests/selftest.sh` | test, workstation and pipeline | Runs every check that needs neither root nor device-mapper, `keytriage.sh` included on stand-ins for the examined system, and ends with `RESULT: PASS` or `RESULT: FAIL` |
-| `tests/unit-check.sh` | test, workstation and pipeline | Builds the parts of the C program twice, statically and with the sanitizers of the compiler, and checks each against an independent source: `hashlib`, Python's `json`, `cryptsetup` |
-| `tests/keep-unit.c` | test | Runs one part of the C program at a time, for `unit-check.sh` and for a comparison with `dmsetup` on a guest, and counts the pages of a file or of a block device that lie in the page cache |
+| `tests/get-avml.sh` | test, workstation and pipeline | Fetches the release binary of AVML 0.21.0 for the checks, and refuses it unless it has the SHA-256 that the script pins. AVML is no part of Keep: the checks hold the images of `keep` against it |
+| `tests/selftest.sh` | test, workstation and pipeline | Runs the checks of the scanner and of the verifier, which need neither root nor device-mapper, and the static checks of every script, and ends with `RESULT: PASS` or `RESULT: FAIL` |
+| `tests/unit-check.sh` | test, workstation and pipeline | Builds `keep` and its parts twice, statically and with the sanitizers of the compiler, and checks each against an independent source: `hashlib`, Python's `json`, `cryptsetup`, AVML |
+| `tests/keep-unit.c` | test | Runs one part of the program at a time, for `unit-check.sh`, and counts the pages of a file or of a block device that lie in the page cache, for `compat-check.sh` as well |
 | `docs/`, `overrides/`, `mkdocs.yml` | GitHub Pages | The pages of Keep, built with Material for MkDocs: the home page `index.md` and the sections `installation.md`, `usage.md`, `systems.md` and `about.md`, the stylesheet `stylesheets/extra.css`, the page scripts in `javascripts/`, the fonts in `assets/fonts/`, and the templates in `overrides/` |
 | `requirements.in`, `requirements.txt` | pipeline, workstation | The packages that build the pages: MkDocs and Material, and in the second file every package they bring along, each with its version and its SHA-256 |
 | `tests/pages-check.sh` | test, workstation and pipeline | Builds the pages with `mkdocs build --strict` and reads what was built: the pages, the frame, that nothing is loaded from another host, the version, the references |
-| `.github/workflows/` | GitHub | `checks.yml` runs the self-test, builds and reads the pages, builds the medium and runs `compat-check.sh` on two runner images on every push. `distros.yml` runs it in guests of ten distribution releases. `pages.yml` builds the pages and publishes them from `main` |
+| `.github/workflows/` | GitHub | `checks.yml` runs the self-test and the unit checks, builds and reads the pages, builds `keep` and keeps the file, and runs `compat-check.sh` on two runner images on every push. `distros.yml` runs it in guests of ten distribution releases. `pages.yml` builds the pages and publishes them from `main` |
 
-The five files at the root must stay siblings. `build-toolkit.sh` takes `keytriage.sh` and
-`kcore-keyscan.c` from its own directory. `offline-keyscan.sh` looks for `vkverify.py` beside
-itself. `kcore-keyscan.c` includes `src/keyscan.h`, and the `Makefile` at the root builds the C
-program `keep` from `src/` and from `kcore-keyscan.c`.
+`kcore-keyscan.c` includes `src/keyscan.h`, and the `Makefile` at the root builds `keep` from
+`src/` and from `kcore-keyscan.c`, so the scanner stays at the root. `vkverify.py` stands
+alone.
 
 ## How it works
 
-### The route ladder of `keytriage.sh`
+### The route ladder
 
-For each mapping of `dmsetup ls --target crypt` the script reads `cryptsetup status` and the
-kernel's own table line (`dmsetup table --showkeys`), then takes the first route that is open.
-A mapping is a line of the listing with a name, a tab and the device number in parentheses
-(`_display_name` in `dmsetup.c`), so every name the kernel allows is taken, also `No` and a name
-with a space. The key size is the line `keysize:` of `cryptsetup status`. A LUKS2 volume with
-integrity has a second line, `integrity keysize:`, which a version before 1.5.1 took as well
-and then stated no key size.
+`keep` asks the kernel for the mapped devices and for the table of each, which is what
+`dmsetup ls` and `dmsetup table --showkeys` print (see "What the sources say"). A volume is a
+mapped device with a crypt target in its table, or one whose crypt targets cryptsetup has put
+into a helper device below it. Every name the kernel allows is taken, also `No` and a name
+with a space. The type of a volume comes from the UUID of the mapping and from the header,
+its cipher, the size of its key and where the key is from the table line, and its device from
+`/sys/dev/block`. For each key of a volume, `keep` takes the first route that is open.
 
 | Route | When | What happens |
 |---|---|---|
 | R1 table | The fifth field of the table line is the key in hexadecimal. This is the case for LUKS1, plain, tcrypt and for LUKS2 opened with `--disable-keyring` | The key is written to `keys/NAME.vk` and, for LUKS, proven against the header backup |
-| R3 memory | The fifth field is a keyring reference, `:size:type:description`. This is the default for LUKS2, including systemd-homed | `kcore-keyscan` searches `/proc/kcore` once for all volumes. Candidates are proven against the header backup. The list is kept in `keys/` also when there is no header backup |
+| R3 memory | The fifth field is a keyring reference, `:size:type:description`. This is the default for LUKS2, including systemd-homed | The scanner searches `/proc/kcore` once for all volumes. Candidates are proven against the header backup, and the key that is proven is written to `keys/NAME.vk`. The list of the schedules is kept in `keys/` also when there is no header backup |
 | R5 live | No key route is open | Only a file-level copy of the mounted plaintext remains |
 
-Beside its type and its backing device the script names what each volume carries, as the line
-`in use:` and the field `in_use`: where the volume and the devices that stand on it, such as the
+Beside its type and its backing device `keep` names what each volume carries, as the line
+`in use` and the field `in_use`: where the volume and the devices that stand on it, such as the
 logical volumes of LVM, are mounted or used as swap. It follows `holders/` in `/sys` upwards from
 the mapping and reads `/proc/self/mountinfo` and `/proc/swaps`. Eight mounts are named and
 further ones counted. This is what a copy of the mounted files has to cover, and it tells a
@@ -74,11 +76,12 @@ volume that holds the root file system from one that holds nothing in use.
 
 A fifth field of `-` is a key of size 0 (`crypt_status` in `dm-crypt.c`), which is the null
 cipher. Such a mapping has no key and gets the verdict `no key needed`. A field that is neither
-hexadecimal nor a keyring reference is reported as not understood. The table line is read by the
-shell through a pipe, so the key passes no other program and no file.
+hexadecimal nor a keyring reference is reported as not understood. The answer of the kernel
+is read by the program itself and wiped, so the key passes no other program, and no file but
+its own in `keys/`.
 
-R2 and R4 are not steps of the script. A memory image is the fourth route and is searched in the
-lab with the same scanner (`offline-keyscan.sh`, or `kcore-keyscan` and `vkverify.py` by hand).
+R2 and R4 are not steps of a key run. A memory image is the fourth route: `keep -m` takes it
+after the keys, and `keep -s` searches it, on scene or in the lab.
 
 The cipher is taken from the fourth field of the table line and sorted into three classes.
 `aes-xts-*` and `capi:xts(aes)-*` are XTS, where the volume key is two AES keys. Any other
@@ -87,8 +90,8 @@ route does not apply.
 
 ### Verdicts
 
-`keytriage.sh` prints exactly one of these per volume, and they are the values of `verdict` in
-`verdict.json`.
+A key run of `keep` prints exactly one of these per volume, and they are the values of
+`verdict` in `verdict.json`.
 
 | Verdict | Meaning |
 |---|---|
@@ -102,26 +105,32 @@ route does not apply.
 A key counts as captured only when it is written to the destination and flushed. When the write or
 the flush fails, the verdict is `needs a memory read` and the run ends with status 1.
 
-`vkverify.py` writes `proven`, `not proven` and `unreadable header`, and with `--truth` also
-`found in memory` and `not found` for volumes without a header.
+The search of a dump, `keep -s`, and `vkverify.py` write `proven`, `not proven` and `unreadable
+header` for a header. `keep -s` also writes `found in memory, not proven` for a pair of
+schedules that no header proves, and `vkverify.py` with `--truth` writes `found in memory` and
+`not found` for volumes without a header.
 
 ### The proof
 
 A candidate key counts only when it is proven. Nothing is reported as a volume key on the strength
 of where it was found.
 
-- On scene the proof is `cryptsetup open --test-passphrase OPTION KEYFILE HEADERBACKUP` with the
-  examined system's own cryptsetup. `OPTION` is `--volume-key-file` where `cryptsetup --help`
-  lists it (release 2.5.0 and later) and `--master-key-file` otherwise.
-- In the lab `vkverify.py` computes the proof itself, with no cryptsetup and no loop device. A LUKS
-  header stores a PBKDF2 digest of the volume key. LUKS1 keeps it in the binary header (hash name
-  at offset 72, key bytes at 108, digest at 112, salt at 132, iteration count at 164, UUID at 168).
-  LUKS2 keeps it in the `digests` object of the JSON area that starts at offset 4096, with the
-  header size at offset 8. A key whose PBKDF2 output equals the stored digest is the volume key.
+- A LUKS header stores a PBKDF2 digest of the volume key. LUKS1 keeps it in the binary header
+  (hash name at offset 72, key bytes at 108, digest at 112, salt at 132, iteration count at 164,
+  UUID at 168). LUKS2 keeps it in the `digests` object of the JSON area that starts at offset
+  4096, with the header size at offset 8. A key whose PBKDF2 output equals the stored digest is
+  the volume key.
+- `keep` computes that itself, on scene and in the lab, with its own SHA-1, SHA-2, HMAC and
+  PBKDF2 (`src/hash.c`, `src/luks.c`). It asks no cryptsetup. `tests/compat-check.sh` holds
+  each proof against `cryptsetup open --test-passphrase OPTION KEYFILE HEADER` of the system
+  it runs on, where `OPTION` is `--volume-key-file` where `cryptsetup --help` lists it (release
+  2.5.0 and later) and `--master-key-file` otherwise.
+- `vkverify.py` computes the same with `hashlib`, with no cryptsetup and no loop device, also
+  for the hash functions that `hash.c` does not have (ripemd160, whirlpool).
 - A header whose keyslots were erased (`cryptsetup erase`) keeps its digest, so a key from memory
   is still proven against it and is then the only way into the volume. LUKS2 states the key size
-  in the keyslots, so for such a header `vkverify.py` tries keys of every size. Checked on
-  headers erased by cryptsetup 2.7.0.
+  in the keyslots, so for such a header `keep -s` and `vkverify.py` try keys of every size.
+  Checked on headers erased by cryptsetup 2.7.0.
 
 ### Key schedules and the XTS pair
 
@@ -135,13 +144,12 @@ family of drivers the kernel keeps both schedules in one `struct aesni_xts_ctx`
 (`arch/x86/crypto/aesni-intel_glue.c`), the tweak schedule first and the data schedule 496 bytes
 after it. 496 is `sizeof(struct crypto_aes_ctx)`, 484 bytes, aligned to 16.
 
-- `keytriage.sh` tries only pairs at that distance: for a tweak schedule at physical address P it
-  takes the data schedule at P + 496 and builds the key as data then tweak. The number of proof
-  attempts per volume is limited by `-b` (default 64).
-- `vkverify.py` tries pairs at that distance first and then every other ordered pair. The distance
-  only orders the attempts. The digest decides. n keys of one size give n * n pairs, so the
-  number of tests is printed, and a header that takes long reports on standard error how far it
-  is.
+- A key run of `keep` tries only pairs at that distance: for a tweak schedule at physical address
+  P it takes the data schedule at P + 496 and builds the key as data then tweak. The number of
+  proof attempts per key is limited by `-b` (default 64).
+- `keep -s` and `vkverify.py` try pairs at that distance first and then every other ordered pair.
+  The distance only orders the attempts. The digest decides. n keys of one size give n * n pairs,
+  so their number is said before they begin, and a header that takes long says how far it is.
 
 ### `kcore-keyscan`
 
@@ -158,14 +166,16 @@ The input format is recognised from the first bytes.
 | Format | Recognised by | What is read |
 |---|---|---|
 | ELF64 core | ELF magic, 64-bit, little-endian | Every `PT_LOAD` segment with a physical address. `/proc/kcore` gives the vmalloc and module areas the physical address -1, so those are skipped and RAM is read once. A dump that a hypervisor takes from outside is read the same way: checked with `dump-guest-memory` of QEMU 8.2.2 |
-| LiME | `EMiL` at the start of each 32-byte range header | Each range, with its start and end address from offsets 8 and 16 of the header. This is what AVML writes |
-| AVML compressed | `AVML` and version 2 at the start of each range header | Each range: the header, a framed Snappy stream and the length of that stream (`src/image.rs` and `src/io/snappy.rs` of AVML 0.21.0). Every chunk of at most 64 KiB is decompressed and compared with its CRC-32C. Ranges of both kinds may follow each other. This is what `avml --compress` and `keytriage.sh -m -c` write |
+| LiME | `EMiL` at the start of each 32-byte range header | Each range, with its start and end address from offsets 8 and 16 of the header. This is what `keep -m` and AVML write |
+| AVML compressed | `AVML` and version 2 at the start of each range header | Each range: the header, a framed Snappy stream and the length of that stream (`src/image.rs` and `src/io/snappy.rs` of AVML 0.21.0). Every chunk of at most 64 KiB is decompressed and compared with its CRC-32C. Ranges of both kinds may follow each other. This is what `keep -m -f avml` and `avml --compress` write |
 | raw | anything else, or any file with `-r` | The whole file, with the file offset as the address. A `.vmem` file of VMware is such a file |
 | refused | the first bytes of an AVML image of another version, of a kdump, diskdump or flattened makedumpfile file, or of a gzip, xz, zstd, bzip2 or lz4 file | Nothing. Such a file holds memory in another form. Searched as raw bytes, a gzip file gave 2 of 5 schedules with status 0. The `kdump-zlib` dump of QEMU 8.2.2 begins as a flattened makedumpfile file and is refused |
 
 - One line per schedule goes to standard output: `AES-256 phys 0x... virt 0x... key <hex>`. The
   counts and the time go to standard error. The output therefore holds key material and is only
-  ever redirected into a `keys/` directory.
+  ever redirected into a `keys/` directory. `keep` writes that list to `keys/kcore-candidates.txt`
+  of a key run and to `keys/candidates.txt` of the search of a dump, and what the scanner said
+  to `log/kcore-keyscan.txt` and to `scan.txt`.
 - Data is read in 1 MiB chunks with the last 239 bytes carried over, and a range that begins where
   the previous one ended continues the same run, so a schedule across a chunk or range border is
   found.
@@ -186,9 +196,18 @@ The input format is recognised from the first bytes.
   0 is a completed scan, 1 an unreadable or refused input, an image that could not be read to
   its end or a list of the schedules that could not be written, 2 a usage error, 3 a failed
   self-test. The summary line names the version of the scanner.
+- The program that links the search can end it before its end (`keyscan_until`): the
+  schedules up to there are listed, the search names the file offset at which it ended, and
+  its status is 1. `keep` does this when a run is asked to end. The scanner alone is ended by
+  a signal at once.
 - `/proc/kcore` needs root and is refused under kernel lockdown `confidentiality`.
 
 ### Headers from a disk image
+
+`keep -s DUMP FILE...` reads each `FILE` as a header backup, the raw image of a partition or of a
+whole disk, or a device: its start is read as a header, and behind it every sector that begins
+with the magic of LUKS (see "The program"). The disk file of a virtual machine and an EnCase
+image are read by `vkverify.py` alone.
 
 `vkverify.py --image DISK` needs no header backup. It searches the image in 8 MiB chunks for the
 magic `LUKS\xba\xbe` at offsets that are a multiple of 512, parses each place as a LUKS1 or LUKS2
@@ -236,38 +255,50 @@ A header file that ends inside the header, or whose fields cannot be read, is re
 `unreadable header` and the run goes on. Two headers with the same file name are kept apart as
 `NAME` and `NAME-2`, which are also the names of their key files with `--out`.
 
-### The report, `keep-report/1`
+### The report, `keep-report/2`
 
-`keytriage.sh` writes `verdict.json` and `vkverify.py --json` writes the same schema. A report
-never holds a key. A key is named by `key_sha256_16`, the first 16 hexadecimal digits of its
-SHA-256.
+`keep` writes `verdict.json`, and `vkverify.py --json` writes the same schema. A report never
+holds a key. A key is named by `key_sha256_16`, the first 16 hexadecimal digits of its SHA-256.
 
-- Top level from `keytriage.sh`: `schema`, `tool`, `host`, `kernel`, `os`, `cryptsetup`,
-  `other_filesystems`, `started_utc`, `finished_utc`, `lockdown`, `secure_boot`, `source`,
-  `evidence_medium`, `memory`, `binaries`, `volumes`.
+- Top level of a key run: `schema`, `tool`, `host`, `kernel`, `os`, `other_filesystems`,
+  `started_utc`, `finished_utc`, `interrupted`, `lockdown`, `secure_boot`, `source`,
+  `destination`, `memory`, `volumes`.
 - Each volume: `name`, `type`, `cipher`, `key_bits`, `key_location`, `device`, `in_use`,
-  `header_backup`, `route`, `verdict`, `key_sha256_16`, `note`. `vkverify.py` names the file of the header in
-  `device` and adds `uuid`, `digest`, `attempts`, `adjacent_places` and, with `--truth`,
-  `ground_truth`.
-- The C program adds `further_keys` to a volume that has more than one key, which is a volume
-  in re-encryption: a list with `key_file`, `cipher`, `key_bits`, `key_location`, `route`,
-  `verdict`, `key_sha256_16` and `note` for each key after the first. The fields of the volume
-  itself are then those of its first key, and its `verdict` is that of the key that is least
-  far.
-- `keep -s` writes the fields of `vkverify.py` for each header, with `offset` for where it lies
-  in its file, and `further_keys` for the second key of a header in re-encryption. Beside
-  `volumes` it has `memory_pairs`, a list with `key_file`, `key_bits`, `verdict` (`found in
-  memory`), `key_sha256_16` and `tweak_schedule_at` for each pair that no header proves, and
-  `further_memory_pairs`, the number of those that are not written as files. A header that
-  was found in the dump itself has `in_memory` true and its address as `offset`.
-- With `-F` the C program writes three images from one read. `memory` is then the first, with
-  the fields above, and has `further_images`, a list with `status`, `file`, `format`,
-  `bytes`, `sha256`, `direct_io` and `note` for each of the others.
-- The C program adds `direct_io` to `memory`: true for an image that was written with direct
-  writes, false for one that went through the page cache, `null` where there is no file.
+  `header_backup`, `route`, `verdict`, `key_sha256_16`, `note`. A volume that has more than one
+  key, which is a volume in re-encryption, also has `further_keys`: a list with `key_file`,
+  `cipher`, `key_bits`, `key_location`, `route`, `verdict`, `key_sha256_16` and `note` for each
+  key after the first. The fields of the volume itself are then those of its first key, and
+  its `verdict` is that of the key that is least far.
+- `destination` is the file system that holds the destination, as the screen names it: its
+  source, its type and its mount point.
+- `interrupted` is true for a run that a signal asked to end (see "The program").
+- `memory` is `null` without `-m`, and else the image: `status` (`captured`, `skipped`, `failed`
+  or `interrupted`), `file`, `format`, `bytes`, `seconds`, `sha256`, `direct_io`, `system_map`
+  and `note`. `direct_io` is true for an image that was written with direct writes, false for
+  one that went through the page cache, `null` where there is no file. With `-F`, which writes
+  three images from one read, `memory` is the first and has `further_images`, a list with
+  `status`, `file`, `format`, `bytes`, `sha256`, `direct_io` and `note` for each of the others.
+- `keep -s` writes at top level `schema`, `tool`, `started_utc`, `finished_utc`, `interrupted`,
+  `source`, `candidates`, `volumes`, `memory_pairs` and `further_memory_pairs`. A volume is a
+  header: `name`, `type`, `device`, which is the file of the header, `offset` for where it lies
+  in that file, `in_memory`, `uuid`, `cipher`, `key_bits`, `digest`, `route`, `key_sha256_16`,
+  for a proven key `attempts` and `adjacent_places`, then `verdict`, `note`, and `further_keys`
+  for the second key of a header in re-encryption. A
+  header that was found in the dump itself has `in_memory` true and its address as `offset`.
+  `memory_pairs` is a list with `key_file`, `key_bits`, `verdict` (`found in memory`),
+  `key_sha256_16` and `tweak_schedule_at` for each pair that no header proves, and
+  `further_memory_pairs` the number of those that are not written as files.
+- `vkverify.py` names the file of the header in `device` and has `uuid`, `digest`, `attempts`,
+  `adjacent_places` and, with `--truth`, `ground_truth` for a volume.
 - No tool of Keep reads the report back. It is for the examiner's own programs and for the
   checks, and `triage.txt` beside it says the same for a reader. A change of a field name is a
   change of the schema string.
+- `keep-report/1` was the schema up to 2.0-pre12, which `keytriage.sh` had defined. It had
+  three fields that only that script could fill or that it named after a rule that is gone:
+  `cryptsetup` and `binaries`, the programs of the examined system that the script ran, which
+  were `null` and empty in every report of `keep`, and `evidence_medium`, which is
+  `destination` now. `memory` had a field `tool` for the program that took the image, which
+  is the `tool` of the report.
 
 ## Interaction
 
@@ -277,126 +308,92 @@ line and through a pipe. A dialogue (`keep-menu.sh`, with its launcher `keep.c`)
 a browser and a printer of the reports (`keep-report.py`) existed and were removed: options
 say the same in one line, and `triage.txt` is the report for a reader.
 
-- No cursor movement, no terminfo and no line editor. The scripts and the lab tools write no
-  escape sequence. The C program gives a terminal colour, with the SGR sequences for bold and
+- No cursor movement, no terminfo and no line editor. `vkverify.py` and the scanner alone
+  write no escape sequence. `keep` gives a terminal colour, with the SGR sequences for bold and
   for the eight basic colours and with no other sequence, and one line of progress that it
-  writes over with a carriage return (see "The C program"). Through a pipe and in a file of
+  writes over with a carriage return (see "The program"). Through a pipe and in a file of
   a run it writes neither.
 - A path is made absolute before it is used. A dump or an image must be a readable regular
   file, and a destination directory must exist and be writable.
 - A wrong option ends with status 2 and the usage line.
 
-## The scene medium
-
-`build-toolkit.sh OUTDIR` writes `OUTDIR/tools/` and `OUTDIR/tools.iso` (Rock Ridge and Joliet,
-volume label `KEEPTOOLS`).
+## Build
 
 ```bash
-sudo apt install bash-static busybox-static xorriso gcc make musl-tools curl file
-./build-toolkit.sh /path/to/work
+sudo apt install make musl-tools
+make                    # keep and tests/keep-unit, static against musl
+sha256sum keep          # for the notes of the examination
 ```
 
-- `bin/bash` is `bash-static`, `bin/busybox` is `busybox-static` with one symlink per applet,
-  `bin/kcore-keyscan` is built statically from this repository, and `bin/avml` is the release
-  binary of Microsoft AVML v0.21.0, accepted only when its SHA-256 equals the value pinned in the
-  script.
-- `keytriage.sh` is copied beside `bin/` and is started in the shell of the medium,
-  `bin/bash -p keytriage.sh`, so the shell of the examined system takes no part in the start.
-  The medium carries no Python, so `vkverify.py` and `offline-keyscan.sh` are lab tools.
-- The build refuses a binary that is not statically linked, and writes `VERSIONS.txt` and
-  `MANIFEST.sha256`.
-- `c/keep` is the C program, built by `make` against musl, and `c/keep-unit` the program of
-  its unit checks. Both are on the medium only for the checks: the first is run beside the
-  scripts, the second counts the pages of an image that lie in the page cache.
-- `dmsetup` and `cryptsetup` are not on the medium. The examined system's own are used, and their
-  resolved paths and SHA-256 are recorded in the report so they can be checked against the
-  distribution's packages afterwards.
-- The bash of the medium is the `bash-static` of the build workstation. `VERSIONS.txt` on the
-  medium names its version, and the `compat` job of the pipeline prints it for each runner image.
+- `keep` is C11 with the standard library, linked statically against musl with the warnings
+  of the `Makefile` as errors. The build downloads nothing. A static program against musl
+  needs nothing of the system it runs on, and the licence of musl (MIT) lets the file be
+  passed on as it is.
+- `make san` builds the program and its parts once more against the C library of the
+  workstation with the address and undefined-behaviour sanitizers, for the checks.
+- The job `build` of `checks.yml` builds `keep` on every push and keeps the file with its
+  SHA-256 as an artifact of that run, for 30 days. There is no release yet, and no built file
+  is published.
+- The examined system needs nothing installed: the program uses no `dmsetup`, no `cryptsetup`
+  and no shell of that system.
 
 ## Use
 
-On scene, with the medium at `/media/tools`, started in the directory that is to take the
-output:
+On scene, with the medium of the examiner at `/media/tools` and the directory that is to take
+the output at `DIR`:
 
 ```bash
-sudo /media/tools/bin/bash -p /media/tools/keytriage.sh              # keys, into the current directory
-sudo /media/tools/bin/bash -p /media/tools/keytriage.sh -d DIR -m    # keys into DIR, then a memory image
-sudo /media/tools/bin/bash -p /media/tools/keytriage.sh -d DIR -m -c # the image compressed
+sudo /media/tools/keep                      # the keys, into the current directory
+sudo /media/tools/keep -d DIR -m            # the keys into DIR, then a memory image in LiME format
+sudo /media/tools/keep -d DIR -m -f avml    # the image compressed
 ```
-
-- `keytriage.sh` starts only under `bash -p`, and on the medium only in its own `bin/bash`.
-  Without `-p` bash runs the file that `BASH_ENV` names, takes functions from the
-  environment and obeys `SHELLOPTS`, all before the first line of a script. `sudo` removes these
-  variables (`initial_badenv_table` in its `env.c`), a root shell does not.
-- The destination is the directory of `-d`, or the current directory. Where it lies is the
-  examiner's decision: `keytriage.sh` does not test what medium holds it and refuses no place.
-  It must exist and be writable. The report names the file system that holds it, with its
-  source, its type and its mount point, as `destination:` on the screen and as
-  `evidence_medium` in `verdict.json`, a field name that is kept with the schema.
-- `-p DIRS` names the directories of the examined system's `dmsetup` and `cryptsetup`, by default
-  `/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/sbin:/usr/local/bin`. `-b N` limits the proof attempts
-  per volume on the memory route.
-- Exit status of `keytriage.sh`: 0 when the run completed and was flushed, 1 when it could not
-  start or a write or a flush to the destination failed, 2 for a wrong option.
-
-The output folder is `triage_<host>_<UTC time>/` with `triage.txt`, `verdict.json`, `headers/`,
-`keys/`, `log/` (what `cryptsetup status`, the scanner and AVML wrote), `memory/` with `-m`, and
-`manifest.sha256`. In the names of the folder and of the files every character of the host name
-or of a mapping name that is not a letter, a digit or one of `. _ + = @ , -` becomes `_`, so
-that a name cannot leave the destination and FAT and exFAT take it. Two mapping names
-that differ only by case are kept apart by a further `_`.
-
-Every file is created with `umask 077`. A header backup, the candidate list and a key are
-flushed with `fsync` as soon as they are written (`sync FILE` of busybox, which reports a
-failure), and the run ends with `syncfs` on the file system of the destination (`sync -f`).
-
-With `-m` the keys are taken first, because an event can close their window within seconds, and
-then AVML writes `memory/memory.lime`. Beside the image go the kernel banner, the release,
-`os-release` and `System.map`, which Volatility 3 needs for its symbol table. A `System.map` is
-kept only when it lists `_stext` or `linux_banner`, because some distributions keep a placeholder
-without symbols in `/boot`. The image is skipped when the destination has less free space than
-the machine has RAM plus 64 MiB.
-
-With `-m -c` AVML writes its compressed format to `memory/memory.avml`, for a destination with
-less free space than the machine has memory. The scanner reads it, and Volatility 3 reads it where
-the Snappy library is installed. Its size is known only at the end, so it is started whatever
-space is free. How much it saves depends on what the memory holds: in the five runs of the
-pipeline that took it, on runners with 16 GiB, the image had 85 % to 87 % of the size of the
-memory (twice 13.7 GB for 15.7 GB, and three times 11.3 GB for 13.3 GB). Where AVML cannot finish it, the part that was written is removed, so that the
-report still has room, and the image counts as failed.
 
 In the lab:
 
 ```bash
-./offline-keyscan.sh [-k KIT] DUMP IMAGE...                # dump collected earlier, headers from disk images
+./keep -s DUMP [-d DIR] [FILE...]           # the keys of a dump, proven against the headers in the FILEs
 python3 -I vkverify.py CANDIDATES [HEADER...] [--image DISK]... [--out DIR] [--json FILE]
 ```
 
-`offline-keyscan.sh` writes `scan_<dump>_<UTC time>/` in the current directory with `triage.txt`,
-`scan.txt`, `verdict.json`, `manifest.sha256` and `keys/`. Its exit status and that of
-`vkverify.py` are 0 only when at least one header was located and every located header is proven.
-`DUMP` is a raw dump, a LiME image, a compressed AVML image or an ELF core. The formats that the
-scanner refuses end the run. Any other container format is searched as raw bytes, which is not
-tested. `IMAGE` is a raw disk or partition image, a header backup, the disk file of a virtual
-machine or an EnCase image.
+- The destination is the directory of `-d`, or the current directory. Where it lies is the
+  examiner's decision: `keep` does not test what medium holds it and refuses no place but one
+  that is mounted read-only. It must exist and be writable. The report names the file system
+  that holds it, with its source, its type and its mount point, as `destination` on the
+  screen and in `verdict.json`.
+- The output folder of a key run is `triage_<host>_<UTC time>/` with `triage.txt`,
+  `verdict.json`, `headers/`, `keys/`, `log/` (the tables of the kernel with each key as zeros,
+  and what the scanner said), `memory/` with `-m`, and `manifest.sha256`. That of the search
+  of a dump is `scan_<dump>_<UTC time>/` with `triage.txt`, `scan.txt`, `verdict.json`,
+  `manifest.sha256` and `keys/`.
+- In the names of the folder and of the files every character of the host name or of a
+  mapping name that is not a letter, a digit or one of `. _ + = @ , -` becomes `_`, and a
+  point at the start as well, so that a name cannot leave the destination, no file is one
+  that a listing does not show, and FAT and exFAT take it. Two mapping names that differ only
+  by case are kept apart by a further `_`.
+- Every file is created with `umask 077`. A header backup, the list of the schedules and a key
+  are flushed with `fsync` as soon as they are written, and the run ends with `syncfs` on the
+  file system of the destination.
+- With `-m` the keys are taken first, because an event can close their window within seconds,
+  and then the memory is written to `memory/`. Beside the image go the kernel banner, the
+  release, `os-release` and `System.map`, which Volatility 3 needs for its symbol table. A
+  `System.map` is kept only when it lists `_stext` or `linux_banner`, because some distributions
+  keep a placeholder without symbols in `/boot`.
+- `DUMP` is a raw dump, a LiME image, a compressed AVML image or an ELF core. The formats that
+  the scanner refuses end the run. `FILE` is a header backup, a raw disk or partition image or
+  a device. For the disk file of a virtual machine or an EnCase image, `vkverify.py` takes the
+  list `keys/candidates.txt` that `keep -s DUMP` wrote and the image with `--image`.
+- The exit status of `vkverify.py` is 0 only when at least one header was located and every
+  located header is proven. That of `keep` is said in "The program".
 
-## The C program
+## The program
 
-The scene side of Keep is being written anew as one static C program, `keep`, built from `src/`.
-It is to take the place of the tool medium: of `keytriage.sh`, the bash and busybox of the
-medium, the examined system's `dmsetup` and `cryptsetup`, and AVML. An examiner then copies one
-file to the system and starts it. The program starts no other program and asks no question:
-what a run does is said by its options.
-
-Until it gives what `keytriage.sh` gives on every system of the list below, `keytriage.sh` on the
-medium is Keep, and everything in this file outside this section describes it. The lab tools
-stay in Python.
+`keep` is built from `src/` and from the scanner. It does by itself what the tool medium of
+Keep 1 did with a static bash and busybox, the `dmsetup` and the `cryptsetup` of the examined
+system, and AVML. It starts no other program and asks no question: what a run does is said
+by its options.
 
 ```bash
-sudo apt install make musl-tools
-make                                    # keep and tests/keep-unit, static against musl
-sudo ./keep [-n] [-d DIR] [-b N]        # the keys of the running system: the work of keytriage.sh
+sudo ./keep [-n] [-d DIR] [-b N]        # the keys of the running system
 sudo ./keep -m [-f FORMAT | -F]         # the keys, then a memory image: lime (default), raw or avml, -F all three
 ./keep -s DUMP [-n] [-d DIR] [FILE...]  # the keys of a memory dump that exists, proven against the headers in the FILEs
 ./keep -h                               # the help, -V the version
@@ -466,9 +463,25 @@ sudo ./keep -m [-f FORMAT | -F]         # the keys, then a memory image: lime (d
   that of a session over a network that is lost: the lines are in `triage.txt`. A limit of
   the size of a file or of processor time that its shell had is taken off where the process
   may, which root may, and where it may not, a write beyond the limit fails like any write.
-  An interrupt from the keyboard and `SIGTERM` end a run at once. Each key that was written
-  before is flushed, `triage.txt` holds the lines up to there, an image is the part that was
-  written, and there is no `verdict.json` and no manifest.
+- An interrupt from the keyboard (`SIGINT`) and `SIGTERM` ask a run to end, and it ends in
+  order. The first of either is noted, and the steps that take long end where they are and
+  say so: the search of memory, the search of a `FILE` for headers, the attempts on a header
+  and the read of an image. What costs no time is still done: a key that the table holds is
+  taken and proven, also for a volume that comes after the search, and a header is still
+  backed up. A key that the search or the attempts did not reach gets `needs a memory read`,
+  and a header of a dump `not proven`, with a note that names the signal as the reason. The
+  list of the schedules of the part that was searched is kept, and none of it is tried. An
+  image whose read was ended is kept as the part that was read, with its SHA-256 in the
+  manifest, and has the status `interrupted`: the raw image is shorter, the compressed image
+  has fewer blocks, and the LiME image has a last range that ends before the end that its
+  header states, unless the read ended between two ranges. An image that was not begun has
+  that status and no file. Then the report and the manifest are written, a line says that
+  the run was interrupted and by which signal, `interrupted` is true in `verdict.json`, and
+  the status is 1. A second signal of the same kind ends the process at once: each key that
+  was written before is flushed, `triage.txt` holds the lines up to there, and there is no
+  `verdict.json` and no manifest. A signal that the process was started to ignore stays
+  ignored, as `SIGINT` is for a command that a shell without job control starts in the
+  background.
 - `-s DUMP` searches a dump as `kcore-keyscan` does and proves which of the keys is the
   volume key of each LUKS header in the `FILE`s, as `vkverify.py` does. A `FILE` is a header
   backup, the raw image of a partition or of a whole disk, or a device: its start is read as a
@@ -492,29 +505,31 @@ sudo ./keep -m [-f FORMAT | -F]         # the keys, then a memory image: lime (d
   that no header proves, is written as `keys/memory-pair-N.vk` and named `found in memory,
   not proven`: it is a candidate for a volume whose header is not at hand, until a header
   accepts it. Sixteen are written and further ones counted.
-- With `-s` the status is that of the search of the dump, and with `FILE`s also 1 where they
-  hold no header or a header has a key that is not proven.
+- The status of a key run is 0 when the run completed and every file is flushed, 1 when it
+  could not start, a write or a flush to the destination failed, an image that was asked for
+  is not there or the run was asked to end, and 2 for a wrong option. With `-s` the status is
+  that of the search of the dump, 1 also where a write failed or the run was asked to end,
+  and with `FILE`s also 1 where they hold no header or a header has a key that is not proven.
 - `-d DIR` is the destination of either run, by default the directory of the start, and `-n`
   the plain screen of either. `-b N` is for the running system only, and so are `-m`, `-f`
   and `-F`.
 - A wrong option, an option without its value, an argument that belongs to no option and
-  options that do not go together end with status 2 and the usage. The commands `triage` and
-  `scan` and the dialogue of the versions before 2.0-pre4 are gone.
+  options that do not go together end with status 2 and the usage.
 - The status of a run on the running system is 1 also where the table of a mapped device
   could not be read, so that a volume in it is not examined, and that of either run where a
   line of the report could not be put together for lack of memory. The line stands in the
   report as `(no memory for this line)`.
 
-### What stands in whose place
+### What it does in place of which tool
 
-| In the medium | In the C program | Checked against |
+| The tool | In `keep` | Checked against |
 |---|---|---|
 | `dmsetup ls --target crypt`, `dmsetup table --showkeys` | `src/dm.c`: the ioctls `DM_LIST_DEVICES` and `DM_TABLE_STATUS` of `/dev/mapper/control` | `dmsetup` 1.02.185 on kernel 6.8: the same devices, tables, UUIDs and keys |
-| `cryptsetup status` | `src/triage.c` and `src/volume.c`: the type from the UUID of the mapping and the header, the cipher, the key size and the key location from the table line, the device from `/sys/dev/block`. Which devices are one volume, and where its header lies, is read off the tables as `_init_by_name_crypt` of cryptsetup does it | `keytriage.sh` on the same mappings: the same line of `verdict.json` for every volume. For a volume in re-encryption, where `keytriage.sh` gives less, the keys that `dmsetup table --showkeys` shows |
-| `cryptsetup luksHeaderBackup` | `src/luks.c`: the header and the keyslot area read from the backing device, past its page cache | `cryptsetup` 2.4.3 and 2.7.0: the same file byte for byte, for LUKS1 and LUKS2, read and written past the page cache and through it |
-| `cryptsetup open --test-passphrase` | `src/luks.c` and `src/hash.c`: PBKDF2 of the key against the digest of the header backup | `cryptsetup` 2.7.0 on the same headers and keys, and Python's `hashlib` |
+| `cryptsetup status` | `src/triage.c` and `src/volume.c`: the type from the UUID of the mapping and the header, the cipher, the key size and the key location from the table line, the device from `/sys/dev/block`. Which devices are one volume, and where its header lies, is read off the tables as `_init_by_name_crypt` of cryptsetup does it | `cryptsetup status` of ten distributions and two runner images on the same mappings: the same type, key size, key location and device, and the cipher of `dmsetup table`. Up to 2.0-pre12 `keytriage.sh` on the same mappings: the same line of `verdict.json` for every volume. For a volume in re-encryption the keys that `dmsetup table --showkeys` shows |
+| `cryptsetup luksHeaderBackup` | `src/luks.c`: the header and the keyslot area read from the backing device, past its page cache | `cryptsetup` 2.4.3 to 2.8.9: the same file byte for byte, for LUKS1 and LUKS2, read and written past the page cache and through it |
+| `cryptsetup open --test-passphrase` | `src/luks.c` and `src/hash.c`: PBKDF2 of the key against the digest of the header backup | `cryptsetup` 2.4.3 to 2.8.9 on the same headers and keys, and Python's `hashlib` |
 | `kcore-keyscan` | `kcore-keyscan.c` linked in without its `main` | the scanner before the change: the same output, messages and status on every format |
-| `offline-keyscan.sh` and `vkverify.py`, for a header backup and a raw image | `src/dump.c`: the search of a dump, the headers of the files, and the proof of the candidate keys against each | `vkverify.py` on the same schedules and headers: the same verdicts and the same keys. On a guest, the keys of two open containers from the image that the program took of that machine |
+| `kcore-keyscan` with `vkverify.py`, for a header backup and a raw image | `src/dump.c`: the search of a dump, the headers of the files, and the proof of the candidate keys against each | `vkverify.py` on the same schedules and headers: the same verdicts and the same keys. On a guest, the keys of two open containers from the image that the program took of that machine |
 | bash and the applets of busybox | C, with the standard library only | `tests/unit-check.sh` |
 | AVML | `src/image.c`, `src/snappy.c` and `src/memory.c`: the RAM ranges of `/proc/iomem` read through `/proc/kcore`, written as a LiME image, a raw image or the compressed format of AVML | AVML 0.21.0 itself: it converts the compressed image to the LiME image of its blocks and the LiME image to the raw one, byte for byte the files that Python writes from the formats. On a guest, the image that AVML took of the same machine: the same amount of memory, and the key schedules at the same addresses |
 
@@ -702,7 +717,7 @@ Read in Linux 4.18, 5.10, 6.12 and 6.18, cryptsetup 2.0.6, 2.3.7, 2.7.0 and 2.8.
   - After the caches were dropped and 85 % of the free memory was written over once, the
     image still held those metadata at 4 places. The LUKS1 header was gone in one run and
     was there at one place in another.
-  - From such an image alone, with no file, the C program proved the volume keys of both
+  - From such an image alone, with no file, `keep` proved the volume keys of both
     containers, and left a digest of a volume that an earlier check had closed as not
     proven.
 - cryptsetup gives the key of digest N the keyring description `cryptsetup:<UUID>-d<N>`
@@ -730,19 +745,23 @@ Read in Linux 4.18, 5.10, 6.12 and 6.18, cryptsetup 2.0.6, 2.3.7, 2.7.0 and 2.8.
 | `kcore-keyscan.c` | The scanner. `-DKEYSCAN_LIBRARY` leaves out its `main`, and `src/keyscan.h` declares what remains. It hands the memory it reads to the program, which searches it for headers, and says what its search read |
 | `tests/keep-unit.c` | Runs one part at a time, for `tests/unit-check.sh` |
 
-### Where it differs from `keytriage.sh`
+### Where it differs from `keytriage.sh` and from the tools it stands for
 
-- The screen is another one. `keytriage.sh` prints sentences, the routes as `R1 table` and `R3
-  memory` and a line `VERDICT:`. The C program prints the facts of a volume as labels and
-  values (see above). The names of the routes stand in `verdict.json` alone. The keyring
-  reference of a volume stands in `log/NAME.table.txt` and not on the screen. What the
-  scanner said stands in `log/kcore-keyscan.txt` or, for a dump, in `scan.txt`: the screen
-  gives the counts in lines of its own, and of a dump also what the scanner warns of.
+`keytriage.sh` is described here as its last version, 1.5.1, was. It is no longer in the
+repository, and what it did is said for a reader of its reports and for the comparison
+that was made.
+
+- The screen is another one. `keytriage.sh` printed sentences, the routes as `R1 table` and `R3
+  memory` and a line `VERDICT:`. `keep` prints the facts of a volume as labels and values (see
+  above). The names of the routes stand in `verdict.json` alone. The keyring reference of a
+  volume stands in `log/NAME.table.txt` and not on the screen. What the scanner said stands in
+  `log/kcore-keyscan.txt` or, for a dump, in `scan.txt`: the screen gives the counts in lines
+  of its own, and of a dump also what the scanner warns of.
 - A name is shown as the kernel holds it. libdevmapper writes a character outside its list as
   `\xNN` into the name of a mapping, so a mapping that `dmsetup` shows as `name with space` is
   `name\x20with\x20space` in the kernel, in `/dev/mapper` and in `/sys`, and in the report.
-- The report has no programs of the examined system to name: `cryptsetup` is `null` and
-  `binaries` is empty. `tool` is `keep` and its version.
+- The report has no programs of the examined system to name, which `keytriage.sh` named with
+  their paths and SHA-256. `tool` is `keep` and its version.
 - `log/NAME.table.txt` holds what the kernel said about a mapping, its key replaced by zeros,
   in place of the output of `cryptsetup status`.
 - The header is read before the type is named, and the proof is made against the backup after
@@ -756,12 +775,12 @@ Read in Linux 4.18, 5.10, 6.12 and 6.18, cryptsetup 2.0.6, 2.3.7, 2.7.0 and 2.8.
   has no limit of locked memory. A user with a limit, as in the lab, is told that the memory is
   not locked. `cryptsetup` creates no lock file in `/run/cryptsetup`, because
   it does not run.
-- A LUKS2 volume with integrity gets the same verdicts from both. The C program names its
+- A LUKS2 volume with integrity gets the same verdicts from both. `keep` names its
   cipher as the kernel does, `capi:authenc(hmac(sha256),xts(aes))-plain64`, and `keytriage.sh`
   as `cryptsetup status` does, `aes-xts-plain64`. With the key in the keyring both end with
   `live copy only`: the volume key holds the key of HMAC, which is no AES key.
 - A volume in re-encryption has two keys, one for the part that is done and one for the rest.
-  The C program lists the volume once, takes each key through the ladder, proves each against
+  `keep` lists the volume once, takes each key through the ladder, proves each against
   its own digest of the header and writes `keys/NAME.vk` and `keys/NAME-2.vk`, in the order of
   the table. A key from memory is the key of the digest that its keyring reference names. The
   verdict of the volume is that of the key that is least far. `keytriage.sh` takes the first
@@ -771,7 +790,7 @@ Read in Linux 4.18, 5.10, 6.12 and 6.18, cryptsetup 2.0.6, 2.3.7, 2.7.0 and 2.8.
 - `-b N` is the number of proof attempts for each key, which is that for each volume where a
   volume has one key.
 - It asks cryptsetup nothing and takes none of its locks. `cryptsetup status` waited without
-  end on a volume whose re-encryption was paused in a step, and the C program read the same
+  end on a volume whose re-encryption was paused in a step, and `keep` read the same
   volume. A header that cryptsetup writes at that moment is read from the copy that holds.
 - From 2.0-pre11 on the header is read past the page cache of the device, as cryptsetup
   reads it (see "What the sources say"), and its copy is written with direct writes, with
@@ -788,7 +807,8 @@ Read in Linux 4.18, 5.10, 6.12 and 6.18, cryptsetup 2.0.6, 2.3.7, 2.7.0 and 2.8.
   the schedules are written all the same, without a proof on scene. `keytriage.sh` leaves
   what `cryptsetup luksHeaderBackup` leaves.
 - The run is not ended by `SIGPIPE`, `SIGHUP` or `SIGXFSZ`, and takes the limits of the
-  size of a file and of processor time off where it may. `keytriage.sh` is ended by each.
+  size of a file and of processor time off where it may. `keytriage.sh` was ended by each,
+  and by an interrupt from the keyboard, which `keep` takes as a request to end in order.
 - A table of a mapped device that cannot be read is named on the screen, and the run ends
   with status 1. Only a device that was removed since the list was read is passed over.
 - A name that begins with a point has `_` in its place in a file name, so that no file of a
@@ -854,7 +874,7 @@ Read in Linux 4.18, 5.10, 6.12 and 6.18, cryptsetup 2.0.6, 2.3.7, 2.7.0 and 2.8.
 
 ### What the checks have found
 
-Defects of the C program were found by its checks and runs while it was written, and each
+Defects of `keep` were found by its checks and runs while it was written, and each
 check stays. The first five: a copy of zero bytes from a null pointer in the hash code and a sort of an empty
 list of volumes (the sanitizers), the devices that stand on a volume named in the order of the
 directory and not of their names (the run beside `keytriage.sh` on LVM), the two keys of a
@@ -943,7 +963,15 @@ is corrected in 2.0-pre11 and 2.0-pre12, each with its check:
   the search itself.
 
 One defect of `keytriage.sh` was found on the way: it stated no key size for a LUKS2 volume
-with integrity. It is corrected in 1.5.1, with its check in `selftest.sh`.
+with integrity. It was corrected in 1.5.1.
+
+With 2.0-rc1 the script and its medium were removed, and with them what was there for them
+alone. The check on real device-mapper, which had held `keep` against the script, holds it
+against `cryptsetup` and `dmsetup` themselves. The report lost three fields that only the
+script could fill or that it had named (see "The report"), a function and a macro that
+nothing used went, and two commands of `keep-unit` that no check ran. A run that is asked to
+end now ends in order (see "The program"), where a signal had ended it at once, with no
+report and no manifest.
 
 ### Where it has run
 
@@ -998,7 +1026,7 @@ The memory image in these runs:
 - AVML's own images of the same machines held less memory by whole blocks of 16 MiB, which
   are the blocks of zeros that it leaves out: one block on one guest, ten on another, and 56
   and 59 on the runner with the LiME image in two runs. On the other runner its compressed
-  image held 83 blocks less than that of the C program in one run, which leaves out such
+  image held 83 blocks less than that of `keep` in one run, which leaves out such
   blocks as well.
 - Searched with no file, the image of every guest and of both runners held 2 headers or
   digests of a header, and
@@ -1006,7 +1034,7 @@ The memory image in these runs:
   containers of the check lie in files, and the cache of those files holds their headers.
   What a machine holds by itself was seen on the guest of the workstation (see "What the
   sources say").
-- The C program took its images after AVML had written one. That the later images hold fewer
+- `keep` took its images after AVML had written one. That the later images hold fewer
   blocks of zeros fits a file that is written through the page cache: the cache takes free
   memory, and what lay there is overwritten. This was not measured by itself.
 - From 2.0-pre7 on an image is written with direct writes, and the pages of each file that
@@ -1023,7 +1051,7 @@ The memory image in these runs:
   17951621120 bytes (73 s) and the compressed image of 10096333254 bytes (50 s).
 - With 2.0-pre9, whose screen is another one, the same held on the ten guests and both
   runners, with images of the same sizes but the compressed one of a runner, 10117846686
-  bytes. Every screen and every report that the C program wrote in the check, 38 files on a
+  bytes. Every screen and every report that `keep` wrote in the check, 38 files on a
   guest, 36 on openSUSE Leap 16.1 and 36 and 42 on the runners, held no escape byte and no
   line of more than 80 columns without a word that needs them. These screens went to
   files: what a terminal is given was looked at by `unit-check.sh` alone (see "Not handled
@@ -1206,10 +1234,14 @@ image of its own:
 - Not run, for want of a way to bring them about in a check: a destination that the mount
   table does not name, a `/sys` that is not mounted, and the ends of a run for lack of
   memory. The first was seen by one of the readers in a root that is no mount point.
-- A run that is ended by an interrupt from the keyboard or by `SIGTERM` leaves the keys it
-  had written, the lines of `triage.txt` up to there and the part of an image, and neither
-  `verdict.json` nor a manifest. It does not end its work in order. This is read in the
-  code and not run.
+- A run that is asked to end is checked for the search of a dump with `SIGINT` and `SIGTERM`,
+  in its attempts, and for a key run with `SIGTERM`, in its search of memory and in the read
+  of an image. A key run is not sent `SIGINT` by a check, which differs from `SIGTERM` in the
+  name that the report gives it, and not in the attempts on a header of a key run. The search
+  of a `FILE` for headers ends at such a signal as well, which is read in the code and not
+  run. A step that does not ask for the signal is not ended by it: a single attempt on a
+  digest, which takes up to 16 s within the bound of the iterations, a read or a write that
+  the kernel does not answer, and the flush at the end of a run.
 - That a table which cannot be read is named and ends the run with status 1 is not run: no
   way was found to make the kernel refuse the table of a device that it lists. What is run
   is that the program tells such a refusal from a device that is gone.
@@ -1231,7 +1263,7 @@ image of its own:
 - A destination with FAT32 takes no file of 4 GiB, so an image of a machine with that much
   memory fails there and is removed. A raw image on a file system that keeps no holes, as
   FAT and exFAT, has what lies between the ranges written as zeros. Neither is run.
-- Of Volatility 3, `banners.Banners` of 2.28.2 has read one LiME image of the C program. No
+- Of Volatility 3, `banners.Banners` of 2.28.2 has read one LiME image of `keep`. No
   plugin that needs the symbol table was run, and neither the raw nor the compressed image
   was given to it.
 - The proof from a dump alone is seen on one guest, with udisks2 2.10.1, and on the machine
@@ -1266,70 +1298,70 @@ image of its own:
    digits of its SHA-256. `vkverify.py --show-keys` is the single, explicit exception, and it does
    not reach the JSON report.
 2. Key material is written only below a `keys/` directory, by a process with `umask 077`. This
-   covers the candidate list, which is key material too. On scene a key counts as captured only
-   after it is flushed to the destination. FAT and exFAT keep no modes, so on such a file system
-   the modes do not exist and the medium itself has to be kept safe.
+   covers the list of the schedules, which is key material too. On scene a key counts as captured
+   only after it is flushed to the destination. FAT and exFAT keep no modes, so on such a file
+   system the modes do not exist and the medium itself has to be kept safe.
 3. Keep writes into the destination directory and nowhere else. The destination is asked for,
    and is by default the directory in which Keep is started. Where it lies is the examiner's
    decision: Keep does not test what medium holds it, looks for no evidence medium and refuses
-   no place. What follows from the choice is the examiner's to weigh: a file written to the
-   storage of the examined system changes that storage, and a key written into one of its
-   encrypted volumes is locked in with the data at power-off. No name of the examined system is
-   used in a file name as it is. Beside the destination a run changes memory: the programs it
-   starts, and the lock file `L_major:minor`
-   that cryptsetup creates in `/run/cryptsetup` while it reads a LUKS2 header (seen with
-   cryptsetup 2.7.0), which lies in memory where `/run` is a tmpfs. The inputs of the lab tools
-   are only read.
-4. The scene script `keytriage.sh` runs in the medium's static bash, started with `-p`, with
-   `PATH` set to the `bin/` of the medium and nothing else. It refuses another shell and a
-   start without `-p`. The only programs run from outside the medium are the examined
-   system's `dmsetup` and `cryptsetup`, by their full paths.
-5. A file of the examined system is read as text and never executed or sourced. `bash -p` is part
-   of this rule, because without it the shell runs the file that `BASH_ENV` names.
-6. Python is standard library only and is run with `-I`. This is said of the tools of Keep and
-   of its checks. MkDocs, which builds the pages, is no tool of Keep: it runs on a workstation
+   no place that can be written. What follows from the choice is the examiner's to weigh: a
+   file written to the storage of the examined system changes that storage, and a key written
+   into one of its encrypted volumes is locked in with the data at power-off. No name of the
+   examined system is used in a file name as it is. Beside the destination a run changes the
+   memory that its one process takes, and nothing else: what it asks of the kernel changes
+   nothing there, and it creates no lock file, as cryptsetup does in `/run/cryptsetup` while
+   it reads a LUKS2 header. The inputs of `keep -s` and of `vkverify.py` are only read.
+4. `keep` starts no other program, loads no library, and reads a file of the examined system as
+   text only: none is executed or sourced. It is C11 with the standard library, built
+   statically against musl with `-Werror`. A part of it that reads bytes it did not write (a
+   header, a table of the kernel, a mount table, JSON, a memory image) has a check in
+   `tests/unit-check.sh` against an independent source and runs there with the sanitizers of
+   the compiler as well.
+5. Python is standard library only and is run with `-I`. This is said of `vkverify.py` and of
+   the checks. MkDocs, which builds the pages, is no tool of Keep: it runs on a workstation
    and in the pipeline, from the packages of `requirements.txt`.
-7. A downloaded binary is pinned by SHA-256 and refused on a mismatch. So is every package
-   that builds the pages: `pip install --require-hashes -r requirements.txt`.
-8. A change of behaviour raises the version of the file it is in: `VERSION` in `keytriage.sh`,
-   `offline-keyscan.sh`, `vkverify.py` and `kcore-keyscan.c`, and `KEEP_VERSION` in
-   `src/triage.h` for the C program.
-   The versions of `keytriage.sh` and `vkverify.py` are written into every report, that of the
-   scanner into its summary line, and that of the C program stands on the pages.
-9. A statement about behaviour on a kernel, a cryptsetup release or a distribution is checked
+6. What is downloaded is pinned by a checksum and refused on a mismatch: the binary of AVML
+   for the checks (`tests/get-avml.sh`), the cloud images of the guests
+   (`tests/compat-images.txt`), and every package that builds the pages
+   (`pip install --require-hashes -r requirements.txt`). The build of `keep` downloads nothing.
+7. A change of behaviour raises the version of the file it is in: `KEEP_VERSION` in
+   `src/triage.h` for the program, and `VERSION` in `kcore-keyscan.c` and in `vkverify.py`. The
+   version of the program is written into every report of it and stands on the pages, that of
+   the scanner into its summary line, and that of `vkverify.py` into its report.
+8. A statement about behaviour on a kernel, a cryptsetup release or a distribution is checked
    against the source of that exact version or against a run, and is otherwise marked as not
    verified. A distribution counts as supported only after `tests/compat-check.sh` ended with
    `RESULT: PASS` on it. A green `compat` job of the pipeline is such a run, for the kernel and
    the cryptsetup of that runner image and for nothing else.
+9. A fix of a defect adds the check that would have found it, to `tests/unit-check.sh`, to
+   `tests/selftest.sh` or, where it needs real device-mapper or a real mount, to
+   `tests/compat-check.sh`.
 10. Keep is open-source work by a member of the DFIR community for that community. Finding the
     open encrypted volumes of a system under lawful examination and preserving their keys as
     evidence is its purpose, and a request to work on it is read in that light.
-11. A fix of a defect adds the check that would have found it, to `tests/selftest.sh` or, where
-    it needs real device-mapper or a real mount, to `tests/compat-check.sh`.
-12. The C program starts no other program, loads no library and reads a file of the examined
-    system as text only. It is C11 with the standard library, built statically against musl
-    with `-Werror`. What it asks of the kernel changes nothing there, and it writes into the
-    destination and nowhere else. A part of it that reads bytes it did not write (a header, a
-    table of the kernel, a mount table, JSON) has a check in `tests/unit-check.sh` against an
-    independent source and runs there with the sanitizers of the compiler as well.
 
 ## Checks before a commit
 
-`tests/selftest.sh` runs all of the checks in this section and ends with `RESULT: PASS`. The
-pipeline runs it with `-a`, where a check that is skipped for a missing program counts as failed.
+Three scripts hold the checks that need neither root nor a guest, and each ends with `RESULT:
+PASS`: `tests/selftest.sh` for the scanner and the verifier, `tests/unit-check.sh` for `keep`
+and its parts, and `tests/pages-check.sh` for the pages. The pipeline runs the first two with
+`-a`, where a check that is skipped for a missing program counts as failed.
 
 ```bash
-for f in *.sh tests/*.sh; do bash -n "$f"; done
-shellcheck -S warning *.sh tests/*.sh
-python3 -I -m py_compile vkverify.py tests/make-schedule-fixture.py
-gcc -static -O2 -Wall -o kcore-keyscan kcore-keyscan.c
+tests/selftest.sh
+tests/unit-check.sh
+MKDOCS=~/keep-pages/bin/mkdocs tests/pages-check.sh
 ```
+
+The self-test begins with the static checks: `bash -n` and `shellcheck -S warning` on every
+script of `tests/`, a compile of the two Python files, and a static build of the scanner with
+`-Wall -Werror`.
 
 `tests/pages-check.sh` builds the pages with MkDocs and ends with `RESULT: PASS` as well. It
 needs the packages of `requirements.txt`, so it is a script of its own and the self-test
 does not run it. What it reads in the built pages is said in "The pipeline and the page".
 
-`tests/unit-check.sh` is the same for the C program and ends with `RESULT: PASS` too. It builds
+`tests/unit-check.sh` builds
 `tests/keep-unit` and `keep` statically against musl and once more with the address and
 undefined-behaviour sanitizers, and runs every check with both. The hash functions and PBKDF2
 are compared with `hashlib` on messages of every length up to 300 bytes. The JSON reader is
@@ -1376,7 +1408,11 @@ definitions of the formats, with the SHA-256 of `hashlib`, and a compressed imag
 back by a decoder that is written there from the two documents of Snappy, with every
 checksum. The cases are RAM that a driver added, a range in two segments, memory that the
 core offers twice, a range that reaches beyond its segment, blocks of zeros, a stretch that
-cannot be read and a file that cannot be written. With `AVML=/path/to/avml` AVML itself
+cannot be read and a file that cannot be written. A read that is ended before the end of the
+memory, after one block of 16 MiB and after two, must leave files that are whole as far as
+they go: the LiME and the raw image the start of the files of the whole read, the compressed
+image the blocks up to there, each with the SHA-256 that is stated for it. With
+`AVML=/path/to/avml` AVML itself
 converts the compressed image to a LiME image and the LiME image to a raw one, which must be
 the files of Python byte for byte. What cannot be placed is refused: a text without
 addresses, a core of a kernel before 4.12. Cores and texts with changed bytes must give no
@@ -1413,6 +1449,12 @@ hangs up (`SIGHUP`) and the reader goes away (`SIGPIPE`), and the run must end w
 0, all sixteen keys, a report and a manifest that verifies. Under a limit of the size of a
 file of one block (`ulimit -f 1`) a process that may take the limit off must give the whole
 run, and another must end with status 1 and say that a write failed: no signal may end it.
+A run is asked to end while it makes its first attempt on a header whose digest has 2000000
+iterations, by `SIGINT` and by `SIGTERM`: it must make no further attempt, name each header
+as one whose attempts were ended by a signal, write a report that says `interrupted`, a
+manifest that verifies and the list of the schedules, and end with status 1. Sent the signal
+twice, it must be ended by the signal, with no `verdict.json`. A run that was not asked to
+end must say so in its report.
 The search of a dump must name a `FILE` that cannot be read, with the place and status 1,
 must name a key whose file cannot be written as such and not as one that was not found,
 and must write a `verdict.json` that Python reads for a name that is no UTF-8.
@@ -1423,7 +1465,10 @@ goes to a device without room. Two segments that state no physical address, each
 another key at the same place, must give both keys. A library that stands before the C
 library makes one read fail as the kernel fails a read of `/proc/kcore`, as a whole for
 one page in it: the schedules must be those of the fixture, with 4096 bytes named as not
-read.
+read. A search that the program ends, after its first read, in its middle and near its end,
+in each of the four formats, must list the schedules that lie in the memory it read and no
+other, name the file offset at which it ended and have status 1, and a search that is not
+ended must give the list of the scanner alone.
 The screen is looked at byte by byte. On a pseudo-terminal, which Python's `pty` gives, it
 must have the titles bold, the labels cyan and the verdicts in their colours, no escape
 sequence but those five, and a line of progress that is written over and taken away. With
@@ -1440,51 +1485,105 @@ The parts that read the system
 are given mount tables, a tree like `/sys` with logical volumes on a volume, a lockdown file, a
 SecureBoot variable and an os-release written there.
 
-The whole program is checked on real device-mapper by `tests/compat-check.sh`, beside
-`keytriage.sh` (see the pipeline). With `KEEP_SAN` set to a build with the sanitizers (`make
-keep-san`), that build is run at the same places and must end with status 0.
+The whole program is checked on real device-mapper and a real `/proc/kcore` by
+`tests/compat-check.sh`, on a throwaway guest and never on a machine that matters. It makes
+containers and mappings from key files it has just drawn, runs `keep` on them, and holds what
+`keep` wrote against the tools of that system:
 
-Four parts of `compat-check.sh` are there for what the C program does beyond the four
-mappings. With a memory image in the run (`-m` or `-c`), the C program takes its own while
-the two containers are open, once for each word of `KEEP_IMAGES`: a format, or `all` for
-`-F`. Each file must be named as written with direct writes, and before anything reads it
-`c/keep-unit cached` may count one page of it in the page cache at most. The report
-must name each file with its size and its SHA-256, the scanner must read
-each image to its end, and the schedule of each half of both volume keys must lie in it at
-an address at which it lies in the image that AVML took in the main run. The images of one
-read must give the same list of schedules, and AVML must convert the compressed image to a
-LiME image that gives that list too. The first image of a run is then searched as a dump
-that exists, with the images of the two containers as the files that hold the headers, and
-both volume keys must be proven and written as they are. It is searched once more with no
-file, and what it holds of a header by itself is told and not judged: the containers of the
-check lie in files, whose cache holds their headers. It is run once with `-d` and the FAT file system as the destination, where its
-screen must name the system, the open volumes and each key it holds by its file, its length
-and the start of its SHA-256. Before each run beside `keytriage.sh` the cache of every device
-with a header is let go, and after it `c/keep-unit` may count no page of such a device and
-none of a copy of a header in the page cache, on FAT as elsewhere, and no line of the screen
-may say that a header went through the cache. The run before any mapping is made has a
-limit of the size of a file of one block in its shell, which the program must take off. A
-run with a tmpfs of 1 MiB as the destination, which has no room for the copy of a header,
-must remove the part of each copy, keep the key of the table, the key of the plain mapping
-and the list of the schedules, say that a write failed, and end with status 1 and a
-manifest that verifies. `c/keep-unit` must name a mapped device that is not there as such.
-Before the two parts that follow, the two volumes with their keys in the
-keyring are closed, because every run with one of them open searches the whole memory once
-more. Two LUKS2 containers with integrity are made, one opened with
-`--disable-keyring`: both tools must give `captured and proven` with the key of 96 bytes it
-was made from and `live copy only` for the other, in the same lines but for the name of the
-cipher. And a LUKS2 volume of 2 GiB is re-encrypted in steps of 1 MiB, which takes seconds:
-the re-encryption is interrupted in its first step, and the C program must prove both keys
-from memory. The volume is then opened with `--disable-keyring`, where `dmsetup table
---showkeys` shows the two keys with their targets, and the keys from memory must be those,
-each for its part, and the key of the part not yet done the key the volume was made from. The
-re-encryption is resumed and paused in a step with `SIGSTOP`, and the program must list the
-volume once, name the two helper devices and give the same two keys. At the end every screen
-and every report that the C program wrote in the check is looked at: none may hold an escape
-byte or a carriage return, and none a line of more than 80 columns without a word that needs
-them.
+- the volumes of the report against the mapped devices of `dmsetup ls --target crypt`;
+- the type, the key size, the key location and the device of each volume against the lines
+  of `cryptsetup status`, and its cipher against the table of `dmsetup table`, which names it
+  as the kernel does;
+- `log/NAME.table.txt` against the UUID and the device number of `dmsetup info` and the lines
+  of `dmsetup table`, in which a key is zeros;
+- each header backup against the file of `cryptsetup luksHeaderBackup`, byte for byte;
+- each key against the key file its container was made from, and where the table holds the
+  key, against what `dmsetup table --showkeys` shows;
+- each proof against `cryptsetup open --test-passphrase` with the key file that `keep` wrote:
+  cryptsetup must accept the key exactly where `keep` says `captured and proven`;
+- each manifest with `sha256sum -c`.
 
-The scanner and the verifier are then run on a fixture. `make-schedule-fixture.py` expands keys
+With `KEEP_SAN` set to a build with the sanitizers (`make keep-san`), that build is run at the
+same places and must end with status 0.
+
+The mappings are a LUKS2 container (key in the kernel keyring, memory route), a LUKS1
+container (key in the table, table route), a mapping named `No` that `dmsetup` makes from a
+known key, and one with the null cipher. The parts of the check:
+
+- Before any mapping is made, `keep` is run once on the system as it is, with a limit of the
+  size of a file of one block in its shell, which the program must take off.
+- The main run names no destination and is started in a directory on the guest's own disk,
+  which must take the folder of the run. Before each such run the cache of every device with
+  a header is let go, and after it `keep-unit` may count no page of such a device and none of
+  a copy of a header in the page cache, and no line of the screen may say that a header went
+  through the cache. `keep-unit` must name a mapped device that is not there as such.
+- `keep` is sent `SIGTERM` while it searches the memory. It must end the search, keep and
+  prove the key of the table and keep the key of the plain mapping, give the volume with the
+  null cipher, which comes after the search, its verdict, name the key of the keyring as one
+  that needs a memory read because the search was ended, keep the list of the schedules and
+  the header backups, say on the screen and in `verdict.json` that the run was interrupted,
+  and end with status 1 and a manifest that verifies. `SIGTERM` and not `SIGINT`, because a
+  shell without job control starts a command in the background with `SIGINT` ignored.
+- With `-m` or `-c`, AVML takes an image while the two containers are open, in LiME format or
+  compressed. The scanner must read it to its end and find the schedules of both volume keys.
+  `keep` then takes its own, once for each word of `KEEP_IMAGES`: a format, or `all` for `-F`.
+  Each file must be named as written with direct writes, and before anything reads it
+  `keep-unit cached` may count one page of it in the page cache at most. The report must name
+  each file with its size and its SHA-256, the scanner must read each image to its end, and
+  the schedule of each half of both volume keys must lie in it at an address at which it lies
+  in the image of AVML. The images of one read must give the same list of schedules, and AVML
+  must convert the compressed image to a LiME image that gives that list too. The first image
+  of a run is then searched as a dump that exists, with the images of the two containers as
+  the files that hold the headers, and both volume keys must be proven and written as they
+  are. It is searched once more with no file, and what it holds of a header by itself is told
+  and not judged: the containers of the check lie in files, whose cache holds their headers.
+- One more image is begun, and `keep` is sent `SIGTERM` when its file has its first bytes.
+  The keys, which were taken before, must be there. The part of the image must be kept and
+  named as interrupted, with its size and with the SHA-256 that the manifest verifies, and
+  the scanner must read it as the run says it is: with status 1 and the place where the file
+  ends inside a range, or with status 0 where the read ended between two ranges.
+- A run names with `-d` a FAT file system on a loop device as the destination, which must
+  take every file. Its screen must name the system, the open volumes and each key that is
+  held by its file, its length and the start of its SHA-256, and no page of a copy of a header
+  may lie in the page cache.
+- A run with a tmpfs of 1 MiB as the destination, which has no room for the copy of a
+  header, must remove the part of each copy, keep the key of the table, the key of the plain
+  mapping and the list of the schedules, say that a write failed, and end with status 1 and a
+  manifest that verifies.
+- The layout of an encrypted installation: a LUKS2 volume that carries an LVM volume group.
+  The mapping below the logical volumes must be the one that is listed and proven, and the
+  logical volumes must be named as what that volume carries, one with its mount points, of
+  which eight are named and two counted, and one as swap. The logical volume is the
+  destination of that run.
+- Before the two parts that follow, the two volumes with their keys in the keyring are
+  closed, because every run with one of them open searches the whole memory once more. Two
+  LUKS2 containers with integrity are made, one opened with `--disable-keyring`: the first
+  must be `captured and proven` with the key of 96 bytes it was made from, with its cipher as
+  the kernel names it, and the other `live copy only`.
+- A LUKS2 volume of 2 GiB is re-encrypted in steps of 1 MiB, which takes seconds: the
+  re-encryption is interrupted in its first step, and `keep` must prove both keys from
+  memory. The volume is then opened with `--disable-keyring`, where `dmsetup table --showkeys`
+  shows the two keys with their targets, and the keys from memory must be those, each for its
+  part, and the key of the part not yet done the key the volume was made from. The
+  re-encryption is resumed and paused in a step with `SIGSTOP`, and the program must list the
+  volume once, name the two helper devices and give the same two keys. cryptsetup accepts
+  neither key alone for such a header, so here the header backup is held against
+  `luksHeaderBackup` and the keys against the table.
+- At the end every screen and every report that `keep` wrote in the check is looked at: none
+  may hold an escape byte or a carriage return, and none a line of more than 80 columns
+  without a word that needs them.
+
+A part that the guest cannot run, FAT, LVM or integrity, is reported as `SKIP`. On the runners
+of the pipeline no part may be skipped.
+
+`tests/compat-guest.sh WORKDIR NAME` runs that check unattended in a guest. It fetches the cloud
+image that `tests/compat-images.txt` pins for `NAME`, refuses it unless it has the pinned
+SHA-256 or SHA-512, boots a copy in QEMU, under KVM where `/dev/kvm` can be opened and emulated
+otherwise, copies `keep`, `tests/keep-unit`, `tests/keyscan`, the check and AVML into the guest
+over SSH, and starts the check there through `sudo`. With `-k` the guest stays, for work by
+hand.
+
+In the self-test the scanner and the verifier are run on a fixture. `make-schedule-fixture.py` expands keys
 with its own code written from FIPS-197, so it and the scanner check each other. Its five traps are
 a schedule at an odd address, one across the scanner's 1 MiB read boundary, one across the border
 of two ranges, one with a single wrong bit that must not be reported, and one inside a run of
@@ -1500,80 +1599,50 @@ python3 -I tests/make-schedule-fixture.py --format lime --size 8 fx.lime k.vk
 ```
 
 The self-test goes on with LUKS headers that cryptsetup makes from the fixture keys. It proves
-the keys with `vkverify.py`, `offline-keyscan.sh` and the on-scene proof command, also against
-headers whose keyslots were erased, and gives the verifier cut and malformed headers. With
+the keys with `vkverify.py`, from header files and from a raw disk image that holds both
+headers behind a sector with the bare magic, also against headers whose keyslots were erased,
+and gives the verifier cut and malformed headers. With
 `qemu-img` it writes the disk image in fourteen forms of qcow2, VMDK, VDI, VHD and VHDX, and with
 `ewfacquirestream` as four EnCase images, one of them in segment files. The verifier must read
 from each the disk byte for byte and prove both keys.
 
-`keytriage.sh` itself runs in the self-test without root and without device-mapper. A copy of it
-runs from a kit laid out like the medium, with the busybox applets in `bin/`. Stand-ins play the
-examined system: `dmsetup` and `cryptsetup status` print from files, the scanner searches the
-fixture in place of `/proc/kcore`, AVML is a script that writes the fixture as the memory image,
-and the header backup and the proof are done by the real cryptsetup. The run starts under `umask 022` with `BASH_ENV`, a function named `sed` and
-`SHELLOPTS=xtrace` in the environment, and with a program of every applet's name first on the
-caller's `PATH`, and fails when any of them takes effect.
-
-On real device-mapper and a real `/proc/kcore`, `keytriage.sh` is checked by
-`tests/compat-check.sh`, on a throwaway guest and never on a machine that matters. It makes a
-LUKS2 container (key in the kernel keyring, memory route) and a LUKS1 container (key in the
-table, table route) from key files it has just drawn, a mapping named `No` and one with the null
-cipher, runs the triage, and passes when the verdicts are right and the captured keys have the
-SHA-256 of their key files. With `-m` or `-c` the memory image must be read by the scanner to
-its end and hold the schedules of both volume keys. The main run names no destination and is
-started in a directory on the guest's own disk, which must take the folder of the run. A second
-run names with `-d` a FAT file system on a loop device as the destination, which must take every
-file. It also checks the
-layout of an encrypted installation: a LUKS2 volume that carries an LVM volume group, where the
-mapping below the logical volumes must be the one listed and proven, and the logical volumes
-must be named as what that volume carries, one with its mount points and one as swap.
-
-`tests/compat-guest.sh WORKDIR NAME` runs that check unattended in a guest. It fetches the cloud
-image that `tests/compat-images.txt` pins for `NAME`, refuses it unless it has the pinned
-SHA-256 or SHA-512, boots a copy in QEMU with the medium attached, under KVM where `/dev/kvm` can
-be opened and emulated otherwise, and starts the check over SSH through `sudo`.
-`tests/make-compat-vm.sh` starts a libvirt guest that stays, for work by hand.
-
 ## The pipeline and the page
 
 - `checks.yml` has four jobs on every push and pull request. `selftest` runs
-  `tests/selftest.sh -a` and `tests/unit-check.sh -a`. `pages` installs MkDocs by the hashes
-  of `requirements.txt` and runs `tests/pages-check.sh`. `medium` runs `build-toolkit.sh`, verifies
-  the manifest and starts the scripts in the medium's own shell. `compat` builds the medium and
-  runs `tests/compat-check.sh` with a memory image as root on the runner images `ubuntu-24.04`
-  and `ubuntu-22.04`, which offer device-mapper, loop devices, FAT and a readable `/proc/kcore`.
-  No part of it may be skipped there.
-- While the C program is built, the medium carries it as `c/keep`, and `compat-check.sh` runs it
-  beside `keytriage.sh` on the same mappings, after the main run and after the run on LVM. It
-  must write the same line for every volume into `verdict.json`, header backups and keys that
-  are the same byte for byte, and a manifest that verifies. Before any mapping is made it is
-  run once on the system as it is. So every run of `compat` and of `distros.yml` is also a run
-  of the C program against the scripts. `compat` also builds it with the address and
-  undefined-behaviour sanitizers and runs that build at the same places. In that build the
-  search of memory is compiled without them, because with them it takes eight times as long
-  and the build reads the whole memory of the runner. The scanner alone runs with them in
-  `unit-check.sh`, on the fixture in its four formats and on a cut and a damaged image.
+  `tests/selftest.sh -a` and `tests/unit-check.sh -a`, the second with AVML, which
+  `tests/get-avml.sh` fetches by its pinned SHA-256 and which converts the images of `keep`.
+  `pages` installs MkDocs by the hashes of `requirements.txt` and runs `tests/pages-check.sh`.
+  `build` builds `keep` with `make`, looks that the file is static, names its version and
+  refuses a wrong option with status 2, and keeps the file with its SHA-256 as an artifact.
+  `compat` builds `keep`, also with the sanitizers, and runs `tests/compat-check.sh` with
+  memory images as root on the runner images `ubuntu-24.04` and `ubuntu-22.04`, which offer
+  device-mapper, loop devices, FAT and a readable `/proc/kcore`. No part of it may be skipped
+  there.
+- So every run of `compat` and of `distros.yml` is a run of `keep` against the cryptsetup and
+  the dmsetup of that system. In the build with the sanitizers that `compat` runs at the same
+  places, the search of memory is compiled without them, because with them it takes eight
+  times as long and the build reads the whole memory of the runner. The scanner alone runs
+  with them in `unit-check.sh`, on the fixture in its four formats and on a cut and a damaged
+  image.
 - A green `compat` job says something about the kernel and the cryptsetup of that runner image
-  (rule 9). The output of each run is kept as an artifact for 30 days. One runner image takes
-  the memory image in LiME format and the other compressed. The C program takes its image
+  (rule 8). The output of each run is kept as an artifact for 30 days. On one runner image
+  AVML takes its image in LiME format and on the other compressed. `keep` takes its image
   there in the same format, and on the second also the raw one. All three from one read
   need three times the memory of a runner as room, so `-F` runs in the guests only.
-- `selftest` fetches AVML by the SHA-256 that `build-toolkit.sh` pins and hands it to
-  `unit-check.sh`, which gives it the images of the C program to convert.
 - `distros.yml` runs `tests/compat-guest.sh -m` for the ten names of `tests/compat-images.txt`
   when a file changes that the check depends on, and by hand. Each job states the kernel and the
-  cryptsetup of its guest. An image is a dated build, pinned like any downloaded binary (rule
-  7). Where a distribution removes the build, the job fails at the download, and the newer build
-  and its published value are entered in the list.
-- The ISO is not published by the pipeline. It carries the bash and busybox binaries, and passing
-  those on needs their source offered with them.
+  cryptsetup of its guest. An image is a dated build, pinned like any download (rule 6). Where
+  a distribution removes the build, the job fails at the download, and the newer build and its
+  published value are entered in the list.
+- No built file is published by the pipeline. The artifact of `build` is the record of what a
+  commit builds, and a release would attach that file with its SHA-256.
 - Actions are pinned by commit hash with the release in a comment. `dependabot.yml` proposes
   their updates.
 - `pages.yml` builds the pages with `mkdocs build --strict` and publishes `site/`, from `main`
   only.
-- The pages describe the C program, `keep`, in the version of `KEEP_VERSION`, which
+- The pages describe `keep` in the version of `KEEP_VERSION`, which
   `pages-check.sh` compares with what the built pages name and `selftest.sh` with their
-  sources. A sentence on them follows rule 9 like any other: it comes from the source of a
+  sources. A sentence on them follows rule 8 like any other: it comes from the source of a
   version or from a run, and says which.
 - The pages are built with Material for MkDocs, in the setup of the site of Kiln
   (github.com/nafud/Kiln): its `mkdocs.yml`, its templates in `overrides/`, its stylesheet
@@ -1673,7 +1742,7 @@ cryptsetup 2.8.4), Ubuntu 22.04.5 with kernel 5.15 and cryptsetup 2.4.3, and Deb
 kernel 5.10 and cryptsetup 2.3.7.
 
 Linux Mint has no cloud image and is not in the list: `compat-check.sh` has not run there.
-The C program was run by hand on Linux Mint 22.3 and on guests installed from Red Hat
+`keep` was run by hand on Linux Mint 22.3 and on guests installed from Red Hat
 Enterprise Linux 8.10, 9.9 and 10.3 and from Ubuntu Server 26.04.1, under Secure Boot (see
 "Where it has run"). openSUSE
 Tumbleweed has no dated build to pin and is not checked. `compat-check.sh` has run on no
@@ -1682,23 +1751,24 @@ system with Secure Boot on, where lockdown is `integrity`, with a version from 1
 ## Known limits
 
 - x86-64 only. The on-scene pairing of XTS halves assumes the 496-byte layout of the AES-NI family
-  of drivers. With another XTS implementation `keytriage.sh` ends with `needs a memory read`, and
-  `vkverify.py` can still prove the key from the candidate list, because it tries every pair.
+  of drivers. With another XTS implementation a key run ends with `needs a memory read`, and
+  `keep -s` on a memory image and `vkverify.py` on the list of the schedules can still prove
+  the key, because they try every pair.
 - The memory search finds AES keys only. A volume with another cipher has no memory route.
 - Kernel lockdown `confidentiality` blocks `/proc/kcore` and every memory source of AVML.
 - Mounted file systems that encrypt by themselves (eCryptfs, ZFS, gocryptfs, CryFS, EncFS) are
   named in the report as not examined. Keep covers dm-crypt only.
 - Plain and tcrypt volumes have no header digest, so their keys cannot be proven on scene.
-- For a LUKS2 volume in re-encryption `keytriage.sh` proves no key, and while cryptsetup works
-  it lists a helper device in place of the volume. The C program does both keys.
-  `vkverify.py` takes the first digest of such a header, so it proves one of the two keys.
+- For a LUKS2 volume in re-encryption `keep` proves both keys. `vkverify.py` takes the first
+  digest of such a header, so it proves one of the two.
 - LVM on LUKS is checked with a volume group on a loop device. A root file system on LVM on
-  LUKS, as an installer lays it out, is not checked by `compat-check.sh`. The C program was
+  LUKS, as an installer lays it out, is not checked by `compat-check.sh`. `keep` was
   run by hand on four, guests with RHEL 8.10, 9.9 and 10.3 and with Ubuntu Server 26.04.1.
 - A mapping whose name holds a line break is not listed. A mapping whose name begins with `-` is
   not tested.
 - The memory image is taken in every run of the pipeline, to the disk of the runner or guest.
-  A memory image on a machine with kernel lockdown is not checked with this version.
+  A memory image on a machine with kernel lockdown is taken by hand and not by the check (see
+  "Where it has run").
 - The header search of `--image` is tested on a real LUKS partition image and on a small test disk
   image. Its run time on a whole disk of real size is not measured.
 - Of the compressed memory formats the scanner reads that of AVML. A kdump or makedumpfile
@@ -1721,9 +1791,9 @@ system with Secure Boot on, where lockdown is `integrity`, with a version from 1
   writes one line that says what failed into a buffer of the caller. What held a key is wiped
   before it is freed.
 - Shell is bash, checked with `shellcheck -S warning`. Each script opens with a comment that
-  states its usage, what it reads and what it writes. `keytriage.sh`, `offline-keyscan.sh`
-  and `tests/selftest.sh` print that whole comment with `-h`, read by the
-  shell itself, and end with status 2 for a wrong option.
+  states its usage, what it reads and what it writes. `tests/selftest.sh`,
+  `tests/unit-check.sh` and `tests/compat-guest.sh` print that whole comment with `-h`, read by
+  the shell itself, and end with status 2 for a wrong option.
 - Comments and messages are plain statements. A comment says why, not what the next line does.
 - No personal data, no host names of real cases and no key material in files or commit messages.
   Test keys are drawn from `/dev/urandom` at test time and are not committed.

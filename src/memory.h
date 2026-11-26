@@ -9,8 +9,9 @@
 
 struct memory_image {                   /* one image that was asked for, and what became of it */
     enum image_format format;
-    const char *status;                 /* captured, skipped or failed */
-    char file[48];                      /* in the folder of the run, empty where none is kept */
+    const char *status;                 /* captured, skipped, failed or interrupted */
+    char file[48];                      /* in the folder of the run, empty where none is kept: the file of
+                                           an image that was interrupted is the part that was read */
     uint64_t bytes;
     char sha256[65];
     int direct;                         /* written with direct writes, which pass the page cache */

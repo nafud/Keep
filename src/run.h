@@ -5,6 +5,7 @@
 #define KEEP_RUN_H
 
 #include <limits.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <sys/types.h>
@@ -32,6 +33,7 @@ struct run {
     char lockdown[64];                  /* the lockdown mode of the kernel */
     unsigned budget;                    /* proof attempts per key in the search of memory */
     int scanned, scan_ok, scan_refused; /* the search of /proc/kcore, made once */
+    int scan_cut;                       /* it was ended by a signal before its end */
     char scan_error[256];
 };
 
@@ -148,6 +150,20 @@ int run_lock_memory(char why[160]);
 
 /* The time now in UTC, for a line of the report or as part of the name of a folder. */
 void run_utc(char out[32], int for_name);
+
+/*
+ * An interrupt from the keyboard (SIGINT) and SIGTERM ask a run to end. run_heed, called once
+ * before a run, has the first of either noted in run_interrupted, and no more: the run goes
+ * on to its end, without the steps that take long. The search of memory, the search of a file
+ * for headers, the attempts on a header and the read of an image ask the note, end where
+ * they are and say so, and the report and the manifest are written as for any run, with
+ * status 1. A second signal of the same kind ends the process at once. A signal that the
+ * process was started to ignore stays ignored.
+ */
+extern volatile sig_atomic_t run_interrupted;
+void run_heed(void);
+/* The signal of run_interrupted as a line of the report names it, behind "interrupted". */
+const char *run_signal_name(int sig);
 
 /* A run that cannot start: the message to standard error. Returns 1, the exit status. */
 int run_die(const char *fmt, ...) __attribute__((format(printf, 1, 2)));

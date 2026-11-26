@@ -1,9 +1,9 @@
 # The compatibility check of Keep on the distributions' own cloud images.
 #
 # For every name of the matrix tests/compat-guest.sh fetches the image that tests/compat-images.txt
-# pins, boots it as a guest in QEMU on the runner and runs tests/compat-check.sh -m in it:
-# keytriage.sh from the medium on the kernel, the device-mapper and the cryptsetup of that
-# distribution, with a memory image. The guest runs under KVM where the runner offers /dev/kvm
+# pins, boots it as a guest in QEMU on the runner and runs tests/compat-check.sh -m in it: keep
+# on the kernel and the device-mapper of that distribution, held against its cryptsetup and
+# its dmsetup, with memory images. The guest runs under KVM where the runner offers /dev/kvm
 # and is emulated otherwise.
 #
 # A green job is a statement about the kernel and the cryptsetup that its output names and about
@@ -15,14 +15,14 @@ name: distributions
 on:
   push:
     paths:
-      - keytriage.sh
       - kcore-keyscan.c
       - src/**
       - Makefile
-      - build-toolkit.sh
+      - tests/keep-unit.c
       - tests/compat-check.sh
       - tests/compat-guest.sh
       - tests/compat-images.txt
+      - tests/get-avml.sh
       - .github/workflows/distros.yml
   workflow_dispatch:
 
@@ -55,18 +55,21 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install the parts of the medium and QEMU
+      - name: Install musl and QEMU
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends bash-static busybox-static xorriso musl-tools qemu-system-x86 qemu-utils
+          sudo apt-get install -y -q --no-install-recommends xorriso musl-tools qemu-system-x86 qemu-utils
       - name: KVM
         run: |
           if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm; ls -l /dev/kvm; else echo "no /dev/kvm, the guest is emulated"; fi
-      - name: Build the medium
-        run: ./build-toolkit.sh "$RUNNER_TEMP/work"
+      - name: Build keep, the program of its unit checks and the scanner alone
+        run: make all tests/keyscan
+      - name: Fetch AVML by its pinned SHA-256
+        run: tests/get-avml.sh "$RUNNER_TEMP/avml"
       - name: compat-check.sh in the guest
         run: |
-          tests/compat-guest.sh -m "$RUNNER_TEMP/work" "${{ matrix.name }}" | tee "$RUNNER_TEMP/compat.txt"
+          mkdir -p "$RUNNER_TEMP/work"
+          AVML="$RUNNER_TEMP/avml" tests/compat-guest.sh -m "$RUNNER_TEMP/work" "${{ matrix.name }}" | tee "$RUNNER_TEMP/compat.txt"
           grep -q '^RESULT: PASS$' "$RUNNER_TEMP/compat.txt"
       - name: The console of the guest, after a failure
         if: failure()

@@ -673,6 +673,36 @@ void run_utc(char out[32], int for_name)
         strftime(out, 32, "%Y-%m-%dT%H:%M:%SZ", &tm);
 }
 
+volatile sig_atomic_t run_interrupted;
+
+static void note_signal(int sig)
+{
+    run_interrupted = sig;
+}
+
+void run_heed(void)
+{
+    static const int signals[] = { SIGINT, SIGTERM };
+    struct sigaction note, old;
+    size_t i;
+
+    memset(&note, 0, sizeof note);
+    note.sa_handler = note_signal;
+    sigemptyset(&note.sa_mask);
+    /* The second signal of a kind meets the default again, which ends the process
+       (SA_RESETHAND). No read or write of the run fails for the first: the call goes on
+       (SA_RESTART), and the run asks the note between its steps. */
+    note.sa_flags = SA_RESETHAND | SA_RESTART;
+    for (i = 0; i < sizeof signals / sizeof signals[0]; i++)
+        if (!sigaction(signals[i], NULL, &old) && old.sa_handler != SIG_IGN)
+            sigaction(signals[i], &note, NULL);
+}
+
+const char *run_signal_name(int sig)
+{
+    return sig == SIGINT ? "from the keyboard (SIGINT)" : sig == SIGTERM ? "by SIGTERM" : "by a signal";
+}
+
 int run_die(const char *fmt, ...)
 {
     va_list ap;

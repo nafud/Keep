@@ -1,18 +1,18 @@
 # The checks of Keep on every push and pull request.
 #
-#   selftest   tests/selftest.sh -a: the static checks, the scanner on fixtures, the verifier and
-#              the on-scene proof on LUKS headers made by cryptsetup, keytriage.sh on stand-ins
-#              for the examined system, the menu through a pipe.
-#              tests/unit-check.sh -a: the parts of the C program, each against an independent
-#              source, in a static build and in one with the sanitizers of the compiler
+#   selftest   tests/selftest.sh -a: the static checks, the scanner on fixtures and the verifier
+#              on LUKS headers made by cryptsetup, on disks of virtual machines and on EnCase
+#              images.
+#              tests/unit-check.sh -a: the parts of keep, each against an independent source,
+#              in a static build and in one with the sanitizers of the compiler
 #   pages      tests/pages-check.sh: the pages of Keep build with MkDocs from the packages that
 #              requirements.txt pins, and what is built loads nothing from another host
-#   medium     build-toolkit.sh: the scene tool medium builds, its manifest verifies and its own
-#              static shell runs its scripts
-#   compat     tests/compat-check.sh as root on two runner images: keytriage.sh from the medium on
-#              real device-mapper, a real /proc/kcore and real mounts, with a memory image, in
-#              LiME format on one image and compressed on the other, and the C program beside
-#              it, which must give the same verdicts, header backups and keys
+#   build      make: keep builds static against musl with the warnings as errors. The file
+#              and its SHA-256 are kept as an artifact
+#   compat     tests/compat-check.sh as root on two runner images: keep on real device-mapper,
+#              a real /proc/kcore and real mounts, held against the cryptsetup and the dmsetup
+#              of the runner, with memory images that are held against the image of AVML, which
+#              is in LiME format on one runner and compressed on the other
 #
 # A green compat job is a statement about the kernel and the cryptsetup of that runner image and
 # about nothing else. Its first step prints both.
@@ -40,10 +40,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install shellcheck, cryptsetup and the shell and applets of the medium
+      - name: Install shellcheck, cryptsetup, qemu-img, ewfacquirestream and musl
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends shellcheck cryptsetup-bin bash-static busybox-static qemu-utils ewf-tools musl-tools
+          sudo apt-get install -y -q --no-install-recommends shellcheck cryptsetup-bin qemu-utils ewf-tools musl-tools
       - name: Versions
         run: |
           bash --version | head -n 1
@@ -53,15 +53,10 @@ jobs:
           cryptsetup --version
       - name: Self-test
         run: tests/selftest.sh -a
-      # The compressed memory image of the C program is given to AVML itself. Its release
-      # binary is the one that build-toolkit.sh pins, fetched and refused as that script does.
+      # The compressed memory image of keep is given to AVML itself, which converts it.
       - name: Fetch AVML by its pinned SHA-256
-        run: |
-          eval "$(grep -E '^AVML_(URL|SHA)=' build-toolkit.sh)"
-          curl -sS -L --fail --retry 3 -o "$RUNNER_TEMP/avml" "$AVML_URL"
-          echo "$AVML_SHA  $RUNNER_TEMP/avml" | sha256sum -c -
-          chmod 755 "$RUNNER_TEMP/avml"
-      - name: The parts of the C program
+        run: tests/get-avml.sh "$RUNNER_TEMP/avml"
+      - name: The parts of keep
         run: AVML="$RUNNER_TEMP/avml" tests/unit-check.sh -a
 
   pages:
@@ -79,40 +74,42 @@ jobs:
       - name: Build the pages and read them
         run: MKDOCS="$RUNNER_TEMP/pages/bin/mkdocs" tests/pages-check.sh
 
-  medium:
+  build:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install the parts of the medium
+      - name: Install musl
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends bash-static busybox-static xorriso musl-tools
-      - name: Build the medium
-        run: ./build-toolkit.sh "$RUNNER_TEMP/work"
-      - name: The manifest verifies and the medium's shell runs its scripts
+          sudo apt-get install -y -q --no-install-recommends musl-tools
+          musl-gcc --version | head -n 1
+          dpkg-query -W -f='musl-dev ${Version}\n' musl-dev
+      - name: Build keep
+        run: make keep
+      - name: The file is static, names its version and refuses a wrong option
         run: |
-          cd "$RUNNER_TEMP/work/tools"
-          sha256sum -c --quiet MANIFEST.sha256
-          env -i ./bin/bash -p ./keytriage.sh -h > /dev/null
-          cat VERSIONS.txt
-      # The record of what was built. The ISO itself is not uploaded: it carries the bash and
-      # busybox binaries, and passing those on needs their source offered with them.
+          file keep | tee /dev/stderr | grep -q 'statically linked\|static-pie linked'
+          ./keep -V
+          ./keep -h > /dev/null
+          rc=0; ./keep -Z 2> /dev/null || rc=$?; [ "$rc" = 2 ]
+          sha256sum keep | tee keep.sha256
+      # The program as this commit builds it, with its SHA-256. It is linked against musl
+      # alone, whose licence lets the file be passed on as it is.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: medium-record
+          name: keep
           path: |
-            ${{ runner.temp }}/work/tools/VERSIONS.txt
-            ${{ runner.temp }}/work/tools/MANIFEST.sha256
-            ${{ runner.temp }}/work/tools.iso.sha256
+            keep
+            keep.sha256
           if-no-files-found: error
           retention-days: 30
 
-  # keytriage.sh itself, on the device-mapper and the /proc/kcore of the runner: two encrypted
-  # containers with known keys, as on a throwaway guest. The first step records what the runner
-  # offers, because the check can only say something about the kernel and the cryptsetup it met.
+  # keep itself, on the device-mapper and the /proc/kcore of the runner: encrypted containers
+  # with known keys, as on a throwaway guest. The first step records what the runner offers,
+  # because the check can only say something about the kernel and the cryptsetup it met.
   compat:
     strategy:
       fail-fast: false
@@ -120,24 +117,23 @@ jobs:
         include:
           - os: ubuntu-24.04
             image: -c       # AVML: the compressed memory image
-            formats: raw avml   # the C program: the raw image, then the compressed one
+            formats: raw avml   # keep: the raw image, then the compressed one
           - os: ubuntu-22.04
             image: -m       # AVML: the memory image in LiME format
-            formats: lime   # the C program: the same format
+            formats: lime   # keep: the same format
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install the parts of the medium, cryptsetup and dmsetup
+      - name: Install musl, cryptsetup, dmsetup, the tools of FAT and LVM
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends bash-static busybox-static xorriso musl-tools cryptsetup-bin dmsetup dosfstools lvm2
+          sudo apt-get install -y -q --no-install-recommends musl-tools cryptsetup-bin dmsetup dosfstools lvm2
       - name: What the runner offers
         run: |
           uname -r
-          bash-static --version | head -n 1
           cat /sys/kernel/security/lockdown || echo "no lockdown file"
           grep MemTotal /proc/meminfo
           sudo modprobe dm-crypt || echo "modprobe dm-crypt failed"
@@ -145,15 +141,16 @@ jobs:
           sudo dmsetup targets || true
           sudo ls -l /proc/kcore || echo "no /proc/kcore"
           df -h / "$RUNNER_TEMP"
-      - name: Build the medium
-        run: ./build-toolkit.sh "$RUNNER_TEMP/work"
-      # the C program once more with the address and undefined-behaviour sanitizers, which
-      # compat-check.sh runs at the same places as the static one
-      - name: Build the C program with the sanitizers
-        run: make keep-san
+      # keep, the program of its unit checks and the scanner alone, static, and keep once more
+      # with the address and undefined-behaviour sanitizers, which compat-check.sh runs at the
+      # same places as the static one
+      - name: Build keep, also with the sanitizers
+        run: make all tests/keyscan keep-san
+      - name: Fetch AVML by its pinned SHA-256
+        run: tests/get-avml.sh "$RUNNER_TEMP/avml"
       - name: compat-check.sh
         run: |
-          sudo KEEP_SAN="$PWD/keep-san" KEEP_IMAGES="${{ matrix.formats }}" bash tests/compat-check.sh ${{ matrix.image }} "$RUNNER_TEMP/work/tools" | tee "$RUNNER_TEMP/compat.txt"
+          sudo KEEP_SAN="$PWD/keep-san" KEEP_IMAGES="${{ matrix.formats }}" AVML="$RUNNER_TEMP/avml" bash tests/compat-check.sh ${{ matrix.image }} | tee "$RUNNER_TEMP/compat.txt"
           grep -q '^RESULT: PASS$' "$RUNNER_TEMP/compat.txt"
           # on these runners no part may be skipped
           ! grep '^SKIP' "$RUNNER_TEMP/compat.txt"

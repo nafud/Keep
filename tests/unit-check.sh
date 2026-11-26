@@ -268,6 +268,42 @@ sys.exit(1)' "$T/fx.list") || { echo "the fixture has no page for this"; return 
     grep -q '^kcore-keyscan: 4096 bytes could not be read and count as zeros$' "$T/e.shim" || { echo "the page is not named:"; cat "$T/e.shim"; return 1; }
 }
 
+# A search that the program ends before the end of the image, as a run that was asked to end
+# ends it: after the first read, in the middle and near the end, for each format.
+# The schedules must be those of the whole search that lie before the place where it ended, in
+# their order, the search must name that place, and its status must be 1. A search that is
+# not ended gives the list of the scanner alone.
+scanner_ended() {
+    local u=$1 f r=0
+    for f in raw elf lime avml; do
+        tests/keyscan "$T/fx.$f" > "$T/whole.$f" 2> /dev/null || { echo "the scanner on fx.$f: status $?"; return 1; }
+        "$u" scan-until "$T/fx.$f" 0 > "$T/until.$f" 2> "$T/until.err" && cmp -s "$T/until.$f" "$T/whole.$f" ||
+            { echo "fx.$f, a search that is not ended: another list than that of the scanner"; cat "$T/until.err"; r=1; }
+    done
+    python3 -I - "$u" "$T" <<'EOF' || r=1
+import re, subprocess, sys
+unit, t = sys.argv[1:3]
+bad = 0
+for fmt in ("raw", "elf", "lime", "avml"):
+    whole = open("%s/whole.%s" % (t, fmt)).read().splitlines()
+    for after in (1, 3 << 20, (6 << 20) + 5):
+        p = subprocess.run([unit, "scan-until", "%s/fx.%s" % (t, fmt), str(after)], capture_output=True, text=True)
+        said = p.stderr.splitlines()
+        m = [re.fullmatch(r"kcore-keyscan: the search was interrupted, at file offset (\d+): what lies behind that place is not searched\.", l) for l in said]
+        read = [re.fullmatch(r"read (\d+) bytes of memory, up to 0x([0-9a-f]+)", l) for l in said]
+        if p.returncode != 1 or not any(m) or not any(read):
+            bad += 1; print(fmt, "ended after", after, ": status", p.returncode, said); continue
+        n, end = [(int(x.group(1)), int(x.group(2), 16)) for x in read if x][0]
+        got = p.stdout.splitlines()
+        # every schedule that lies whole in the memory that was read, and no other
+        want = [l for l in whole if int(l.split()[2], 16) + (176 if l.startswith("AES-128") else 240) <= end]
+        if got != want or not after <= n < after + (2 << 20):
+            bad += 1; print(fmt, "ended after", after, ":", len(got), "schedules,", len(want), "lie in the", n, "bytes that were read up to", hex(end))
+sys.exit(1 if bad else 0)
+EOF
+    return $r
+}
+
 # ---- options -------------------------------------------------------------------------------------
 # "keep" takes what a run does as options and asks nothing. The search of a dump needs no root.
 # start PROGRAM [ARGUMENT...] : one start in $T/opt, with the umask of an ordinary shell and no
@@ -387,6 +423,9 @@ if have make && have musl-gcc && have cc; then
         check "scanner: ${s##*/} names an image that ends early, a range beyond the file and a list that cannot be written with status 1, and keeps two keys at one place" scanner_ends "$s"
     done
     check "scanner: a page that cannot be read costs that page alone, and not the pages that were read with it" scanner_page
+    for u in "${UNITS[@]}"; do
+        check "scanner: a search that ${u##*/} ends gives the schedules up to that place in four formats, names the place and has status 1" scanner_ended "$u"
+    done
     for k in keep keep-san; do
         check "options: $k refuses what does not go together, names its options with -h, searches a dump into keys/ and ends with the status of the search" options "$k"
     done
@@ -1041,6 +1080,30 @@ if part == "formats":
     big = rnd.randbytes(33 * MiB + 0x1234)
     case("a range of more than two blocks", "00100000-%08x : System RAM\n" % (0x100000 + len(big) - 1),
          [(0x100000, len(big), None)], {0x100000: big}, [(0x100000, 0x100000 + len(big))])
+    # A read that is ended before the end of the memory, as a run that was asked to end ends
+    # it, after one block of 16 MiB and after two: each file is whole as far as it goes. The
+    # LiME and the raw image are the start of the files of the whole read, to the last byte
+    # that was read, the compressed image is the blocks up to there, and each has the SHA-256
+    # that is stated for it.
+    io, co = write("iomem", ("00100000-%08x : System RAM\n" % (0x100000 + len(big) - 1)).encode()), write("core", core([(0x100000, len(big), None)], {0x100000: big}))
+    whole_lime, whole_raw = lime({0x100000: big}, [(0x100000, 0x100000 + len(big))]), raw({0x100000: big}, [(0x100000, 0x100000 + len(big))])
+    for after, read in ((1, BLOCK), (BLOCK, BLOCK), (BLOCK + 1, 2 * BLOCK)):
+        fresh()
+        r = subprocess.run([unit, "image", io, co, "lime", tmp + "/image/out.lime", "raw", tmp + "/image/out.raw", "avml", tmp + "/image/out.avml"],
+                           capture_output=True, env={**os.environ, "KEEP_UNIT_STOP": str(after)})
+        got = {n: open(tmp + "/image/" + n, "rb").read() for n in OUT}
+        lines, how = ways(r.stdout.decode("latin-1"))
+        said = ["%s %d bytes, sha256 %s" % (n[4:], len(got[n]), hashlib.sha256(got[n]).hexdigest()) for n in OUT]
+        said += ["0 bytes not read", "ended after %d bytes of memory" % read]
+        if r.returncode != 0 or lines != said:
+            bad += 1; print("a read that is ended after", after, "bytes: status", r.returncode, lines, r.stderr[-300:], "expected", said)
+        if got["out.lime"] != whole_lime[:32 + read] or got["out.raw"] != whole_raw[:0x100000 + read]:
+            bad += 1; print("a read that is ended after", after, "bytes: the LiME or the raw image is not the start of the whole one, to the last byte read")
+        try:
+            if read_avml(got["out.avml"]) != blocks({0x100000: big}, [(0x100000, 0x100000 + read)]):
+                bad += 1; print("a read that is ended after", after, "bytes: the compressed image does not hold the blocks that were read")
+        except (AssertionError, IndexError, struct.error) as e:
+            bad += 1; print("a read that is ended after", after, "bytes: the compressed image is not read:", e)
     # a block of zeros is left out of the compressed image, and memory with zeros in it is not
     holes = bytearray(rnd.randbytes(40 * MiB)); holes[16 * MiB:32 * MiB] = bytes(16 * MiB); holes[33 * MiB:35 * MiB] = bytes(2 * MiB)
     case("a block of zeros between two blocks", "00100000-%08x : System RAM\n" % (0x100000 + len(holes) - 1),
@@ -1246,7 +1309,7 @@ for u in "${UNITS[@]}"; do
     if [ -n "${AVML:-}" ] && [ -x "$AVML" ]; then
         check "image: AVML converts what ${u##*/} wrote: the compressed image to the LiME image of its blocks, the LiME image to the raw one" python3 -I "$T/image.py" "$u" "$T" formats "$AVML"
     else
-        skip "image: against AVML itself (AVML=/path/to/avml, the release binary that build-toolkit.sh pins)"
+        skip "image: against AVML itself (AVML=/path/to/avml, the release binary that tests/get-avml.sh fetches)"
     fi
     check "image: ${u##*/} refuses what it cannot place: no addresses, no RAM, no core, a kernel before 4.12" python3 -I "$T/image.py" "$u" "$T" refused
     check "image: ${u##*/} reads cores and texts with changed bytes without a fault" python3 -I "$T/image.py" "$u" "$T" changed
@@ -2154,6 +2217,73 @@ disturbed() {
     fi
     return $r
 }
+# A run that is asked to end, by an interrupt from the keyboard or by SIGTERM, ends in order:
+# it makes no further attempt, says which header it left, writes its report and its manifest
+# and has status 1. Before 2.0-rc1 the signal ended it at once, with no verdict.json and no
+# manifest. The header here has a digest of 2000000 iterations, which no key of the dump
+# gives, so the run is inside its first attempt when the signal comes. A second signal of the
+# same kind ends it at once, by the signal.
+cat > "$T/asked.py" <<'EOF'
+# asked.py KEEP DUMP DEST SIGNALS FILE... : the search of a dump that is sent SIGNALS (i for
+# SIGINT, t for SIGTERM) when it begins the attempts on its first header
+import glob, json, os, re, signal, subprocess, sys, time
+keep, dump, dest, sigs, files = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5:]
+# a shell that started this check in the background has SIGINT ignored, which the program
+# would leave as it is: it is given the signal as a terminal gives it
+p = subprocess.Popen([keep, "-n", "-s", dump, "-d", dest] + files, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                     preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
+screen = b""
+while True:
+    line = p.stdout.readline()
+    if not line:
+        sys.exit("the run ended before the attempts on its first header: " + screen.decode("latin-1")[-300:])
+    screen += line
+    if line.startswith(b"  digest "):
+        break
+for c in sigs:
+    os.kill(p.pid, signal.SIGINT if c == "i" else signal.SIGTERM)
+    time.sleep(0.2)
+try:
+    out, err = p.communicate(timeout=300)
+except subprocess.TimeoutExpired:
+    p.kill()
+    sys.exit("the run did not end after the signal")
+folder = glob.glob(dest + "/scan_*")[0]
+report = open(folder + "/triage.txt").read()
+if len(sigs) > 1:
+    # the second signal: the process is ended by it, and the report holds the lines up to there
+    if p.returncode != -signal.SIGINT or os.path.exists(folder + "/verdict.json") or "  digest " not in report:
+        sys.exit("after a second signal: status %d, verdict.json %s" % (p.returncode, os.path.exists(folder + "/verdict.json")))
+    sys.exit(0)
+name = "from the keyboard (SIGINT)" if sigs == "i" else "by SIGTERM"
+if p.returncode != 1 or b"keep: the run was ended by a signal" not in err:
+    sys.exit("status %d, and it says: %s" % (p.returncode, err.decode("latin-1")[-300:]))
+if "\ninterrupted %s: " % name not in report or not report.rstrip().split("\n")[-1].startswith("finished "):
+    sys.exit("triage.txt does not say that the run was interrupted %s, or does not go to its end:\n%s" % (name, report[-400:]))
+v = json.load(open(folder + "/verdict.json"))
+notes = [(x["verdict"], x["note"]) for x in v["volumes"]]
+if v.get("interrupted") is not True or len(notes) != len(files) or any(
+        w != "not proven" or not re.match(r"the attempts were ended by a signal after [01], ", n) for w, n in notes):
+    sys.exit("verdict.json: interrupted %r, %r" % (v.get("interrupted"), notes))
+EOF
+asked() {
+    local k=$1 r=0 n d
+    case $k in /*) ;; *) k=$R/$k ;; esac
+    rm -rf "$T/asked"; mkdir "$T/asked" "$T/asked/i" "$T/asked/t" "$T/asked/ii" || return 1
+    python3 -I -c 'import struct, sys
+d = bytearray(open(sys.argv[1], "rb").read()); d[164:168] = struct.pack(">I", 2000000); open(sys.argv[2], "wb").write(d)' "$T/l1.img" "$T/asked/slow.img" || return 1
+    for n in i t ii; do
+        python3 -I "$T/asked.py" "$k" "$T/dump.lime" "$T/asked/$n" "$n" "$T/asked/slow.img" "$T/l2.img" || { echo "sent $n"; r=1; continue; }
+        [ "$n" != ii ] || continue
+        d=$(ls -d "$T/asked/$n"/scan_* 2> /dev/null | head -n 1)
+        ( cd "$d" && sha256sum -c --quiet manifest.sha256 > /dev/null 2>&1 ) || { echo "sent $n: the manifest does not verify"; r=1; }
+        [ -s "$d/keys/candidates.txt" ] || { echo "sent $n: the list of the schedules is not kept"; r=1; }
+    done
+    # a run that is not asked to end says that it was not
+    d=$(ls -d "$T"/says/3/scan_* 2> /dev/null | head -n 1)
+    grep -q '^  "interrupted": false,$' "$d/verdict.json" || { echo "a run that was not interrupted does not say so in verdict.json"; r=1; }
+    return $r
+}
 # What the search of a dump must say and not pass over. A file that cannot be read: the place
 # is named and the run ends with status 1. Such a file is one of /sys that every system has:
 # the speed of the loopback interface, a regular file that any user may open and whose read
@@ -2187,6 +2317,9 @@ sys.exit(0 if len(v) == 1 and v[0]["verdict"] == "proven" and "\ufffd" in v[0]["
 if [ -x keep ] && [ -x keep-san ] && [ -f "$T/dump.lime" ]; then
     for k in keep keep-san; do
         check "dump: $k names a file that cannot be read and a key whose file cannot be written, and writes a report that is JSON for a name that is no UTF-8" dump_says "$k"
+    done
+    for k in keep keep-san; do
+        check "asked to end: $k ends its attempts at SIGINT and at SIGTERM, writes its report and its manifest with status 1, and is ended at once by a second signal" asked "$k"
     done
     for k in keep keep-san; do
         check "disturbed: $k ends its run and keeps every key when its terminal hangs up and its screen goes away, and under a limit of the size of a file" disturbed "$k"

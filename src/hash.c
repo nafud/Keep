@@ -100,7 +100,6 @@ const struct hash_alg *hash_by_name(const char *name)
     return NULL;
 }
 
-const char *hash_name(const struct hash_alg *alg) { return alg->name; }
 size_t hash_len(const struct hash_alg *alg) { return alg->digest_len; }
 
 static inline uint32_t rol32(uint32_t x, int n) { return (x << n) | (x >> (32 - n)); }

@@ -35,10 +35,10 @@ make
 ```
 
 ```text
-keep 2.0-pre12 (2026-11)
+keep 2.0-rc1 (2026-11)
 ```
 
-This is a version before the release of 2.0. A built file is not published yet, so the file is built from the source.
+This is the release candidate of 2.0. A built file is not published yet, so the file is built from the source.
 
 ## Check the build { #check }
 
@@ -68,6 +68,6 @@ Keep writes into the destination, the directory of `-d` or the current one, and 
 - A key written into one of its encrypted volumes is locked in with the data at power-off.
 - FAT and exFAT keep no file modes, so on such a medium the key files are protected by the medium alone. FAT32 takes no file of 4 GiB, so a memory image of a machine with that much memory fails there.
 
-## The lab tools { #lab }
+## The lab tool { #lab }
 
-The same clone holds the tools of the lab that are written in Python: `vkverify.py`, which proves keys against LUKS headers in the disk files of virtual machines and in EnCase images, and `offline-keyscan.sh`, which runs it behind the scanner `kcore-keyscan`. They need Python 3 with its standard library and the scanner, which a C compiler builds from `kcore-keyscan.c`, and they only read their inputs. [Usage](usage.md#lab) says when they are needed.
+The same clone holds the tool of the lab that is written in Python: `vkverify.py`, which proves keys against LUKS headers in the disk files of virtual machines and in EnCase images. It needs Python 3 with its standard library, takes the list of key schedules that a run of Keep wrote, and only reads its inputs. [Usage](usage.md#lab) says when it is needed.

@@ -147,7 +147,7 @@ elif what == "version":
         if ("keep %s (" % version) not in re.sub(r"<[^>]+>", "", pages["installation"] or ""):
             bad.append("the installation page does not show keep %s" % version)
         for name, text in pages.items():
-            for other in set(re.findall(r"\b\d+\.\d+-pre\d+\b", text or "")) - {version}:
+            for other in set(re.findall(r"\b\d+\.\d+-(?:pre|rc)\d+\b", text or "")) - {version}:
                 bad.append("%s names the version %s" % (name or "index", other))
 
 elif what == "references":

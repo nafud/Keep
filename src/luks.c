@@ -42,7 +42,6 @@
 #include <unistd.h>
 
 #define SECTOR                  512
-#define LUKS1_HEADER            592     /* what the fields take */
 #define LUKS1_PHDR              1024    /* sizeof(struct luks_phdr), padded to two sectors */
 #define LUKS1_SLOTS             8
 #define LUKS1_STRIPES           4000

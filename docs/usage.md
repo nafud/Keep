@@ -17,7 +17,7 @@ sudo ./keep -d /media/evidence
 
 The screen is a card of facts: the system, then a block for each volume that ends with its verdict, then every verdict once more. An example with `-m`, with illustrative values:
 
-<div class="highlight keep-screen"><pre><code><b>keep 2.0-pre12 (2026-11)</b>
+<div class="highlight keep-screen"><pre><code><b>keep 2.0-rc1 (2026-11)</b>
 
   <i>host</i>         ws01
   <i>system</i>       Linux Mint 22.3
@@ -63,7 +63,9 @@ No key is printed. A key is named by its file in `keys/`, its length and the fir
 
 The header of a volume is read past the page cache of its device and its copy is written past it, so that a header takes no free memory of the machine on its way to the destination. Where a device or the file system of the destination has no direct reads or writes, a line `header` says so. A copy that cannot be written to its end, as on a destination without room for it, is removed, so that its part does not take the room of the keys.
 
-A run that has begun is brought to its end. It goes on when the reader of a pipe goes away and when its terminal hangs up, as that of a session over a network that is lost: every line of the screen is in `triage.txt`. An interrupt from the keyboard ends it at once. Each key that was written before is flushed, `triage.txt` holds the lines up to there, and there is no report and no manifest.
+A run that has begun is brought to its end. It goes on when the reader of a pipe goes away and when its terminal hangs up, as that of a session over a network that is lost: every line of the screen is in `triage.txt`.
+
+An interrupt from the keyboard (Ctrl-C) or `SIGTERM` asks a run to end, and the run ends in order. The steps that take long end where they are, and each says so: the search of memory, the attempts on a header and the read of an image. What costs no time is still done, so a key that the table holds is taken, also for a volume that comes later. Then the report and the manifest are written, a line says that the run was interrupted, and the status is 1. A key that the search did not reach gets <span class="open">needs a memory read</span>. A second interrupt ends the program at once: the keys that were written before are flushed, `triage.txt` holds the lines up to there, and there is no report and no manifest.
 
 ## Verdicts { #verdicts }
 
@@ -102,6 +104,7 @@ sudo ./keep -m -d /media/evidence
 - An image is written with direct writes, which pass the page cache, where the file system of the destination has them, so that the file does not take the free memory that the image has yet to read. The screen says which way each file was written.
 - The SHA-256 of an image is computed while it is written and stands on the screen, in the report and in the manifest.
 - Beside the image go the kernel banner, the release, `os-release` and `System.map`, which Volatility 3 needs to find the symbol table of exactly this kernel. A `System.map` is kept only when it lists symbols: some distributions keep a placeholder in `/boot`.
+- An image whose read is ended by an interrupt is kept as the part that was read, with its SHA-256, and is named <span class="not">interrupted</span> with the number of bytes of memory it holds. A LiME image of that kind has a last range that ends before the end that its header states, which the search of a dump names.
 - An image that was asked for and is not there ends the run with status 1.
 
 ## A memory dump that exists { #dump }
@@ -119,7 +122,7 @@ sudo ./keep -m -d /media/evidence
 
 A run on a test image of 64 MiB and a container that was made for it, with the paths shortened:
 
-<div class="highlight keep-screen"><pre><code><b>keep 2.0-pre12 (2026-11)</b>
+<div class="highlight keep-screen"><pre><code><b>keep 2.0-rc1 (2026-11)</b>
 
   <i>dump</i>         /case/memory.lime
   <i>started</i>      2026-11-25T18:07:05Z
@@ -163,7 +166,7 @@ One folder in the destination, with every file created under `umask 077`:
 ```text
 triage_<host>_<UTC time>/       the keys of the running system
   triage.txt                    the lines of the screen, without colour
-  verdict.json                  the same for a program, schema keep-report/1
+  verdict.json                  the same for a program, schema keep-report/2
   headers/NAME.hdr              the LUKS header backups
   keys/NAME.vk                  the volume keys
   keys/kcore-candidates.txt     the key schedules that the search of memory found
@@ -204,7 +207,7 @@ Colour is given where standard output is a terminal, `TERM` is set and not `dumb
 | Status | The running system | A dump, with `-s` |
 |---|---|---|
 | 0 | The run completed and every file is flushed. | The dump was read to its end, and with `FILE`s every header in them is proven. |
-| 1 | The run could not start, a write or a flush to the destination failed, the table of a mapped device could not be read, or an image that was asked for is not there. | The dump is refused, unreadable or cut, or a write or a flush to the destination failed. With `FILE`s also: they hold no header, or a header has a key that is not proven. |
+| 1 | The run could not start, a write or a flush to the destination failed, the table of a mapped device could not be read, an image that was asked for is not there, or the run was asked to end by an interrupt. | The dump is refused, unreadable or cut, a write or a flush to the destination failed, or the run was asked to end by an interrupt. With `FILE`s also: they hold no header, or a header has a key that is not proven. |
 | 2 | A wrong option, an option without its value, or options that do not go together. The usage is printed and nothing is written. | The same. |
 
 A verdict is no status: a run that ends with <span class="not">live copy only</span> for a volume has done its work and ends with 0.

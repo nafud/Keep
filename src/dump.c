@@ -1,6 +1,6 @@
 /*
- * dump.c: the search of a memory dump that exists, "keep -s DUMP [FILE...]", the work of
- * offline-keyscan.sh and vkverify.py for a raw disk image or a header backup.
+ * dump.c: the search of a memory dump that exists, "keep -s DUMP [FILE...]", which does for
+ * a raw disk image or a header backup what the scanner and vkverify.py do together.
  *
  * The dump is searched for AES key schedules with the search of kcore-keyscan.c, which reads a
  * raw dump, a LiME image, a compressed AVML image and an ELF core. A schedule is a key that
@@ -94,6 +94,7 @@ struct target {                         /* a LUKS header that was located, or a 
     unsigned attempts;
     size_t far;                         /* the pairs that the second round has to try */
     const char *uncomputed;             /* the hash of a digest that is not computed here */
+    int cut;                            /* the run was asked to end before every attempt was made */
     const char *verdict;
     char note[LUKS_ERR_LEN + 96];
 };
@@ -111,6 +112,7 @@ struct keys {                           /* the schedules of the dump, and each k
     struct place *places;               /* each pair of keys that lies in place, once, where it was found first */
     size_t nplaces;
     uint8_t *in_place;                  /* nfirst * nfirst: the data key i and the tweak key j are such a pair */
+    int halted;                         /* the search was ended before the end of the dump */
 };
 
 static size_t key_len(const struct keyscan_hit *h)
@@ -341,10 +343,17 @@ static int locate(struct run *r, const char *path, struct target **list, size_t 
         found++;
     }
     for (;;) {
-        ssize_t got = pread(fd, buf, CHUNK, (off_t)off);
+        ssize_t got;
         size_t i, len;
         uint64_t next = 0;
 
+        if (run_interrupted) {
+            run_mark(r, "headers", RUN_NOT, "interrupted", "%s is searched up to offset %llu: what lies behind that place "
+                     "is not searched for headers", path, (unsigned long long)off);
+            *unread = 1;
+            break;
+        }
+        got = pread(fd, buf, CHUNK, (off_t)off);
         if (got < 0 && errno == EINTR)
             continue;
         if (got < 0) {
@@ -417,7 +426,7 @@ struct effort {                         /* one header's attempts, and when the s
 };
 
 /* One candidate key against the digests that have no key yet. Returns 1 when the header needs
-   no further attempt. */
+   no further attempt, or gets none because the run was asked to end. */
 static int attempt(struct effort *e, const uint8_t *key, size_t len, const struct keyscan_hit *tweak)
 {
     struct target *t = e->t;
@@ -426,6 +435,10 @@ static int attempt(struct effort *e, const uint8_t *key, size_t len, const struc
     time_t now = time(NULL);
     int which;
 
+    if (run_interrupted) {
+        t->cut = 1;
+        return 1;
+    }
     t->attempts++;
     if (run_due(e->r, &e->said)) {
         if (e->of)
@@ -537,7 +550,7 @@ static void second_round(struct run *r, struct target *t, const struct keys *k)
 }
 
 /* What the attempts on a header came to. */
-static void conclude(struct target *t)
+static void conclude(struct target *t, const struct keys *k)
 {
     size_t proven = 0, unwritten = 0, i;
 
@@ -554,6 +567,12 @@ static void conclude(struct target *t)
     } else if (all_proven(t) && proven == t->h.ndigests) {
         t->verdict = PROVEN;
         snprintf(t->note, sizeof t->note, "%s", t->h.ndigests > 1 ? "each key gives its digest of the header" : "gives the digest of the header");
+    } else if (t->cut) {
+        snprintf(t->note, sizeof t->note, "the attempts were ended by a signal after %u, with candidate keys that were not tried",
+                 t->attempts);
+    } else if (!t->attempts && k->halted) {
+        snprintf(t->note, sizeof t->note, "the search of the dump was ended by a signal, and the part that was searched "
+                 "holds no key to try");
     } else if (t->taken) {
         snprintf(t->note, sizeof t->note, "%zu of %zu keys of the header proven, none of %u candidate keys gives the other digest",
                  proven, t->h.ndigests, t->attempts);
@@ -619,7 +638,7 @@ static void one_target(struct run *r, struct target *t, const struct keys *k)
     if (t->h.ndigests > 1)
         run_field(r, "keys", "%zu, as a volume in re-encryption has them", t->h.ndigests);
     if (first_round(r, t, k)) {
-        conclude(t);
+        conclude(t, k);
         verdict(r, t);
         return;
     }
@@ -637,7 +656,7 @@ static void one_more(struct run *r, struct target *t, const struct keys *k)
     run_title(r, "%s, round 2", t->name);
     second_round(r, t, k);
     run_field(r, "round 2", "%u of %zu pairs tried, %lld s", t->attempts - before, t->far, (long long)(time(NULL) - start));
-    conclude(t);
+    conclude(t, k);
     verdict(r, t);
 }
 
@@ -770,7 +789,7 @@ int dump_run(const struct dump_options *o)
     struct stat st;
     size_t ntargets = 0, nfiles_targets, npairs = 0, further = 0, i, k, proven = 0, in_memory = 0, more_in_memory;
     char unlocked[160] = "";
-    int kfd, mfd, fd, failed = 0, status, found = 0, names = 0, words = 0, nline, nsaid, unread = 0;
+    int kfd, mfd, fd, failed = 0, status, found = 0, names = 0, words = 0, nline, nsaid, unread = 0, cut;
 
     /* Keys pass through the memory of this process. Locked memory is not written to the swap
        space, and the files of the run are for their owner alone. */
@@ -834,6 +853,7 @@ int dump_run(const struct dump_options *o)
     }
     keyscan_watch(watch, w);
     run_progress(r, "search", "reading the dump for AES key schedules and LUKS headers");
+    keyscan_until(&run_interrupted);
     status = keyscan_run(dump, 0, 1, list, msg, &failed);
     keyscan_watch(NULL, NULL);
     look(w, 1);
@@ -843,6 +863,7 @@ int dump_run(const struct dump_options *o)
     fclose(msg);
     explicit_bzero(held, sizeof held);
     keys.hits = keyscan_hits(&keys.nhits);
+    keys.halted = (sum = keyscan_summary()) && sum->halted;
     if (distinct(&keys) || places(&keys)) {
         keyscan_wipe();
         keys_free(&keys);
@@ -970,21 +991,26 @@ int dump_run(const struct dump_options *o)
     if (!ntargets && !npairs)
         run_say(r, "  no header and no pair of schedules: the schedules are listed in keys/candidates.txt");
     run_say(r, "%s", "");
+    /* From here on no step is left that a signal could end. */
+    cut = run_interrupted;
+    if (cut)
+        run_say(r, "interrupted %s: the steps that this ended say so above", run_signal_name(cut));
     run_utc(finished, 0);
     run_say(r, "finished %s, %u s", finished, run_seconds(r));
     if (written(r->report) || fsync(fileno(r->report)))
         r->write_failed = 1;
     fclose(r->report);
 
-    /* the same for a program, schema keep-report/1, with the fields of vkverify.py. No key is
+    /* the same for a program, schema keep-report/2, with the fields of vkverify.py. No key is
        in this file. */
     if ((fd = run_create(r, "verdict.json", O_WRONLY, 0600)) < 0 || !(json = fdopen(fd, "w"))) {
         r->write_failed = 1;
         if (fd >= 0)
             close(fd);
     } else {
-        fprintf(json, "{\n  \"schema\": \"keep-report/1\",\n  \"tool\": \"keep %s\",\n  \"started_utc\": \"%s\",\n"
-                "  \"finished_utc\": \"%s\",\n  \"source\": ", KEEP_VERSION, started, finished);
+        fprintf(json, "{\n  \"schema\": \"keep-report/2\",\n  \"tool\": \"keep %s\",\n  \"started_utc\": \"%s\",\n"
+                "  \"finished_utc\": \"%s\",\n  \"interrupted\": %s,\n  \"source\": ", KEEP_VERSION, started, finished,
+                cut ? "true" : "false");
         run_json(json, base ? base + 1 : dump);
         fprintf(json, ",\n  \"candidates\": {\"schedules\": %d, \"keys\": %d, \"aes128\": %d, \"aes256\": %d},\n  \"volumes\": [",
                 keys.nhits, keys.nfirst, keys.aes128, keys.aes256);
@@ -1046,6 +1072,11 @@ int dump_run(const struct dump_options *o)
     }
     if (r->line_lost) {
         fprintf(stderr, "keep: a line of the report could not be put together for lack of memory, triage.txt is not whole\n");
+        return status ? status : 1;
+    }
+    if (cut) {
+        fprintf(stderr, "keep: the run was ended by a signal. What it did not do is named in its report, and every file "
+                "of it is flushed to the destination\n");
         return status ? status : 1;
     }
     run_tell(r, "keep: every file of this run is flushed to the destination");

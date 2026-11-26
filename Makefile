@@ -40,11 +40,11 @@ tests/keyscan: kcore-keyscan.c src/keyscan.h
 tests/keyscan-san: kcore-keyscan.c src/keyscan.h
 	$(SANCC) $(CFLAGS) $(SAN) -o $@ kcore-keyscan.c
 
-tests/keep-unit: tests/keep-unit.c $(PARTS) $(HEADERS)
-	$(CC) -static $(CFLAGS) -o $@ tests/keep-unit.c $(PARTS)
+tests/keep-unit: tests/keep-unit.c $(PARTS) $(HEADERS) kcore-keyscan.c
+	$(CC) -static $(CFLAGS) -o $@ tests/keep-unit.c $(PARTS) $(SCANNER)
 
-tests/keep-unit-san: tests/keep-unit.c $(PARTS) $(HEADERS)
-	$(SANCC) $(CFLAGS) $(SAN) -o $@ tests/keep-unit.c $(PARTS)
+tests/keep-unit-san: tests/keep-unit.c $(PARTS) $(HEADERS) kcore-keyscan.c
+	$(SANCC) $(CFLAGS) $(SAN) -o $@ tests/keep-unit.c $(PARTS) $(SCANNER)
 
 clean:
 	rm -f keep keep-san tests/keep-unit tests/keep-unit-san tests/keyscan tests/keyscan-san tests/keyscan-plain.o

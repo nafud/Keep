@@ -559,13 +559,13 @@ int image_settle(struct image_file *f)
 }
 
 int image_write(int core, const struct image_source *src, struct image_file *files, size_t nfiles,
-                void (*progress)(void *arg, uint64_t done), void *arg, uint64_t *unread,
+                int (*progress)(void *arg, uint64_t done), void *arg, uint64_t *unread,
                 char err[IMAGE_ERR_LEN])
 {
     uint8_t *buf;
     uint64_t done = 0;
     size_t i, k, alive = nfiles;
-    int no_memory;
+    int no_memory, ended = 0;
 
     *unread = 0;
     buf = malloc(BLOCK);
@@ -592,11 +592,11 @@ int image_write(int core, const struct image_source *src, struct image_file *fil
         snprintf(err, IMAGE_ERR_LEN, "the block of the image: no memory");
         return -1;
     }
-    for (i = 0; i < src->nranges && alive; i++) {
+    for (i = 0; i < src->nranges && alive && !ended; i++) {
         const struct image_range *range = &src->ranges[i];
         uint64_t at;
 
-        for (at = range->start; at < range->end && alive; ) {
+        for (at = range->start; at < range->end && alive && !ended; ) {
             size_t n = range->end - at < BLOCK ? (size_t)(range->end - at) : BLOCK;
 
             read_block(core, range->offset + (at - range->start), at, buf, n, unread);
@@ -607,7 +607,7 @@ int image_write(int core, const struct image_source *src, struct image_file *fil
             at += n;
             done += n;
             if (progress)
-                progress(arg, done);
+                ended = progress(arg, done);
         }
     }
     explicit_bzero(buf, BLOCK);         /* memory of the machine, which holds its keys */
@@ -625,5 +625,5 @@ int image_write(int core, const struct image_source *src, struct image_file *fil
         snprintf(err, IMAGE_ERR_LEN, "no image could be written to its end");
         return -1;
     }
-    return 0;
+    return ended ? 1 : 0;
 }

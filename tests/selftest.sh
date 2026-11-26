@@ -13,22 +13,20 @@
 #              four formats, the compressed image of AVML among them, and once with a step of
 #              16. A gzip file is refused, and a cut or damaged image is searched up to the damage
 #   verifier   LUKS2 and LUKS1 headers that cryptsetup makes from the same two keys: vkverify.py
-#              on the headers, offline-keyscan.sh on a disk image that holds both, with its
-#              report, and a candidate list without the keys, which must not prove. The
-#              same headers with their keyslots erased, cut short, malformed, and under one name.
-#              The disk image again as qemu-img writes it in the formats of virtual machines
-#              and as ewfacquirestream writes it as an EnCase image
-#   proof      the proof command of keytriage.sh on the same headers, with the key and with another
-#   triage     keytriage.sh itself on stand-ins for the examined system's dmsetup, cryptsetup
-#              status, /proc/kcore and AVML, with the same headers, the real header backup and proof
-#   usage      -h of every script prints its head comment, and a wrong option is refused
+#              on the headers and on a disk image that holds both, with its report, and a
+#              candidate list without the keys, which must not prove. The same headers with
+#              their keyslots erased, cut short, malformed, and under one name. The disk image
+#              again as qemu-img writes it in the formats of virtual machines and as
+#              ewfacquirestream writes it as an EnCase image
+#   usage      -h of a script prints its head comment, and a wrong option is refused
 #   page       the sources of the pages in docs/ show the version of the C program and no
 #              other. The pages themselves are built and read by tests/pages-check.sh
 #
-# On real device-mapper and a real /proc/kcore keytriage.sh is checked by compat-check.sh.
+# The program keep is checked part by part by tests/unit-check.sh, and on real device-mapper
+# and a real /proc/kcore by tests/compat-check.sh.
 #
 # Programs: bash, gcc with a static libc and python3, and for the full run shellcheck,
-# cryptsetup, busybox, qemu-img and ewfacquirestream. With bash-static installed keytriage.sh runs in it, as on the medium.
+# cryptsetup, qemu-img and ewfacquirestream.
 # Ends with "RESULT: PASS" and status 0, or with "RESULT: FAIL" and status 1.
 set -u
 umask 077
@@ -79,10 +77,10 @@ for p in sys.argv[2:]:
 }
 
 # ---- static ------------------------------------------------------------------------------------
-syntax() { local f; for f in ./*.sh tests/*.sh; do bash -n "$f" || return 1; done; }
+syntax() { local f; for f in tests/*.sh; do bash -n "$f" || return 1; done; }
 check "bash -n on every script" syntax
 if command -v shellcheck >/dev/null; then
-    check "shellcheck -S warning on every script" shellcheck -S warning ./*.sh tests/*.sh
+    check "shellcheck -S warning on every script" shellcheck -S warning tests/*.sh
 else
     skip "shellcheck is not installed"
 fi
@@ -187,9 +185,9 @@ open(sys.argv[3], "wb").write(d)' "$T/fx.avml" "$T/flip.avml" "$T/len.avml" || r
 }
 check "scanner searches a cut or damaged image up to the damage and names the place" damaged
 
-# ---- verifier, proof ---------------------------------------------------------------------------
+# ---- verifier ----------------------------------------------------------------------------------
 if command -v cryptsetup >/dev/null; then
-    # the key file option was renamed in cryptsetup 2.5.0, as in keytriage.sh
+    # the key file option was renamed in cryptsetup 2.5.0
     if cryptsetup --help 2>&1 | grep -q -e '--volume-key-file'; then VK=--volume-key-file; else VK=--master-key-file; fi
     printf 'selftest-passphrase' > "$T/pw"
     mkluks() {  # mkluks TYPE KEYFILE IMAGE SIZE
@@ -212,26 +210,24 @@ if command -v cryptsetup >/dev/null; then
     # passed over, LUKS2 at 1 MiB and LUKS1 at 36 MiB.
     { head -c 512 /dev/zero; printf 'LUKS\272\276'; head -c 1048058 /dev/zero; cat "$T/l2.img"
       head -c 3145728 /dev/zero; cat "$T/l1.img"; } > "$T/disk.dd"
-    offline() {
-        ( cd "$T/lab" && KEYSCAN=$SCAN bash "$R/offline-keyscan.sh" "$T/fx.lime" "$T/disk.dd" ) || return 1
-        local d m
-        d=$(echo "$T"/lab/scan_*)
-        cmp "$d/keys/disk.dd@0x100000.vk" "$T/keys/k256.vk" && cmp "$d/keys/disk.dd@0x2400000.vk" "$T/keys/k128.vk" || return 1
-        m=$(stat -c %a "$d/keys" "$d"/keys/* | sort -u | tr '\n' ' ')
+    disk_image() {
+        python3 -I vkverify.py "$CAND" --image "$T/disk.dd" --out "$T/lab/keys" --json "$T/lab/verdict.json" > "$T/lab/screen.txt" 2>&1 ||
+            { cat "$T/lab/screen.txt"; return 1; }
+        local m
+        cmp "$T/lab/keys/disk.dd@0x100000.vk" "$T/keys/k256.vk" && cmp "$T/lab/keys/disk.dd@0x2400000.vk" "$T/keys/k128.vk" || return 1
+        m=$(stat -c %a "$T/lab/keys" "$T"/lab/keys/* | sort -u | tr '\n' ' ')
         [ "$m" = "600 700 " ] || { echo "modes below keys/: $m, 600 and 700 are expected"; return 1; }
-        ( cd "$d" && sha256sum -c --quiet manifest.sha256 ) || return 1
-        no_key_in "$KEYS" "$d/triage.txt" "$d/scan.txt" "$d/verdict.json" "$d/manifest.sha256"
+        no_key_in "$KEYS" "$T/lab/screen.txt" "$T/lab/verdict.json"
     }
-    check "offline-keyscan.sh finds both headers in a disk image and proves both keys" offline
+    check "vkverify.py finds both headers in a disk image and proves both keys" disk_image
     report() {
-        local d; d=$(echo "$T"/lab/scan_*)
         python3 -I -c 'import hashlib, json, sys
-r = json.load(open(sys.argv[1] + "/verdict.json"))
+r = json.load(open(sys.argv[1]))
 got = sorted((v["verdict"], v["key_sha256_16"]) for v in r["volumes"])
 want = sorted(("proven", hashlib.sha256(open(p, "rb").read()).hexdigest()[:16]) for p in sys.argv[2:])
-sys.exit(0 if r["schema"] == "keep-report/1" and got == want else "the report says %r" % got)' "$d" "$T/keys/k256.vk" "$T/keys/k128.vk"
+sys.exit(0 if r["schema"] == "keep-report/2" and got == want else "the report says %r" % got)' "$T/lab/verdict.json" "$T/keys/k256.vk" "$T/keys/k128.vk"
     }
-    check "the report of offline-keyscan.sh names both volumes as proven, each key by the start of its SHA-256" report
+    check "the report of vkverify.py names both volumes as proven, each key by the start of its SHA-256" report
 
     # The same disk as the file of a virtual machine. qemu-img writes it in each format, and
     # the verifier must read from each the disk as it is, byte for byte, find both headers at
@@ -370,307 +366,8 @@ open(sys.argv[2], "wb").write(raw)' "$T/l2.img" "$T/list.img" || return 1
     }
     check "vkverify.py keeps two headers of the same file name apart" same_name
 
-    # what keytriage.sh runs as the proof on scene
-    prove() { cryptsetup open --test-passphrase "$VK" "$1" "$2" >/dev/null 2>&1; }
-    proof() {
-        prove "$T/keys/k256.vk" "$T/l2.img" && prove "$T/keys/k128.vk" "$T/l1.img" || { echo "a header refuses its own key"; return 1; }
-        ! prove "$T/keys/other.vk" "$T/l2.img" || { echo "the header accepts a key that is not its own"; return 1; }
-    }
-    check "the on-scene proof accepts the key of a header and refuses another ($VK)" proof
-
-    # ---- triage --------------------------------------------------------------------------------
-    # keytriage.sh itself, without root and without device-mapper. A copy of it runs from a kit
-    # that is laid out like the medium, with the busybox applets in bin/. The examined system is
-    # played by stand-ins, and everything else is the real thing. dmsetup and cryptsetup lie in
-    # a directory of their own, which -p names, and the other stand-ins in the bin/ of the kit:
-    #   dmsetup         prints its listing and the table lines from files
-    #   cryptsetup      prints "status" from a file and hands every other call, so the header
-    #                   backup and the proof, to the real cryptsetup
-    #   kcore-keyscan   searches the fixture in place of /proc/kcore, with the real scanner
-    #   id              says 0, which is the only thing asked of it
-    #   sync            notes what it is asked to flush, fails while $STUB/sync-fails exists and
-    #                   is the applet otherwise
-    #   hostname        says what $STUB/hostname holds, and is the applet without that file
-    #   avml            writes the fixture as the memory image, as LiME or with --compress as
-    #                   the compressed image, and a part of it with status 1 while
-    #                   $STUB/avml-fails exists
-    # t_table is the LUKS1 header with its key in the table line (route R1), t_keyring the LUKS2
-    # header with a keyring reference (route R3). t:plain and T:plain are plain mappings, whose
-    # names FAT and exFAT refuse as file names and which differ only by case. The mappings of the
-    # second list are the cases at the edge: the names "No" and "my data", the null cipher, a
-    # mapping whose table dmsetup does not give, a key field that is no key, and in a list of its
-    # own a LUKS2 mapping whose header cannot be backed up.
-    if command -v busybox >/dev/null; then
-        KIT=$T/kit; SYS=$T/sys; STUB=$T/stub; REALCS=$(command -v cryptsetup); BB=$(command -v busybox)
-        TSH=$KIT/bin/bash                 # the shell of the kit: bash-static where it is installed
-        mkdir -p "$KIT/bin" "$SYS" "$STUB" "$T/tevid" "$T/foreign"
-        for a in busybox $(busybox --list); do
-            case $a in bash) ;; *) ln -s "$BB" "$KIT/bin/$a" 2>/dev/null ;; esac
-        done
-        ln -s "$(command -v bash-static || command -v bash)" "$TSH"
-        # What a root shell of the examined system could hand down: a file for the shell to run
-        # first, a function in place of an applet, and a trace of every command, which would
-        # print the keys. Under bash -p none of them takes effect.
-        printf 'echo BASH_ENV >> "%s"\n' "$T/foreign.log" > "$T/benv.sh"
-        HOSTILE=(/usr/bin/env "BASH_ENV=$T/benv.sh" "SHELLOPTS=xtrace" "BASH_FUNC_sed%%=() { echo function-sed >> \"$T/foreign.log\"; }")
-        # A program of every name the kit has, and dirname, in the directory of dmsetup and first
-        # on the PATH of the caller. Whichever of them runs, notes its name.
-        for a in $( { echo dirname; busybox --list; } | sort -u ); do
-            printf '#!/bin/bash\necho "%s" >> "%s"\n' "$a" "$T/foreign.log" > "$T/foreign/$a"; chmod 755 "$T/foreign/$a"
-            ln -s "$T/foreign/$a" "$SYS/$a"
-        done
-        cp keytriage.sh "$KIT/"
-        standin() { rm -f "$1"; cat > "$1"; chmod 755 "$1"; }   # standin FILE : the script on standard input
-        standin "$KIT/bin/id" <<EOT
-#!/bin/bash
-echo 0
-EOT
-        standin "$KIT/bin/kcore-keyscan" <<EOT
-#!/bin/bash
-exec "$SCAN" "$T/fx.lime"
-EOT
-        standin "$KIT/bin/sync" <<EOT
-#!/bin/bash
-printf '%s\\n' "\$*" >> "$T/sync.log"
-[ ! -e "$STUB/sync-fails" ] || { echo "sync: stand-in failure" >&2; exit 1; }
-exec "$BB" sync "\$@"
-EOT
-        # avml --version, avml acquire [--compress] FILE
-        standin "$KIT/bin/avml" <<EOT
-#!/bin/bash
-[ "\$1" = --version ] && { echo "avml stand-in"; exit 0; }
-[ "\$1" = acquire ] || exit 2
-shift
-src="$T/fx.lime"; [ "\$1" = --compress ] && { src="$T/fx.avml"; shift; }
-if [ -e "$STUB/avml-fails" ]; then
-    head -c 100000 "\$src" > "\$1"; echo "Error: No space left on device (stand-in)" >&2; exit 1
-fi
-cat "\$src" > "\$1"
-EOT
-        standin "$KIT/bin/hostname" <<EOT
-#!/bin/bash
-if [ -f "$STUB/hostname" ]; then cat "$STUB/hostname"; else exec "$BB" hostname; fi
-EOT
-        standin "$SYS/dmsetup" <<EOT
-#!/bin/bash
-for n in "\$@"; do :; done                # the mapping is the last argument
-case \$1 in
-    ls)    cat "$STUB/ls.txt" ;;
-    table) [ -f "$STUB/\$n.table" ] && cat "$STUB/\$n.table" ;;
-esac
-EOT
-        standin "$SYS/cryptsetup" <<EOT
-#!/bin/bash
-for n in "\$@"; do :; done
-if [ "\$1" = status ]; then cat "$STUB/\$n.status"; else exec "$REALCS" "\$@"; fi
-EOT
-        hexof() { od -An -v -tx1 "$1" | tr -d ' \n'; }
-        status() {  # status NAME TYPE CIPHER BITS LOCATION DEVICE
-            printf '/dev/mapper/%s is active.\n  type:    %s\n  cipher:  %s\n  keysize: %s bits\n  key location: %s\n  device:  %s\n' "$@" > "$STUB/$1.status"
-        }
-        printf 't_table\t(253:0)\nt_keyring\t(253:1)\nt:plain\t(253:2)\nT:plain\t(253:3)\n' > "$STUB/ls.txt"
-        for n in t:plain T:plain; do
-            printf '0 16384 crypt aes-xts-plain64 %s 0 7:2 0\n' "$(hexof "$T/keys/other.vk")" > "$STUB/$n.table"
-            status "$n" PLAIN aes-xts-plain64 512 dm-crypt /dev/loop2
-        done
-        printf '0 16384 crypt aes-xts-plain64 %s 0 7:0 4096\n' "$(hexof "$T/keys/k128.vk")" > "$STUB/t_table.table"
-        printf '0 32768 crypt aes-xts-plain64 :64:logon:cryptsetup:selftest-d0 0 7:1 32768\n' > "$STUB/t_keyring.table"
-        for n in No "my data"; do
-            printf '0 16384 crypt aes-xts-plain64 %s 0 7:2 0\n' "$(hexof "$T/keys/other.vk")" > "$STUB/$n.table"
-            status "$n" PLAIN aes-xts-plain64 512 dm-crypt /dev/loop2
-        done
-        printf '0 16384 crypt cipher_null-ecb - 0 7:3 0\n' > "$STUB/t_null.table"
-        status t_null PLAIN cipher_null-ecb 0 dm-crypt /dev/loop3
-        status t_notable LUKS2 aes-xts-plain64 512 keyring "$T/l2.img"
-        printf '0 16384 crypt aes-xts-plain64 zz 0 7:4 0\n' > "$STUB/t_odd.table"
-        status t_odd PLAIN aes-xts-plain64 512 dm-crypt /dev/loop4
-        printf '0 32768 crypt aes-xts-plain64 :64:logon:cryptsetup:selftest-d1 0 7:5 32768\n' > "$STUB/t_nohdr.table"
-        status t_nohdr LUKS2 aes-xts-plain64 512 keyring "$T/no-such-device"
-        # with_list LINES NAME : a run NAME with another listing of dmsetup
-        with_list() {
-            local rc
-            cp "$STUB/ls.txt" "$STUB/ls.saved"; printf '%b' "$1" > "$STUB/ls.txt"
-            triage "$2"; rc=$?
-            mv "$STUB/ls.saved" "$STUB/ls.txt"; return "$rc"
-        }
-        status t_table LUKS1 aes-xts-plain64 256 dm-crypt "$T/l1.img"
-        status t_keyring LUKS2 aes-xts-plain64 512 keyring "$T/l2.img"
-
-        # triage NAME [OPTION...] : one run. The screen goes to $T/NAME.txt and the folder of the
-        # run is $T/NAME.d, a link, because the name of the folder carries the time. The run
-        # starts with the umask of an ordinary root shell, so the modes are the script's own doing.
-        triage() {
-            local name=$1 rc; shift
-            mkdir "$T/tevid/$name" || return 1
-            : > "$T/sync.log"
-            ( umask 022; PATH=$T/foreign:$PATH "${HOSTILE[@]}" "$TSH" -p "$KIT/keytriage.sh" -p "/nowhere:$SYS" -d "$T/tevid/$name" "$@" > "$T/$name.txt" 2>&1 ); rc=$?
-            ln -s "$(echo "$T/tevid/$name"/triage_*)" "$T/$name.d"
-            return "$rc"
-        }
-        verdict_of() {  # verdict_of FOLDER VOLUME
-            python3 -I -c 'import json, sys
-for v in json.load(open(sys.argv[1] + "/verdict.json"))["volumes"]:
-    if v["name"] == sys.argv[2]:
-        print(v["verdict"])' "$1" "$2"
-        }
-        triage_both() {
-            local d=$T/both.d
-            triage both || { echo "keytriage.sh ended with status $?"; cat "$T/both.txt"; return 1; }
-            [ "$(verdict_of "$d" t_table)" = "captured and proven" ] && [ "$(verdict_of "$d" t_keyring)" = "captured and proven" ] ||
-                { echo "not both verdicts are captured and proven"; cat "$T/both.txt"; return 1; }
-            cmp "$d/keys/t_table.vk" "$T/keys/k128.vk" && cmp "$d/keys/t_keyring.vk" "$T/keys/k256.vk" || return 1
-            ( cd "$d" && sha256sum -c --quiet manifest.sha256 ) || return 1
-            no_key_in "$KEYS" "$T/both.txt" "$d/triage.txt" "$d/verdict.json" "$d/manifest.sha256"
-        }
-        check "keytriage.sh captures and proves a key from the table and one from memory" triage_both
-        cp "$T/sync.log" "$T/both.sync"
-        triage_modes() {
-            local open; open=$(find "$T/both.d/" -perm /077)
-            [ -z "$open" ] || { echo "open to the group or to others:"; echo "$open"; return 1; }
-        }
-        check "keytriage.sh writes nothing that the group or others can read" triage_modes
-        triage_medium_only() {
-            [ ! -s "$T/foreign.log" ] || { echo "from outside the medium, these were run:"; sort "$T/foreign.log" | uniq -c; return 1; }
-            ! grep -q '^+' "$T/both.txt" || { echo "the run is traced, SHELLOPTS of the environment took effect"; return 1; }
-            ! grep -q 'not found' "$T/both.txt" || { grep 'not found' "$T/both.txt"; return 1; }
-            python3 -I -c 'import json, sys
-paths = sorted(b["path"] for b in json.load(open(sys.argv[1]))["binaries"])
-sys.exit(0 if paths == [sys.argv[2] + "/cryptsetup", sys.argv[2] + "/dmsetup"] else "recorded: %r" % paths)' "$T/both.d/verdict.json" "$SYS"
-        }
-        check "keytriage.sh runs nothing from outside the medium but the dmsetup and cryptsetup of -p" triage_medium_only
-        # The memory image, as LiME and compressed: the file, its format in the report, its line
-        # in the manifest, and for the compressed one that the scanner reads what was written.
-        triage_memory() {
-            local d=$T/mem.d c=$T/memc.d
-            triage mem -m || { echo "-m ended with status $?"; cat "$T/mem.txt"; return 1; }
-            cmp "$d/memory/memory.lime" "$T/fx.lime" && grep -q ' memory/memory.lime$' "$d/manifest.sha256" || { echo "no LiME image"; return 1; }
-            ( cd "$d" && sha256sum -c --quiet manifest.sha256 ) || return 1
-            triage memc -m -c || { echo "-m -c ended with status $?"; cat "$T/memc.txt"; return 1; }
-            cmp "$c/memory/memory.avml" "$T/fx.avml" && [ ! -e "$c/memory/memory.lime" ] && grep -q ' memory/memory.avml$' "$c/manifest.sha256" || { echo "no compressed image"; return 1; }
-            ( cd "$c" && sha256sum -c --quiet manifest.sha256 ) || return 1
-            [ "$("$SCAN" "$c/memory/memory.avml" 2>/dev/null | wc -l)" -eq 8 ] || { echo "the scanner does not read the compressed image"; return 1; }
-            python3 -I -c 'import json, sys
-a, b = (json.load(open(p + "/verdict.json"))["memory"] for p in sys.argv[1:3])
-ok = ((a["status"], a["file"], a["format"]) == ("captured", "memory/memory.lime", "lime")
-      and (b["status"], b["file"], b["format"]) == ("captured", "memory/memory.avml", "avml compressed"))
-sys.exit(0 if ok else "the reports say %r and %r" % (a, b))' "$d" "$c" || return 1
-        }
-        check "keytriage.sh -m writes the memory image as LiME, and compressed with -c" triage_memory
-        # An image that AVML could not finish, as on a medium that ran full: the part is removed,
-        # the image counts as failed, and the keys and the report are complete all the same.
-        triage_memory_fail() {
-            local d=$T/memf.d rc
-            : > "$STUB/avml-fails"; triage memf -m -c; rc=$?; rm -f "$STUB/avml-fails"
-            [ "$rc" -eq 0 ] || { echo "status $rc"; cat "$T/memf.txt"; return 1; }
-            [ ! -e "$d/memory/memory.avml" ] || { echo "the part of the image is kept"; return 1; }
-            grep -q 'memory image  *failed' "$T/memf.txt" && grep -q 'No space left' "$d/verdict.json" || { echo "the failure is not reported"; return 1; }
-            [ "$(verdict_of "$d" t_table)" = "captured and proven" ] && ( cd "$d" && sha256sum -c --quiet manifest.sha256 )
-        }
-        check "keytriage.sh removes the part of a memory image that could not be finished" triage_memory_fail
-        triage_c_alone() {
-            "$TSH" -p "$KIT/keytriage.sh" -c -p "$SYS" -d "$T/tevid" > "$T/calone.txt" 2>&1
-            [ $? -eq 2 ] && grep -q -e '-c belongs to -m' "$T/calone.txt"
-        }
-        check "keytriage.sh refuses -c without -m with status 2" triage_c_alone
-        triage_shell() {
-            "$TSH" "$KIT/keytriage.sh" -p "$SYS" -d "$T/tevid" > "$T/nop.txt" 2>&1
-            [ $? -eq 1 ] && grep -q 'start this script with bash -p' "$T/nop.txt" || { echo "a start without -p is not refused"; return 1; }
-            [ "$TSH" -ef /bin/bash ] && return 0      # no second shell on this machine to try
-            /bin/bash -p "$KIT/keytriage.sh" -p "$SYS" -d "$T/tevid" > "$T/nop.txt" 2>&1
-            [ $? -eq 1 ] && grep -q 'runs in the shell of the medium' "$T/nop.txt" || { echo "another shell than that of the kit is not refused"; return 1; }
-        }
-        check "keytriage.sh refuses a start without bash -p and a shell that is not the kit's" triage_shell
-        triage_flush() {
-            local f d; d=$(readlink "$T/both.d")
-            for f in keys/t_table.vk keys/t_keyring.vk keys/kcore-candidates.txt headers/t_table.hdr headers/t_keyring.hdr manifest.sha256; do
-                grep -q -F "$d/$f" "$T/both.sync" || { echo "$f is not flushed"; return 1; }
-            done
-            [ "$(tail -n 1 "$T/both.sync")" = "-f $d" ] || { echo "the run does not end with a flush of the file system"; return 1; }
-            grep -q 'every file of this run is flushed' "$T/both.txt"
-        }
-        check "keytriage.sh flushes the headers, the keys and at the end the file system" triage_flush
-        triage_flushfail() {
-            local rc
-            : > "$STUB/sync-fails"; triage noflush; rc=$?; rm -f "$STUB/sync-fails"
-            [ "$rc" -eq 1 ] || { echo "status $rc after a failed flush, 1 is expected"; return 1; }
-            ! grep -q '"verdict": "captured' "$T/noflush.d/verdict.json" || { echo "a key that is not flushed counts as captured"; return 1; }
-            grep -q 'FAILED, the folder is not complete' "$T/noflush.txt"
-        }
-        check "keytriage.sh counts no key as captured when the flush fails, and ends with status 1" triage_flushfail
-        # The destination is the examiner's decision. Without -d it is the directory of the start,
-        # and no place is refused for the medium it lies on: this one is on the disk of the
-        # machine that runs the test. The option that once accepted such a place is gone.
-        triage_here() {
-            mkdir "$T/tevid/here" || return 1
-            ( cd "$T/tevid/here" && "$TSH" -p "$KIT/keytriage.sh" -p "/nowhere:$SYS" > "$T/here.txt" 2>&1 ) || { cat "$T/here.txt"; return 1; }
-            [ -f "$(echo "$T"/tevid/here/triage_*/verdict.json)" ] || { echo "no folder of the run in the directory of the start"; return 1; }
-            grep -q '^destination: .* mounted at ' "$T/here.txt" || { echo "the destination is not named"; return 1; }
-            grep -q '^  "evidence_medium": ".* mounted at ' "$T"/tevid/here/triage_*/verdict.json || { echo "the report does not name the destination"; return 1; }
-            ! grep -q -i 'refused\|evidence' "$T/here.txt" || { echo "the run still speaks of an evidence medium"; return 1; }
-            "$TSH" -p "$KIT/keytriage.sh" -f -p "$SYS" -d "$T/tevid" > "$T/optf.txt" 2>&1
-            [ $? -eq 2 ] || { echo "-f is still an option"; return 1; }
-            "$TSH" -p "$KIT/keytriage.sh" -p "$SYS" -d "$T/tevid/absent" > "$T/absent.txt" 2>&1
-            [ $? -eq 1 ] && grep -q 'does not exist' "$T/absent.txt" || { echo "a destination that does not exist is not reported"; return 1; }
-        }
-        check "keytriage.sh writes to the directory it is started in, or to the one of -d, and tests no medium" triage_here
-        triage_names() {
-            local d=$T/both.d
-            cmp "$d/keys/T_plain.vk" "$T/keys/other.vk" && cmp "$d/keys/t_plain_.vk" "$T/keys/other.vk" || return 1
-            [ "$(verdict_of "$d" t:plain)" = "captured, in use" ] && [ "$(verdict_of "$d" T:plain)" = "captured, in use" ] || return 1
-            [ ! -e "$d/tmp" ] && grep -q ' log/t_table.status.txt$' "$d/manifest.sha256" && grep -q ' log/kcore-keyscan.txt$' "$d/manifest.sha256" ||
-                { echo "log/ is not there or not in the manifest"; return 1; }
-            # a host name that tries to leave the evidence directory and to clear the screen
-            printf 'pc/../../out\033[2Jside\n' > "$STUB/hostname"; triage names; rm -f "$STUB/hostname"
-            [ -d "$(echo "$T"/tevid/names/triage_pc_.._.._out__2Jside_*)" ] || { echo "the folder is not where it belongs"; ls -R "$T/tevid/names" | head; return 1; }
-            ! grep -q "$(printf '\033')" "$T/names.txt" "$T/names.d/triage.txt" || { echo "an escape character reaches the screen"; return 1; }
-            python3 -I -c 'import json, sys
-host = json.load(open(sys.argv[1]))["host"]
-sys.exit(0 if host == "pc/../../out [2Jside" else "host in the report: %r" % host)' "$T/names.d/verdict.json"
-        }
-        check "keytriage.sh keeps host and mapping names inside the destination and off the terminal" triage_names
-        triage_edge() {
-            local d=$T/edge.d n
-            with_list 'No\t(253:4)\nmy data\t(253:5)\nt_null\t(253:6)\nt_notable\t(253:7)\nt_odd\t(253:8)\n' edge ||
-                { echo "keytriage.sh ended with status $?"; cat "$T/edge.txt"; return 1; }
-            for n in No "my data"; do
-                [ "$(verdict_of "$d" "$n")" = "captured, in use" ] || { echo "the mapping \"$n\" has the verdict \"$(verdict_of "$d" "$n")\""; return 1; }
-            done
-            cmp "$d/keys/No.vk" "$T/keys/other.vk" && cmp "$d/keys/my_data.vk" "$T/keys/other.vk" || return 1
-            [ "$(verdict_of "$d" t_null)" = "no key needed" ] && [ ! -e "$d/keys/t_null.vk" ] || { echo "the null cipher: $(verdict_of "$d" t_null)"; return 1; }
-            grep -q 'gave no table line' "$T/edge.txt" && [ "$(verdict_of "$d" t_notable)" = "captured and proven" ] || { echo "the mapping without a table line"; return 1; }
-            [ "$(verdict_of "$d" t_odd)" = "needs a memory read" ] && [ ! -e "$d/keys/t_odd.vk" ] || { echo "a key field that is no key: $(verdict_of "$d" t_odd)"; return 1; }
-        }
-        check "keytriage.sh takes mappings named No and with a space, the null cipher, a missing table and a bad key field" triage_edge
-        triage_nohdr() {
-            with_list 't_nohdr\t(253:9)\n' nohdr || return 1
-            [ "$(verdict_of "$T/nohdr.d" t_nohdr)" = "needs a memory read" ] || return 1
-            [ "$(wc -l < "$T/nohdr.d/keys/kcore-candidates.txt")" -eq 8 ] || { echo "the candidate list is not kept"; return 1; }
-            grep -q ' keys/kcore-candidates.txt$' "$T/nohdr.d/manifest.sha256"
-        }
-        check "keytriage.sh keeps the candidate list of a volume whose header could not be backed up" triage_nohdr
-        # A LUKS2 volume with integrity, as cryptsetup 2.7.0 shows it: "cryptsetup status" has a
-        # second line with the word keysize, and the key size of the volume is the first.
-        triage_integrity() {
-            printf '0 60728 crypt capi:authenc(hmac(sha256),xts(aes))-plain64 :96:logon:cryptsetup:selftest-d0 0 253:11 0 1 integrity:32:aead\n' > "$STUB/t_integ.table"
-            status t_integ LUKS2 aes-xts-plain64 768 keyring "$T/no-such-device"
-            printf '  integrity: hmac(sha256)\n  integrity keysize: 256 bits\n  integrity tag size: 32 bytes\n' >> "$STUB/t_integ.status"
-            with_list 't_integ\t(253:10)\n' integ || return 1
-            grep -q 'keysize 768 bits' "$T/integ.txt" || { echo "the key size is not 768 bits:"; grep keysize "$T/integ.txt"; return 1; }
-            [ "$(python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["volumes"][0]["key_bits"])' "$T/integ.d/verdict.json")" = 768 ] || return 1
-            [ "$(verdict_of "$T/integ.d" t_integ)" = "live copy only" ]
-        }
-        check "keytriage.sh states the key size of a volume with integrity, whose status has two lines with keysize" triage_integrity
-        triage_none() {
-            with_list 'No devices found\n' none || return 1
-            grep -q '^no open dm-crypt volumes$' "$T/none.txt" || return 1
-            [ "$(python3 -I -c 'import json, sys; print(len(json.load(open(sys.argv[1]))["volumes"]))' "$T/none.d/verdict.json")" = 0 ]
-        }
-        check "keytriage.sh reports no volume when dmsetup says that it found no devices" triage_none
-    else
-        skip "busybox is not installed: keytriage.sh is not run"
-    fi
 else
-    skip "cryptsetup is not installed: the verifier and the proof are not checked"
+    skip "cryptsetup is not installed: the verifier is not checked"
 fi
 
 # ---- usage -------------------------------------------------------------------------------------
@@ -678,7 +375,7 @@ fi
 # is an error
 usage_text() {
     local f
-    for f in keytriage.sh offline-keyscan.sh tests/selftest.sh tests/compat-guest.sh; do
+    for f in tests/selftest.sh tests/compat-guest.sh tests/unit-check.sh; do
         bash -p "$f" -h > "$T/usage.txt" || return 1
         awk 'NR == 1 { next } !/^#/ { exit } { print }' "$f" | cmp -s - "$T/usage.txt" || { echo "$f -h does not print its head comment"; return 1; }
         [ "$(wc -l < "$T/usage.txt")" -gt 5 ] || return 1
@@ -695,7 +392,7 @@ if [ -f docs/installation.md ]; then
         local v n; v=$(sed -n 's/^#define KEEP_VERSION "\([^ "]*\).*/\1/p' src/triage.h)
         [ -n "$v" ] || { echo "no KEEP_VERSION in src/triage.h"; return 1; }
         grep -q "^keep $v (" docs/installation.md || { echo "docs/installation.md does not show keep $v"; return 1; }
-        n=$(grep -oh '[0-9]\.[0-9]-pre[0-9]*' docs/*.md | grep -vcx "$v")
+        n=$(grep -ohE '[0-9]\.[0-9]-(pre|rc)[0-9]+' docs/*.md | grep -vcx "$v")
         [ "$n" -eq 0 ] || { echo "$n places of docs/*.md name another version than $v"; return 1; }
     }
     check "the sources of the pages show the version of the C program and no other" page

@@ -38,7 +38,13 @@
  *                                               is. Says for each file whether it was written
  *                                               with direct writes, and how many of its pages
  *                                               lay in the page cache after its writes, before
- *                                               it is flushed and its pages are let go
+ *                                               it is flushed and its pages are let go. With
+ *                                               KEEP_UNIT_STOP=N the read is ended once N bytes
+ *                                               of memory are done, as a run that was asked to
+ *                                               end ends it
+ *   keep-unit scan-until FILE N                 the search of the scanner in FILE, ended once it
+ *                                               has read N bytes of memory, 0 for never: the
+ *                                               list, and how far the search came
  *   keep-unit cached FILE                       how many pages of FILE, a file or a block
  *                                               device, lie in the page cache
  *   keep-unit forget FILE                       flush FILE and let the pages go that the page
@@ -54,7 +60,6 @@
  *                                               replaced by zeros
  *   keep-unit dm-answer list|table FILE         FILE as an answer of the kernel to one of the two
  *                                               requests, printed like the two lines below
- *   keep-unit dm-list                           the mapped devices, as "dmsetup ls" prints them
  *   keep-unit dm-table NAME [CONTROL]           the table, as "dmsetup table NAME" prints it,
  *                                               and for a crypt target the length of its key
  *                                               and the first 16 digits of the key's SHA-256.
@@ -70,6 +75,7 @@
 #include "../src/hash.h"
 #include "../src/image.h"
 #include "../src/json.h"
+#include "../src/keyscan.h"
 #include "../src/luks.h"
 #include "../src/run.h"
 #include "../src/snappy.h"
@@ -449,22 +455,6 @@ static void print_devs(struct dm_dev *devs, size_t n)
     free(devs);
 }
 
-static int cmd_dm_list(void)
-{
-    char err[DM_ERR_LEN];
-    struct dm_dev *devs;
-    size_t n;
-    int fd = dm_open(err);
-
-    if (fd < 0 || dm_list(fd, &devs, &n, err)) {
-        fprintf(stderr, "keep-unit: %s\n", err);
-        return 1;
-    }
-    print_devs(devs, n);
-    close(fd);
-    return 0;
-}
-
 static void print_table(struct dm_table *tp)
 {
     struct dm_table t = *tp;
@@ -712,28 +702,6 @@ static int cmd_volumes(int count, char **paths)
     return tabs ? print_volumes(tabs, n) : 2;
 }
 
-/* The volumes of the running kernel. */
-static int cmd_dm_volumes(void)
-{
-    char err[DM_ERR_LEN];
-    struct dm_dev *devs;
-    struct dm_table *tabs;
-    size_t ndevs, n = 0, i;
-    int fd = dm_open(err);
-
-    if (fd < 0 || dm_list(fd, &devs, &ndevs, err)) {
-        fprintf(stderr, "keep-unit: %s\n", err);
-        return 1;
-    }
-    if (!(tabs = calloc(ndevs + 1, sizeof *tabs)))
-        return 2;
-    for (i = 0; i < ndevs; i++)
-        n += !dm_table(fd, devs[i].name, &tabs[n], err);
-    free(devs);
-    close(fd);
-    return print_volumes(tabs, n);
-}
-
 /* The source of an image from two files of the checks. Returns the descriptor of the core. */
 static int open_source(const char *iomem_path, const char *core_path, struct image_source *src)
 {
@@ -785,6 +753,39 @@ static int cmd_image_source(const char *iomem_path, const char *core_path)
     return 0;
 }
 
+/* The search of FILE, ended once it has handed over AFTER bytes of memory, 0 for never: as a
+   run that was asked to end ends its search. The list to standard output, the messages and
+   how far the search came to standard error. */
+static volatile sig_atomic_t scan_ended;
+
+struct until {
+    uint64_t after, bytes, end;
+};
+
+static void until_watch(void *arg, const uint8_t *p, size_t n, uint64_t phys)
+{
+    struct until *u = arg;
+
+    (void)p;
+    u->bytes += n;
+    u->end = phys + n;
+    if (u->after && u->bytes >= u->after)
+        scan_ended = 1;
+}
+
+static int cmd_scan_until(const char *path, const char *after)
+{
+    struct until u = { strtoull(after, NULL, 10), 0, 0 };
+    int failed, status;
+
+    keyscan_watch(until_watch, &u);
+    keyscan_until(&scan_ended);
+    status = keyscan_run(path, 0, 1, stdout, stderr, &failed);
+    fprintf(stderr, "read %llu bytes of memory, up to 0x%llx\n", (unsigned long long)u.bytes, (unsigned long long)u.end);
+    keyscan_wipe();
+    return status;
+}
+
 static int cmd_cached(const char *path)
 {
     size_t in, pages;
@@ -797,8 +798,24 @@ static int cmd_cached(const char *path)
     return 0;
 }
 
+/* The read of an image is ended once it has done the bytes of KEEP_UNIT_STOP, as a run that
+   was asked to end ends it. */
+struct stop {
+    uint64_t after, done;
+};
+
+static int stop_after(void *arg, uint64_t done)
+{
+    struct stop *s = arg;
+
+    s->done = done;
+    return done >= s->after;
+}
+
 static int cmd_image(int argc, char **argv)
 {
+    const char *after = getenv("KEEP_UNIT_STOP");
+    struct stop stop = { after ? strtoull(after, NULL, 10) : 0, 0 };
     struct image_file files[8];
     struct image_source src;
     char err[IMAGE_ERR_LEN];
@@ -829,7 +846,7 @@ static int cmd_image(int argc, char **argv)
             return 1;
         }
     }
-    r = image_write(core, &src, files, n, NULL, NULL, &unread, err);
+    r = image_write(core, &src, files, n, after ? stop_after : NULL, &stop, &unread, err);
     for (i = 0; i < n; i++) {
         if (files[i].failed) {
             printf("%s failed: %s\n", image_name(files[i].format), strerror(files[i].failed));
@@ -846,11 +863,13 @@ static int cmd_image(int argc, char **argv)
         close(files[i].fd);
     }
     printf("%llu bytes not read\n", (unsigned long long)unread);
-    if (r)
+    if (r < 0)
         printf("failed: %s\n", err);
+    else if (r)
+        printf("ended after %llu bytes of memory\n", (unsigned long long)stop.done);
     image_source_free(&src);
     close(core);
-    return r ? 1 : 0;
+    return r < 0 ? 1 : 0;
 }
 
 int main(int argc, char **argv)
@@ -927,6 +946,8 @@ int main(int argc, char **argv)
         return cmd_image_source(argv[2], argv[3]);
     if (argc >= 6 && argc % 2 == 0 && !strcmp(argv[1], "image"))
         return cmd_image(argc - 2, argv + 2);
+    if (argc == 4 && !strcmp(argv[1], "scan-until"))
+        return cmd_scan_until(argv[2], argv[3]);
     if (argc == 3 && !strcmp(argv[1], "cached"))
         return cmd_cached(argv[2]);
     if (argc == 3 && !strcmp(argv[1], "forget"))
@@ -951,16 +972,12 @@ int main(int argc, char **argv)
         return cmd_dm_answer(argv[2], argv[3]);
     if (argc >= 3 && !strcmp(argv[1], "volumes"))
         return cmd_volumes(argc - 2, argv + 2);
-    if (argc == 2 && !strcmp(argv[1], "dm-volumes"))
-        return cmd_dm_volumes();
-    if (argc == 2 && !strcmp(argv[1], "dm-list"))
-        return cmd_dm_list();
     if ((argc == 3 || argc == 4) && !strcmp(argv[1], "dm-table"))
         return cmd_dm_table(argc == 4 ? argv[3] : NULL, argv[2]);
     fprintf(stderr, "usage: keep-unit [plain] selftest | cpu | hash NAME | pbkdf2 NAME KEY SALT ITERATIONS LENGTH | json | luks FILE | "
             "luks-backup FILE OUT | luks-prove FILE KEYFILE | mount-of MOUNTINFO PATH | in-use SYSFS MOUNTINFO SWAPS MAJOR MINOR | other-fs MOUNTS | "
             "lockdown FILE | secure-boot DIR | os-name FILE FILE | memory FILE | names NAME | image-source IOMEM CORE | "
             "image IOMEM CORE FORMAT OUT... | cached FILE | forget FILE | snappy | text FILE MAX | written FILE | table-text FILE | dm-answer list|table FILE | volumes FILE... | "
-            "dm-list | dm-table NAME [CONTROL] | dm-volumes\n");
+            "scan-until FILE N | dm-table NAME [CONTROL]\n");
     return 2;
 }

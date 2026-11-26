@@ -50,6 +50,7 @@
  * key that is not proven, 3 for a failed self-test of the search.
  */
 #include "dump.h"
+#include "run.h"
 #include "triage.h"
 
 #include <errno.h>
@@ -150,7 +151,8 @@ static int number(const char *s, unsigned *out)
  * That limit, and the limit of processor time, whose signal SIGXCPU cannot be refused for
  * good, are taken off where the process may, which root may: they are settings of a shell of
  * the examined system, and would cut a memory image or a long proof. An interrupt from the
- * keyboard and SIGTERM end the run as before: they are the examiner's.
+ * keyboard and SIGTERM are the examiner's: the first is noted, and the run ends its long
+ * steps where they are and writes its report (run_heed).
  */
 static void undisturbed(void)
 {
@@ -161,6 +163,7 @@ static void undisturbed(void)
     signal(SIGXFSZ, SIG_IGN);
     setrlimit(RLIMIT_FSIZE, &none);
     setrlimit(RLIMIT_CPU, &none);
+    run_heed();
 }
 
 static int wrong(const char *what)

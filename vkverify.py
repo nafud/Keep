@@ -6,7 +6,8 @@ The lab-side verifier of Keep.
     python3 -I vkverify.py CANDIDATES [HEADER...] [--image DISK]... [--truth DIR] [--out DIR]
                            [--json FILE] [--show-keys]
 
-CANDIDATES is the output of kcore-keyscan, one line per schedule:
+CANDIDATES is the list of the scanner, as "keep -s" writes it to keys/candidates.txt, a key run
+to keys/kcore-candidates.txt and kcore-keyscan to its output, one line per schedule:
     AES-256 phys 0x... virt 0x... key <hex>
 HEADER is a LUKS1 or LUKS2 header that starts at the beginning of the file: a file made by
 "cryptsetup luksHeaderBackup", or the image of the encrypted partition.
@@ -64,7 +65,7 @@ first. The distance only sets the order of the attempts. The digest alone decide
 With many candidates and no proof the pairs are many: n keys of one size give n * n pairs, each
 one PBKDF2 run. The number of tests is printed at the start of each header, and while a header
 takes long a line on standard error says how far the run is.
---json FILE   write the result for a program (schema keep-report/1). A key is named in it
+--json FILE   write the result for a program (schema keep-report/2). A key is named in it
               by the first 16 digits of its SHA-256 and never written, also with --show-keys.
 --show-keys   print the keys. Without it a key is named by the first 16 digits of its SHA-256.
 
@@ -83,7 +84,7 @@ import time
 import uuid
 import zlib
 
-VERSION = "1.5.0"
+VERSION = "1.5.1"
 XTS_DISTANCE = 496      # data schedule minus tweak schedule, struct aesni_xts_ctx
 LINE = re.compile(r"^AES-(128|256) phys (0x[0-9a-f]+) virt (\S+) key ([0-9a-f]+)\s*$")
 SHOW = False
@@ -844,7 +845,7 @@ def main():
         print(f"  AES-{len(k) * 8}  {name_of(k)}  {len(where)} cop{'y' if len(where) == 1 else 'ies'}  "
               + " ".join(f"0x{p:x}" for p in sorted(where)[:4]) + (" ..." if len(where) > 4 else ""))
 
-    report = dict(schema="keep-report/1", tool="vkverify.py " + VERSION,
+    report = dict(schema="keep-report/2", tool="vkverify.py " + VERSION,
                   started_utc=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                   source=os.path.basename(a.candidates),
                   candidates=dict(schedules=sum(map(len, cand.values())), keys=len(cand),

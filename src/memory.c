@@ -35,7 +35,7 @@
 #define MIB 1048576ull
 #define SPARE (64 * MIB)        /* left free in the destination beside an image */
 
-static const char CAPTURED[] = "captured", SKIPPED[] = "skipped", FAILED[] = "failed";
+static const char CAPTURED[] = "captured", SKIPPED[] = "skipped", FAILED[] = "failed", INTERRUPTED[] = "interrupted";
 
 enum run_tone memory_tone(const struct memory_image *m)
 {
@@ -65,22 +65,40 @@ static void settle(struct run *r, struct memory_image *m, const char *status, co
 
 struct progress {
     struct run *r;
-    uint64_t total;
+    uint64_t total, done;
     time_t start, last;
 };
 
-/* How far the read is, so that a long one is seen to go on. */
-static void progress(void *arg, uint64_t done)
+/* How far the read is, so that a long one is seen to go on. A run that was asked to end
+   ends the read here, before the end of the memory. */
+static int progress(void *arg, uint64_t done)
 {
     struct progress *p = arg;
     char read[32], all[32];
 
-    if (done >= p->total || !run_due(p->r, &p->last))
-        return;
+    p->done = done;
+    if (done >= p->total)
+        return 0;
+    if (run_interrupted)
+        return 1;
+    if (!run_due(p->r, &p->last))
+        return 0;
     size_text(done, read);
     size_text(p->total, all);
     run_progress(p->r, "reading", "%s of %s, %u %%, %lld s", read, all, (unsigned)(done * 100 / p->total),
                  (long long)(time(NULL) - p->start));
+    return 0;
+}
+
+/* Whether the first DONE bytes of the memory of a source are whole ranges of it. */
+static int whole_ranges(const struct image_source *src, uint64_t done)
+{
+    uint64_t sum = 0;
+    size_t i;
+
+    for (i = 0; i < src->nranges && sum < done; i++)
+        sum += src->ranges[i].end - src->ranges[i].start;
+    return sum == done;
 }
 
 /* A file of memory/ with the bytes of BUF. */
@@ -165,7 +183,7 @@ void memory_run(struct run *r, const enum image_format *formats, size_t n, struc
     struct statvfs vfs;
     uint64_t room = 0, unread = 0;
     size_t i, nfiles = 0;
-    int core = -1, failed;
+    int core = -1, ended;
 
     memset(res, 0, sizeof *res);
     res->nimages = n < IMAGE_FORMATS ? n : IMAGE_FORMATS;
@@ -174,6 +192,11 @@ void memory_run(struct run *r, const enum image_format *formats, size_t n, struc
         res->images[i].status = FAILED;
     }
     run_title(r, "memory image");
+    if (run_interrupted) {
+        for (i = 0; i < res->nimages; i++)
+            settle(r, &res->images[i], INTERRUPTED, "not begun: the run was asked to end before the image");
+        return;
+    }
     if (pathf(path, "%s/memory", r->out) || mkdir(path, 0700)) {
         r->write_failed = 1;
         for (i = 0; i < res->nimages; i++)
@@ -233,7 +256,7 @@ void memory_run(struct run *r, const enum image_format *formats, size_t n, struc
 
     pr.total = src.bytes;
     pr.start = pr.last = time(NULL);
-    failed = image_write(core, &src, files, nfiles, progress, &pr, &unread, err);
+    ended = image_write(core, &src, files, nfiles, progress, &pr, &unread, err);
     res->seconds = (unsigned)(time(NULL) - pr.start);
     for (i = 0; i < nfiles; i++) {
         struct memory_image *m = of[i];
@@ -252,21 +275,37 @@ void memory_run(struct run *r, const enum image_format *formats, size_t n, struc
             settle(r, m, FAILED, "the write failed: %s. The part that was written is removed", strerror(why));
             continue;
         }
-        m->status = CAPTURED;
         m->bytes = files[i].bytes;
         m->direct = files[i].direct;
         hex_encode(files[i].sha256, 32, m->sha256);
         if (run_add(r, m->file, files[i].sha256))
             r->write_failed = 1;
-        res->captured++;
         label_of(m, label);
-        run_mark(r, label, RUN_REACHED, CAPTURED, "%llu bytes, %u s", (unsigned long long)m->bytes, res->seconds);
+        if (ended == 1) {
+            /* The file is kept: it is the memory up to the place where the read was ended,
+               and is named as that and not as an image of the machine. A LiME image states
+               the end of a range before the range, so one that was ended inside a range has
+               a last range that is shorter than its header says. */
+            int inside = m->format == IMAGE_LIME && !whole_ranges(&src, pr.done);
+
+            m->status = INTERRUPTED;
+            snprintf(m->note, sizeof m->note, "the read was ended by a signal: the file holds the first %llu of %llu "
+                     "bytes of the memory%s", (unsigned long long)pr.done, (unsigned long long)pr.total,
+                     inside ? ", and its last range ends before the end that its header states" : "");
+            run_mark(r, label, RUN_NOT, INTERRUPTED, "%llu bytes, %u s", (unsigned long long)m->bytes, res->seconds);
+            run_field(r, "holds", "the first %llu of %llu bytes of the memory%s", (unsigned long long)pr.done,
+                      (unsigned long long)pr.total, inside ? ". Its last range ends before the end that its header states" : "");
+        } else {
+            m->status = CAPTURED;
+            res->captured++;
+            run_mark(r, label, RUN_REACHED, CAPTURED, "%llu bytes, %u s", (unsigned long long)m->bytes, res->seconds);
+        }
         run_field(r, "sha256", "%s", m->sha256);
         run_field(r, "written", "%s", m->direct ? "direct (O_DIRECT), pages released from the page cache"
                                                 : "through the page cache, pages released from it: the file system of the "
                                                   "destination takes no direct writes");
     }
-    if (failed && res->captured)
+    if (ended < 0 && res->captured)
         run_field(r, "warning", "%s", err);
     if (unread && res->captured) {
         run_field(r, "warning", "%llu bytes could not be read from /proc/kcore and are zeros in the image", (unsigned long long)unread);

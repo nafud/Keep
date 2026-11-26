@@ -72,6 +72,7 @@ Because it asks cryptsetup nothing, it takes none of its locks. On a volume whos
 - Keep writes into the destination directory and nowhere else, and what it asks of the kernel changes nothing there. No name of the examined system is used in a file name as it is.
 - The memory of the process is locked, so that no key reaches the swap space, and the process writes no core file.
 - A run is not ended by the loss of its screen: it goes on when the reader of a pipe goes away and when its terminal hangs up. A limit of the size of a file that the shell of the examined system had is taken off, so that it does not cut an image.
+- An interrupt from the keyboard ends the long steps of a run and not the run: the keys that cost no time are still taken, and the report and the manifest are written.
 - A control character in a text of the examined system, as in the name of a mapping, is printed as a space.
 - The search of a dump and the lab tools only read the dump and the images they are given.
 
@@ -96,7 +97,7 @@ Every part of the program that reads bytes it did not write is compared with an 
 tests/unit-check.sh
 ```
 
-The whole program is checked on real device-mapper and a real `/proc/kcore`, with volumes made from known keys, on a throwaway guest and never on a machine that matters. The pipeline runs this on every change, on its own two machines and in guests of ten distribution releases. [Systems](systems.md) has a card for each.
+The whole program is checked on real device-mapper and a real `/proc/kcore`, with volumes made from known keys, on a throwaway guest and never on a machine that matters. What it writes is held against the tools of that system: the volumes and their tables against `dmsetup`, the type, the key size and the device of a volume against `cryptsetup status`, a header backup against the file of `cryptsetup luksHeaderBackup`, a key against the key the volume was made from and against `cryptsetup open --test-passphrase`, and a memory image against the image that AVML takes of the same machine. The pipeline runs this on every change, on its own two machines and in guests of ten distribution releases. [Systems](systems.md) has a card for each.
 
 ```bash
 tests/compat-guest.sh -m /path/to/work fedora-45
@@ -106,9 +107,11 @@ A statement on these pages about a kernel, a cryptsetup release or a distributio
 
 ## Version 1 and version 2 { #versions }
 
-Keep 1 is a shell script, `keytriage.sh`, on a tool medium with a static bash, busybox, the scanner and AVML. It uses the `dmsetup` and the `cryptsetup` of the examined system. Keep 2 is the one C program of these pages, which does the work of that medium and starts no program.
+Keep 1 was a shell script, `keytriage.sh`, on a tool medium with a static bash, busybox, the scanner and AVML. It used the `dmsetup` and the `cryptsetup` of the examined system. Keep 2 is the one C program of these pages, which does the work of that medium and starts no program.
 
-Version 2.0 is not released. These pages describe `keep` 2.0-pre12. The script is in the repository beside it, and the pipeline runs both on the same volumes: the C program must write the same line of the report for every volume, and header backups and keys that are the same byte for byte.
+While the C program was written, the pipeline ran both on the same volumes, on its two machines and in the ten guests: the C program wrote the same line of the report for every volume, and header backups and keys that were the same byte for byte. With that shown, the script and its medium were taken out of the repository, where its history keeps them, and the program is now held against `cryptsetup` and `dmsetup` themselves.
+
+These pages describe `keep` 2.0-rc1, the release candidate of 2.0. Version 2.0 is not released.
 
 ## The keys of these pages { #keys }
 

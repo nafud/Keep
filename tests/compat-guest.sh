@@ -5,16 +5,20 @@
 #   tests/compat-guest.sh -m work fedora-45
 #   tests/compat-guest.sh -m work mine ~/Downloads/some-cloud-image.x86_64.qcow2
 #
-# This is the unattended form of the compatibility check, for the pipeline and for a workstation
-# without libvirt. tests/make-compat-vm.sh starts a guest that stays, for work by hand.
+# This is the unattended form of the compatibility check, for the pipeline and for a
+# workstation. With -k the guest stays, for work by hand.
 #
 # Without IMAGE, NAME is a name of tests/compat-images.txt. The image of that line is fetched
 # from the distribution's site into WORKDIR/images/ unless it is there, and it is used only when
 # its SHA-256 or SHA-512 equals the value of the line. With IMAGE, that file is taken: an x86-64
 # cloud image (qcow2 or raw) which the caller has checked against its published checksum.
 # The image is only read: the guest runs on a copy, WORKDIR/guest/NAME/disk.qcow2, grown to
-# 20 GB. WORKDIR/tools.iso is the tool medium that build-toolkit.sh WORKDIR wrote, attached as a
-# CD-ROM.
+# 20 GB.
+#
+# The guest is given what the check runs, copied over SSH: keep, tests/keep-unit and
+# tests/keyscan as "make all tests/keyscan" built them in this repository, static, and
+# compat-check.sh. With -m or -c it is also given AVML, the file that the variable AVML names
+# (tests/get-avml.sh fetches it).
 #
 # The guest: 2 vCPU, 2 GiB (MEM=4096 raises it), BIOS boot, so kernel lockdown is "none". It runs
 # under KVM where /dev/kvm can be opened and is emulated otherwise, which is slow but runs the
@@ -22,8 +26,8 @@
 # without a password, and installs cryptsetup, dosfstools and lvm2. The check is started over
 # SSH through sudo, as an examiner would start it, on the port PORT of this machine (2222).
 #
-#   -m   compat-check.sh also takes the memory image and searches it
-#   -c   the same with the compressed image
+#   -m   compat-check.sh also takes the memory images and searches them
+#   -c   the same, with the image of AVML in its compressed format
 #   -k   keep the guest running afterwards and print how to log in
 #
 # Output: what compat-check.sh printed, also in WORKDIR/guest/NAME/compat.txt, and the serial
@@ -80,8 +84,13 @@ else
     [ "$GOT" = "$SUM" ] || die "$IMG has the $HASH $GOT, not the value of compat-images.txt, and is not used"
     echo "image ${URL##*/}: $HASH equals the pinned value"
 fi
-[ -f "$W/tools.iso" ] || die "no $W/tools.iso (build-toolkit.sh $W makes it)"
 [ -f "$HERE/compat-check.sh" ] || die "compat-check.sh is not next to this script"
+for f in "$HERE/../keep" "$HERE/keep-unit" "$HERE/keyscan"; do
+    [ -x "$f" ] || die "no $f (make all tests/keyscan builds it)"
+done
+if [ -n "$MEMFLAG" ]; then
+    [ -n "${AVML:-}" ] && [ -x "$AVML" ] || die "-m and -c need AVML=/path/to/avml (tests/get-avml.sh fetches it)"
+fi
 D=$W/guest/$N
 [ ! -e "$D" ] || die "$D exists, remove it first"
 mkdir -p "$D" || die "cannot create $D"
@@ -121,7 +130,6 @@ qemu-system-x86_64 "${ACCEL[@]}" -m "${MEM:-2048}" -smp 2 -display none \
     -device virtio-rng-pci \
     -drive "file=$D/disk.qcow2,if=virtio,format=qcow2" \
     -drive "file=$D/seed.iso,media=cdrom,readonly=on,format=raw" \
-    -drive "file=$W/tools.iso,media=cdrom,readonly=on,format=raw" \
     -nic "user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$PORT-:22" \
     || die "QEMU did not start"
 PID=$(cat "$D/qemu.pid")
@@ -150,10 +158,17 @@ guest "sudo timeout $((3 * BOOTWAIT)) cloud-init status --wait" > "$D/cloud-init
 [ $? -ne 124 ] || die "cloud-init of the guest did not finish within $((3 * BOOTWAIT)) s after SSH answered (see $D/console.log)"
 echo "guest kc-$N: cloud-init $(tr -s '.\n' ' ' < "$D/cloud-init.txt" | sed 's/^ *//') after $((SECONDS - t0)) s"
 
-scp "${SSH[@]}" -q -P "$PORT" "$HERE/compat-check.sh" tester@127.0.0.1:compat-check.sh || die "cannot copy compat-check.sh into the guest"
-guest "sudo mkdir -p /media/tools && sudo mount -o ro,exec /dev/disk/by-label/KEEPTOOLS /media/tools" \
-    || die "the guest cannot mount the tool medium"
-guest "sudo bash compat-check.sh $MEMFLAG /media/tools" 2>&1 | tee "$D/compat.txt"
+# the layout of the repository, so that compat-check.sh finds the programs beside itself
+guest "mkdir -p kit/tests" || die "cannot make a directory in the guest"
+scp "${SSH[@]}" -q -P "$PORT" "$HERE/../keep" tester@127.0.0.1:kit/keep &&
+    scp "${SSH[@]}" -q -P "$PORT" "$HERE/keep-unit" "$HERE/keyscan" "$HERE/compat-check.sh" tester@127.0.0.1:kit/tests/ ||
+    die "cannot copy the programs and compat-check.sh into the guest"
+GAVML=""
+if [ -n "$MEMFLAG" ]; then
+    scp "${SSH[@]}" -q -P "$PORT" "$AVML" tester@127.0.0.1:kit/avml || die "cannot copy AVML into the guest"
+    GAVML='AVML=$PWD/kit/avml'
+fi
+guest "sudo $GAVML bash kit/tests/compat-check.sh $MEMFLAG" 2>&1 | tee "$D/compat.txt"
 
 if [ "$KEEP" = 1 ]; then
     echo "guest kc-$N keeps running, process $PID. Log in: ssh -i $D/key -p $PORT tester@127.0.0.1"

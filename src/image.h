@@ -71,12 +71,17 @@ int image_open(struct image_file *f, const char *path);
  * Read the memory of SRC once from CORE and write it to every file of FILES, each in its
  * format. A file whose write fails is left as it is and the others go on. A stretch that
  * cannot be read is written as zeros and counted in *unread. PROGRESS, where given, is called
- * with the bytes of memory done so far. Returns 0 when the memory was read to its end and at
- * least one file is complete, or -1 with err. A file that refused a direct write is written
- * through the page cache from there on and has direct 0.
+ * with the bytes of memory done so far, and ends the read there where it returns another
+ * value than 0. Returns 0 when the memory was read to its end and at least one file is
+ * complete, 1 when PROGRESS ended the read, or -1 with err. A file of a read that was ended
+ * is whole as far as it goes: it holds the memory up to the place of the last call of
+ * PROGRESS, with its SHA-256, in the raw format as a shorter file, in the compressed format as
+ * fewer blocks, and in the LiME format with a last range that ends before the end that its
+ * header states. A file that refused a direct write is written through the page cache from
+ * there on and has direct 0.
  */
 int image_write(int core, const struct image_source *src, struct image_file *files, size_t nfiles,
-                void (*progress)(void *arg, uint64_t done), void *arg, uint64_t *unread,
+                int (*progress)(void *arg, uint64_t done), void *arg, uint64_t *unread,
                 char err[IMAGE_ERR_LEN]);
 
 /*
