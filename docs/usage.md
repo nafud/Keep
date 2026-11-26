@@ -96,7 +96,7 @@ sudo ./keep -m -d /media/evidence
 |---|---|---|
 | `-m` | `memory.lime` | LiME: each range of memory behind a header of 32 bytes with its first and last address. |
 | `-m -f raw` | `memory.raw` | Each byte at the file offset that is its physical address. What lies between the ranges is not written, so the file is as long as the highest address of RAM. |
-| `-m -f avml` | `memory.avml` | The compressed format of AVML, for a destination with less room than the machine has memory. In the runs of the pipeline it had 40 % to 68 % of the memory on guests of 2 GiB. |
+| `-m -f avml` | `memory.avml` | The compressed format of AVML, for a destination with less room than the machine has memory. In the runs of the pipeline it had 38 % to 68 % of the memory on guests of 2 GiB. |
 | `-m -F` | all three | Written from one read of the memory, so the files hold the same memory. They need about three times its room. |
 
 - The memory is read through `/proc/kcore`, the ranges that `/proc/iomem` names as RAM. Kernel lockdown in the mode `confidentiality` refuses that file and with it every image. In the mode `integrity`, which Secure Boot brings on many systems, the image is taken.

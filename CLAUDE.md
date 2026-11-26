@@ -340,8 +340,11 @@ sha256sum keep          # for the notes of the examination
 - The build gives one file for one compiler and one musl. Commit `519023c` gave the same
   file, with the SHA-256 `890e3923...612fedf5`, in the job `build` of the pipeline and in two
   directories of different names on another machine, each with gcc 13.3.0-6ubuntu2~24.04.1
-  and musl-dev 1.2.4-2 of Ubuntu 24.04. A build with another compiler or another musl was
-  not compared with it.
+  and musl-dev 1.2.4-2 of Ubuntu 24.04. Commit `4651f09`, the first with the version 2.0,
+  gave in both places the file with the SHA-256
+  `5cc732729ca0b1ca1a68a343231ef112b564bf19fb35005d679a070dc40f9167`. A commit that changes
+  neither `src/`, the scanner nor the `Makefile` builds that file again. A build with another
+  compiler or another musl was not compared with it.
 - The examined system needs nothing installed: the program uses no `dmsetup`, no `cryptsetup`
   and no shell of that system.
 
@@ -1132,6 +1135,36 @@ With 2.0-rc1 `compat-check.sh` holds `keep` against the tools of the system itse
   with the self-test, the unit checks with AVML, the pages, the build and the two runner
   images.
 
+2.0 is the program of 2.0-rc1 under its new name. The same check ran with it once more, on
+the ten guests and on both runner images (the pipeline of commit `4651f09`):
+
+- On the ten guests the kernel and the cryptsetup were those of the runs with 2.0-rc1 (see
+  "Systems checked"), and each run named its tool as `keep 2.0`. Nine had 23 `PASS` and no
+  other line, and openSUSE Leap 16.1 21 `PASS` and the one `SKIP` of the part with integrity.
+  The numbers of volumes, tables, header backups, keys and pages were those above, and no
+  page of an image lay in the page cache after a run.
+- The LiME image of AVML held all 2146938880 bytes of the memory on eight guests, one block
+  of 16 MiB less on Ubuntu 24.04.5 and ten less on Rocky Linux 10.3. The compressed image of
+  `keep` had 821197033 to 1038426799 bytes, 38 % to 48 % of the memory, and 942255832 to
+  1395531588 bytes where it was one of three from one read. On Rocky Linux 10.3 the
+  compressed image that was taken alone held 2029498368 bytes of memory, seven blocks of
+  16 MiB less than the LiME image before it: the blocks of zeros, which that format leaves
+  out. One image was read in 3 to 13 seconds and all three in 23 to 37. An image whose read
+  was ended held the first 17424384 or 34201600 bytes of the memory.
+- The output of Debian 12 was read line by line. Of the nine others the head, the number of
+  the lines of each kind and these figures were taken.
+- On the two runner images, with the build with the sanitizers at the same places, every
+  part passed and none was skipped, with the same numbers of volumes, tables, header
+  backups, keys and pages. On Ubuntu 22.04.5, here with the kernel 6.8.0-1070-azure, the
+  LiME image of 17174331584 bytes was read in 92 s, and the image of AVML of that machine
+  held 58 blocks of 16 MiB less. On Ubuntu 24.04.5 the kernel chose `xts-aes-vaes-avx512`,
+  where the run before had `xts-aes-vaes-avx2` on another machine. The raw image of
+  20401094656 bytes was read in 79 s and the compressed image of 13344573170 bytes, 78 % of
+  its 17107222528 bytes of memory, in 67 s. The compressed image of AVML held 85 blocks
+  less. An image whose read was ended held the first 17428480 of 17174331392 bytes on both.
+  The build with the sanitizers read the LiME image in 115 s and the raw one in 120 s. Both
+  outputs were read line by line.
+
 The tables of both kinds of volume were first seen on a guest emulated on the workstation
 (Ubuntu 24.04.5, kernel 6.8.0-147-generic, cryptsetup 2.7.0), and `compat-check.sh` passed
 there with every part. On that guest `tests/keep-unit` gave the list, the tables, the UUIDs and
@@ -1791,7 +1824,7 @@ from each the disk byte for byte and prove both keys.
 
 ## Systems checked
 
-`compat-check.sh` passed with `keep` 2.0-rc1 on these x86-64 systems, each with memory images.
+`compat-check.sh` passed with `keep` 2.0 on these x86-64 systems, each with memory images.
 A row names the kernel and the cryptsetup of the latest run it stands for, and the XTS driver
 that the kernel chose in that run. The driver follows the processor of the machine behind the
 runner, which a guest under KVM sees as its own: the guests of Debian 13, AlmaLinux 10.3,
@@ -1801,22 +1834,23 @@ Rocky Linux 10.3 and openSUSE Leap 16.1 each used `xts-aes-vaes-avx2` in one run
 that `distros.yml` boots from the cloud images of `tests/compat-images.txt`, under KVM with BIOS
 boot, so lockdown is `none` on all of them. The last two are the runner images of
 `checks.yml`. The machine behind a runner image differs from run to run and with it the
-kernel. The outputs are kept as artifacts of the pipeline.
+kernel and the XTS driver: the image `ubuntu-24.04` had `xts-aes-vaes-avx2` in one run and
+`xts-aes-vaes-avx512` in the next. The outputs are kept as artifacts of the pipeline.
 
 | System | Kernel | cryptsetup | Key option | XTS driver | `keep` |
 |---|---|---|---|---|---|
-| Debian 13 | 6.12.117+deb13-amd64 | 2.7.5 | `--volume-key-file` | `xts-aes-vaes-avx10_512` | 2.0-rc1 |
-| Debian 12 | 6.1.0-56-amd64 | 2.6.1 | `--volume-key-file` | `xts-aes-aesni` | 2.0-rc1 |
-| Ubuntu 26.04.1 | 7.0.0-43-generic | 2.8.4 | `--volume-key-file` | `xts-aes-vaes-avx512` | 2.0-rc1 |
-| Ubuntu 24.04.5 | 6.8.0-147-generic | 2.7.0 | `--volume-key-file` | `xts-aes-aesni` | 2.0-rc1 |
-| Fedora 45 | 7.2.11-300.fc45.x86_64 | 2.8.9 | `--volume-key-file` | `xts-aes-vaes-avx512` | 2.0-rc1 |
-| AlmaLinux 10.3 | 6.12.0-264.16.1.el10_3.x86_64 | 2.8.6 | `--volume-key-file` | `xts-aes-vaes-avx10_512` | 2.0-rc1 |
-| AlmaLinux 9.9 | 5.14.0-741.22.1.el9_9.x86_64 | 2.8.6 | `--volume-key-file` | `xts-aes-aesni` | 2.0-rc1 |
-| Rocky Linux 10.3 | 6.12.0-264.16.1.el10_3.x86_64 | 2.8.6 | `--volume-key-file` | `xts-aes-vaes-avx10_512` | 2.0-rc1 |
-| openSUSE Leap 16.1, Build3.23 | 6.12.0-160100.9-default | 2.8.4 | `--volume-key-file` | `xts-aes-vaes-avx10_512` | 2.0-rc1, without the part with integrity |
-| Arch Linux, image of 2026-11-15 | 7.3.4-arch1-2 | 2.8.9 | `--volume-key-file` | `xts-aes-vaes-avx512` | 2.0-rc1 |
-| Ubuntu 24.04.5, runner image | 7.0.0-1020-azure | 2.7.0 | `--volume-key-file` | `xts-aes-vaes-avx2` | 2.0-rc1, also the build with the sanitizers |
-| Ubuntu 22.04.5, runner image | 6.8.0-1073-azure | 2.4.3 | `--master-key-file` | `xts-aes-aesni` | 2.0-rc1, also the build with the sanitizers |
+| Debian 13 | 6.12.117+deb13-amd64 | 2.7.5 | `--volume-key-file` | `xts-aes-vaes-avx10_512` | 2.0 |
+| Debian 12 | 6.1.0-56-amd64 | 2.6.1 | `--volume-key-file` | `xts-aes-aesni` | 2.0 |
+| Ubuntu 26.04.1 | 7.0.0-43-generic | 2.8.4 | `--volume-key-file` | `xts-aes-vaes-avx512` | 2.0 |
+| Ubuntu 24.04.5 | 6.8.0-147-generic | 2.7.0 | `--volume-key-file` | `xts-aes-aesni` | 2.0 |
+| Fedora 45 | 7.2.11-300.fc45.x86_64 | 2.8.9 | `--volume-key-file` | `xts-aes-vaes-avx512` | 2.0 |
+| AlmaLinux 10.3 | 6.12.0-264.16.1.el10_3.x86_64 | 2.8.6 | `--volume-key-file` | `xts-aes-vaes-avx10_512` | 2.0 |
+| AlmaLinux 9.9 | 5.14.0-741.22.1.el9_9.x86_64 | 2.8.6 | `--volume-key-file` | `xts-aes-aesni` | 2.0 |
+| Rocky Linux 10.3 | 6.12.0-264.16.1.el10_3.x86_64 | 2.8.6 | `--volume-key-file` | `xts-aes-vaes-avx10_512` | 2.0 |
+| openSUSE Leap 16.1, Build3.23 | 6.12.0-160100.9-default | 2.8.4 | `--volume-key-file` | `xts-aes-vaes-avx10_512` | 2.0, without the part with integrity |
+| Arch Linux, image of 2026-11-15 | 7.3.4-arch1-2 | 2.8.9 | `--volume-key-file` | `xts-aes-vaes-avx512` | 2.0 |
+| Ubuntu 24.04.5, runner image | 7.0.0-1020-azure | 2.7.0 | `--volume-key-file` | `xts-aes-vaes-avx512` | 2.0, also the build with the sanitizers |
+| Ubuntu 22.04.5, runner image | 6.8.0-1070-azure | 2.4.3 | `--master-key-file` | `xts-aes-aesni` | 2.0, also the build with the sanitizers |
 
 The key option is the one that the check gives `cryptsetup open --test-passphrase`, which
 holds the proof of `keep` against cryptsetup. `keep` itself uses no cryptsetup.

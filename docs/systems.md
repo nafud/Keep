@@ -109,7 +109,7 @@ The guests have 2 GiB of memory and boot with BIOS under KVM, so kernel lockdown
 
 ## The machines of the pipeline { #runners }
 
-The same check runs on the two runner images of the pipeline itself, on every change. These machines have 16 GiB of memory, which makes their images the largest that the check takes. The machine behind a runner image differs from run to run, and with it the kernel.
+The same check runs on the two runner images of the pipeline itself, on every change. These machines have 16 GiB of memory, which makes their images the largest that the check takes. The machine behind a runner image differs from run to run, and with it the kernel and the XTS driver.
 
 <div class="home-grid">
 <div class="system-card">
@@ -117,20 +117,20 @@ The same check runs on the two runner images of the pipeline itself, on every ch
 <dl>
 <dt>kernel</dt><dd>7.0.0-1020-azure</dd>
 <dt>cryptsetup</dt><dd>2.7.0</dd>
-<dt>xts driver</dt><dd><code>xts-aes-vaes-avx2</code></dd>
+<dt>xts driver</dt><dd><code>xts-aes-vaes-avx512</code></dd>
 <dt>memory</dt><dd>16 GiB</dd>
 </dl>
-<p>The raw image, 20401094656 bytes, was read in 44 s and the compressed one, 13378372395 bytes, in 46 s. The build with the sanitizers runs here too.</p>
+<p>The raw image, 20401094656 bytes, was read in 79 s and the compressed one, 13344573170 bytes, in 67 s. The build with the sanitizers runs here too.</p>
 </div>
 <div class="system-card">
 <span class="system-card-title">Ubuntu 22.04.5, runner image</span>
 <dl>
-<dt>kernel</dt><dd>6.8.0-1073-azure</dd>
+<dt>kernel</dt><dd>6.8.0-1070-azure</dd>
 <dt>cryptsetup</dt><dd>2.4.3</dd>
 <dt>xts driver</dt><dd><code>xts-aes-aesni</code></dd>
 <dt>memory</dt><dd>16 GiB</dd>
 </dl>
-<p>The LiME image, 17174331584 bytes, was read in 101 s. The build with the sanitizers runs here too.</p>
+<p>The LiME image, 17174331584 bytes, was read in 92 s. The build with the sanitizers runs here too.</p>
 </div>
 </div>
 

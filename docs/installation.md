@@ -40,7 +40,13 @@ keep: OK
 chmod +x keep
 ```
 
-The pipeline builds the file from the commit that the tag `v2.0` names, and publishes it only where the checks of that commit have passed and the file is, byte for byte, the one that those checks had built in a run of their own. The SHA-256 beside the file says that the download is whole. It comes from the same place as the file, so it says no more than that: who wants to rely on the source alone builds the file.
+The pipeline builds the file from the commit that the tag `v2.0` names, and publishes it only where the checks of that commit have passed and the file is, byte for byte, the one that those checks had built in a run of their own. The SHA-256 of `keep` 2.0 is:
+
+```text
+5cc732729ca0b1ca1a68a343231ef112b564bf19fb35005d679a070dc40f9167
+```
+
+The SHA-256 beside the file says that the download is whole. It comes from the same place as the file, so it says no more than that: who wants to rely on the source alone builds the file, and gets this file with the compiler and the musl that are named below.
 
 ## Build { #build }
 
