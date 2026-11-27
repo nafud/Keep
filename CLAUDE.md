@@ -1809,8 +1809,11 @@ from each the disk byte for byte and prove both keys.
     cryptsetup, the XTS driver of the latest run and whether a `System.map` is kept there.
     The program and its commands are the same on every distribution, so the distributions
     have cards of what differs and no page of their own in the other sections.
-  - `about.md`: what Keep does, the ideas behind it, safeguards, limits, how it is checked,
-    the keys of the pages, and the references, numbered and cited in the text.
+  - `about.md`: the need that Keep answers, the earlier work it stands on, what it adds to
+    that, what it does, the ideas behind it, safeguards, limits, how it is checked with a
+    table of what the runs showed, the keys of the pages, and the references. A reference
+    has the number of its first citation in the text, which `pages-check.sh` does not look
+    at: it looks that each is cited and each citation has its reference.
 - A page loads nothing from another host: the fonts are in `docs/assets/fonts/` with their
   licences, and `font: false` keeps the theme from loading its own. `pages-check.sh` reads
   every built page and every stylesheet for it. A link to another site is a link for the
@@ -1828,6 +1831,14 @@ from each the disk byte for byte and prove both keys.
     musl.libc.org could not be fetched from where the pages were written, and the files of
     the kernel are named by their release and path on GitHub and were not fetched there. The
     others were fetched and their titles compared.
+  - Of the eleven papers among the references, the authors, the title, the journal or the
+    proceedings, the volume, the pages and the year are those of the record that Crossref
+    has for the DOI. The publishers' pages could not be fetched from where the pages were
+    written, and no paper was read there in full. What the About page says of a paper is
+    what its abstract says, as a search gave it, and no more than that. RFC 3227 and the
+    case study of drgn were read from their own pages.
+  - The section on earlier work is no systematic review, which it says: commercial tools
+    were not looked at, and other tools were searched for on the web in a few queries.
   - The build of Material for MkDocs 9.8.2 says of itself that it reaches its end of life
     on May 5, 2027, with fixes until then, and names Zensical as its successor. Keep took
     the setup of Kiln over with 9.8.1. 9.8.2 came as a proposal of dependabot: its two
