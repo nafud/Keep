@@ -7,7 +7,7 @@
 #   mkdocs serve              # the pages at http://127.0.0.1:8000/Keep/
 #   mkdocs build --strict     # the pages in site/, as the pipeline builds them
 site_name: Keep
-site_description: Decryption-readiness triage for live Linux forensics
+site_description: dm-crypt volume key triage for live Linux forensics
 site_url: https://nafud.github.io/Keep/
 repo_url: https://github.com/nafud/Keep
 repo_name: nafud/Keep
@@ -95,6 +95,13 @@ theme:
   features:
     - navigation.instant
     - content.code.copy
+
+# The version of the program that the pages describe and that the home
+# page offers. overrides/main.html hands it to the page, and
+# page-chrome.js shows it on the frame of the home page.
+# tests/pages-check.sh compares it with KEEP_VERSION of src/triage.h.
+extra:
+  keep_version: "2.0"
 
 extra_css:
   - stylesheets/extra.css

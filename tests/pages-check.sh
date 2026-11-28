@@ -15,7 +15,9 @@
 #              picture is a file of the site itself
 #   theme      what the stylesheet and the scripts hook in Material is still in the built pages,
 #              and what they removed is not: sidebars, the search and Kiln's palette
-#   version    the pages name the version of the C program, KEEP_VERSION, and no other
+#   version    the pages name the version of the C program, KEEP_VERSION, and no other: the
+#              screen of the installation page, the frame of the home page and the file that
+#              the home page offers
 #   references every reference of the About page is cited and every citation has its reference
 #
 # It reads the repository and writes into a temporary directory, which it removes. It needs
@@ -146,6 +148,13 @@ elif what == "version":
         version = m.group(1)
         if ("keep %s (" % version) not in re.sub(r"<[^>]+>", "", pages["installation"] or ""):
             bad.append("the installation page does not show keep %s" % version)
+        home = pages[""] or ""
+        named = re.findall(r'<meta name="keep-version" content="([^"]*)"', home)
+        if named != [version]:
+            bad.append("the home page names %s for its frame, not %s: extra.keep_version of mkdocs.yml" % (named, version))
+        offered = re.findall(r'href="(https://github\.com/nafud/Keep/releases/download/[^"]*)"[^>]*>download keep ([^<]*)<', home)
+        if offered != [("https://github.com/nafud/Keep/releases/download/v%s/keep" % version, version)]:
+            bad.append("the home page offers %s, not keep %s of the release v%s" % (offered, version, version))
         for name, text in pages.items():
             for other in set(re.findall(r"\b\d+\.\d+-(?:pre|rc)\d+\b", text or "")) - {version}:
                 bad.append("%s names the version %s" % (name or "index", other))

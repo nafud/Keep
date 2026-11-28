@@ -1772,8 +1772,12 @@ from each the disk byte for byte and prove both keys.
   only.
 - The pages describe `keep` in the version of `KEEP_VERSION`, which
   `pages-check.sh` compares with what the built pages name and `selftest.sh` with their
-  sources. A sentence on them follows rule 8 like any other: it comes from the source of a
-  version or from a run, and says which.
+  sources: the screen on the installation page, the version on the frame of the home page,
+  and the address of the file that the home page offers, which is that of the release
+  `v` and that version. The checks compare texts and fetch nothing: for a version that has
+  no release, as one with a suffix, the address they ask for leads nowhere, and the home
+  page is then to be given something else to offer. A sentence on the pages follows rule 8
+  like any other: it comes from the source of a version or from a run, and says which.
 - The pages are built with Material for MkDocs, in the setup of the site of Kiln
   (github.com/nafud/Kiln): its `mkdocs.yml`, its templates in `overrides/`, its stylesheet
   `docs/stylesheets/extra.css` and its page scripts in `docs/javascripts/`, with `kiln` in
@@ -1785,7 +1789,12 @@ from each the disk byte for byte and prove both keys.
     form.
   - Added to Kiln's stylesheet, in one block before its rules for narrow screens: the tones
     of a sample of the screen of `keep` (three colours that every theme sets), the cards of
-    the systems, the two sentences of the home page, and the size of a citation.
+    the systems, the sentence of the home page and its button to the released file, and the
+    size of a citation.
+  - Where Kiln's frame shows the path `~` on the home page, the frame of Keep shows the
+    version of the program, as `v2.0`. It is `extra.keep_version` of `mkdocs.yml`, which
+    `overrides/main.html` hands to the page in a `meta` element and `page-chrome.js` shows.
+    The other pages have Kiln's path, `~/usage`, with `~` as the link to the home page.
   - The themes are Kiln's five in its order: `terminal`, which a reader gets first, `system
     light`, `system dark`, `phosphor` and `nord`. The key `t` goes to the next.
   - The keys are Kiln's: `j` and `k` a step, `gg` and `G` the start and the end, `h` and `l`
@@ -1798,8 +1807,10 @@ from each the disk byte for byte and prove both keys.
     another site opens in a tab of its own.
 - There are five pages, written in Markdown:
   - `index.md`, the home page: the word Keep, drawn in characters by `ascii-logo.js` from a
-    blackletter typeface whose three glyphs are embedded in that script, two sentences on
-    what Keep is, and one closing line.
+    blackletter typeface whose three glyphs are embedded in that script, one sentence on
+    what Keep is, a button that fetches `keep` from the release of the version, with a link
+    beside it to the section of the installation page that says how to check the file, and
+    the name of the author.
   - `installation.md`: the released file and how to check it, what the build needs, the
     build, its check and the way to the scene.
   - `usage.md`: the three runs with samples of the screen, the verdicts, the files of a run,

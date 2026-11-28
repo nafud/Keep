@@ -3,7 +3,8 @@
    page switching are keyboard-driven — see key-nav.js.
 
    The statusline is always present: left the page path relative to
-   the site root (~ for the homepage), right the position token — All
+   the site root (on the homepage the version of the program in its
+   place), right the position token — All
    when the page fits, Top at the start, otherwise the percentage
    through 100% at the bottom. The document scrollbar is hidden
    (extra.css), so this is the position indicator. The path's parent
@@ -60,11 +61,19 @@
     return link;
   }
 
+  /* What the homepage shows in place of its path: the version of the
+     program, v2.0, which overrides/main.html names in a meta element
+     from mkdocs.yml. Without that element it is Kiln's plain ~. */
+  function homeLabel() {
+    const meta = document.querySelector('meta[name="keep-version"]');
+    return meta && meta.content ? "v" + meta.content : "~";
+  }
+
   /* Left-hand segment: the page path below the site root, ~-prefixed
-     like a shell prompt; the homepage is plain ~. Every parent
-     segment is a crumb link — ~ itself included, the site root —
-     while the last segment is the current location and stays plain
-     text, as does the whole path on the homepage. */
+     like a shell prompt; the homepage has the version of the program
+     there. Every parent segment is a crumb link — ~ itself included,
+     the site root — while the last segment is the current location
+     and stays plain text, as does the label of the homepage. */
   function updatePath() {
     const path = document.querySelector(".keep-status__path");
     if (!path) return;
@@ -77,7 +86,7 @@
     const parts = rel ? rel.split("/") : [];
     const frag = document.createDocumentFragment();
     frag.appendChild(
-      parts.length ? crumb("~", base) : document.createTextNode("~")
+      parts.length ? crumb("~", base) : document.createTextNode(homeLabel())
     );
     parts.forEach(function (part, i) {
       frag.appendChild(document.createTextNode("/"));

@@ -950,7 +950,7 @@ tt {
 
 /* ---- What the pages of Keep add to Kiln's stylesheet ---- */
 
-/* Homepage text: what Keep is, in two sentences below the word. */
+/* Homepage text: what Keep is, in one sentence below the word. */
 .md-typeset .home-lead {
   margin: 0.4rem 0 0;
   text-align: center;
@@ -958,10 +958,36 @@ tt {
   font-weight: 700;
 }
 
-.md-typeset .home-intro {
-  max-width: 34rem;
-  margin: 0.3rem auto 0;
+/* The way to the released file, below the sentence: the file itself
+   as a button, and beside it the place that says how to check it. */
+.md-typeset .home-get {
+  margin: 1.6rem 0 0;
   text-align: center;
+}
+
+.md-typeset a.home-download {
+  display: inline-block;
+  padding: 0.35rem 0.9rem;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  color: var(--color-text-primary);
+  font-weight: 700;
+  text-decoration: none !important;
+  transition:
+    border-color 200ms ease,
+    color 200ms ease;
+}
+
+.md-typeset a.home-download:hover {
+  opacity: 1; /* cancel the generic link hover fade */
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.md-typeset a.home-verify {
+  margin-left: 0.9rem;
+  color: var(--color-text-muted);
+  font-size: 0.7rem;
 }
 
 /* A sample of the screen of keep, as a terminal shows it (src/run.c):

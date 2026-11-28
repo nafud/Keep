@@ -20,7 +20,8 @@
 #              ewfacquirestream writes it as an EnCase image
 #   usage      -h of a script prints its head comment, and a wrong option is refused
 #   page       the sources of the pages in docs/ show the version of the C program and no
-#              other. The pages themselves are built and read by tests/pages-check.sh
+#              other, mkdocs.yml names it for the frame, and the home page offers the file of
+#              that release. The pages themselves are built and read by tests/pages-check.sh
 #
 # The program keep is checked part by part by tests/unit-check.sh, and on real device-mapper
 # and a real /proc/kcore by tests/compat-check.sh.
@@ -392,6 +393,8 @@ if [ -f docs/installation.md ]; then
         local v n; v=$(sed -n 's/^#define KEEP_VERSION "\([^ "]*\).*/\1/p' src/triage.h)
         [ -n "$v" ] || { echo "no KEEP_VERSION in src/triage.h"; return 1; }
         grep -q "^keep $v (" docs/installation.md || { echo "docs/installation.md does not show keep $v"; return 1; }
+        grep -q "^  keep_version: \"$v\"\$" mkdocs.yml || { echo "mkdocs.yml does not name keep $v as extra.keep_version"; return 1; }
+        grep -qF "[download keep $v](https://github.com/nafud/Keep/releases/download/v$v/keep)" docs/index.md || { echo "docs/index.md does not offer keep $v of the release v$v"; return 1; }
         n=$(grep -ohE '[0-9]\.[0-9]-(pre|rc)[0-9]+' docs/*.md | grep -vcx "$v")
         [ "$n" -eq 0 ] || { echo "$n places of docs/*.md name another version than $v"; return 1; }
     }

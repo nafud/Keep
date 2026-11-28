@@ -1,10 +1,10 @@
 <pre class="keep-ascii" role="img" aria-label="Keep">Keep</pre>
 
-Decryption-readiness triage for live Linux forensics.
+dm-crypt volume key triage for live Linux forensics.
 {: .home-lead }
 
-Keep finds the keys of the encrypted volumes of an unlocked Linux system, proves them and keeps them as evidence, before power-off.
-{: .home-intro }
+[download keep 2.0](https://github.com/nafud/Keep/releases/download/v2.0/keep){: .home-download } [verify](installation.md#release){: .home-verify }
+{: .home-get }
 
-Made by [nafud](https://github.com/nafud), for lawful examination of systems the examiner is authorised to examine.
+Made by [Ravan Huseynli](https://github.com/nafud)
 {: .home-attribution }

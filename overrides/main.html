@@ -1,6 +1,7 @@
 {#-
   The template of every page, taken from the site of Kiln
-  (github.com/nafud/Kiln, overrides/main.html). Three jobs.
+  (github.com/nafud/Kiln, overrides/main.html). Three jobs of Kiln's,
+  and a fourth that Kiln does not have.
 
   Suppresses both sidebars at the template level (the empty site_nav
   block, the same device overrides/404.html uses): the header nav is
@@ -20,6 +21,10 @@
   loads nothing, embedded in ascii-logo.js as a data: URI. crossorigin
   is required on font preloads even same-origin, or the preloaded
   response goes unused and the font is fetched twice.
+
+  Names the version of the program, extra.keep_version of mkdocs.yml,
+  in a meta element. page-chrome.js shows it on the frame of the home
+  page, where Kiln shows the path ~.
 -#}
 {% extends "base.html" %}
 
@@ -27,6 +32,7 @@
 
 {% block extrahead %}
   {{ super() }}
+  <meta name="keep-version" content="{{ config.extra.keep_version }}">
   <link rel="preload" as="font" type="font/woff2" crossorigin href="{{ 'assets/fonts/JetBrainsMono-Regular.woff2' | url }}">
   <script>
     document.documentElement.classList.add("keep-js");
