@@ -6,7 +6,7 @@
    them unrelated meanings), h and l to the previous/next h2 section
    on the page (vim's horizontal pair, repurposed as the horizontal
    motion a document has: across sections; uppercase H/L stay dead). Pages:
-   0 goes home via the header logo, and 1-4 open the top-level
+   0 goes home via the header logo, and 1-3 open the top-level
    sections by clicking the header nav links
    (overrides/partials/header.html). Clicking links, rather than
    assigning location, keeps navigation.instant in charge. The letter bindings are all
@@ -48,7 +48,7 @@
   }
 
   /* Opens the nth top-level section (1-based) by clicking its header
-     nav link; the nav lists exactly the four sections — home is the
+     nav link; the nav lists exactly the three sections — home is the
      [keep] wordmark, owned by the 0 key via the logo. */
   function goToSection(n) {
     const links = document.querySelectorAll(
@@ -208,7 +208,6 @@
       case "1":
       case "2":
       case "3":
-      case "4":
         goToSection(Number(event.key));
         break;
       case "t":

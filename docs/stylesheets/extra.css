@@ -3,8 +3,8 @@
    Material for MkDocs, without the rules of Kiln's jump palette and of
    its content widgets, which these pages do not have. What Keep adds
    stands in one block before the rules for narrow screens: the tones
-   of a sample of the screen of keep, the cards of the systems, the
-   text of the home page and the references. A change of the look
+   of a sample of the screen of keep, the text of the home page and
+   the references. A change of the look
    starts from what Kiln does.
 
    JetBrains Mono is self-hosted (docs/assets/fonts, OFL — license
@@ -1016,52 +1016,6 @@ tt {
 .md-typeset .not {
   color: var(--color-text-primary);
   font-weight: 700;
-}
-
-/* A card of the facts of one system, on the surface recipe and in the
-   home grid. It is no link, so it lies still. Its facts are a label
-   and a value in a line, as keep prints them. */
-.md-typeset .system-card {
-  padding: 0.9rem 1rem;
-  border: 1px solid var(--color-border);
-  border-radius: 4px;
-  background: var(--color-surface);
-}
-
-.md-typeset .system-card-title {
-  display: block;
-  margin-bottom: 0.5rem;
-  color: var(--color-text-primary);
-  font-weight: 700;
-}
-
-.md-typeset .system-card dl {
-  display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
-  column-gap: 1.2ch;
-  row-gap: 0.15rem;
-  margin: 0;
-  font-size: 0.72rem;
-  line-height: 1.55;
-}
-
-.md-typeset .system-card dt {
-  margin: 0;
-  color: var(--color-text-muted);
-  font-weight: 400;
-}
-
-.md-typeset .system-card dd {
-  margin: 0;
-  color: var(--color-text-secondary);
-  overflow-wrap: anywhere;
-}
-
-.md-typeset .system-card p {
-  margin: 0.6rem 0 0;
-  color: var(--color-text-muted);
-  font-size: 0.72rem;
-  line-height: 1.6;
 }
 
 /* A citation in the text and the number of its reference. */

@@ -97,13 +97,55 @@ Every part of the program that reads bytes it did not write is compared with an 
 tests/unit-check.sh
 ```
 
-The whole program is checked on real device-mapper and a real `/proc/kcore`, with volumes made from known keys, on a throwaway guest and never on a machine that matters. What it writes is held against the tools of that system: the volumes and their tables against `dmsetup`, the type, the key size and the device of a volume against `cryptsetup status`, a header backup against the file of `cryptsetup luksHeaderBackup`, a key against the key the volume was made from and against `cryptsetup open --test-passphrase`, and a memory image against the image that AVML takes of the same machine. The pipeline runs this on every change, on its own two machines and in guests of ten distribution releases. [Systems](systems.md) has a card for each.
+The whole program is checked on real device-mapper and a real `/proc/kcore`, with volumes made from known keys, on a throwaway guest and never on a machine that matters. What it writes is held against the tools of that system: the volumes and their tables against `dmsetup`, the type, the key size and the device of a volume against `cryptsetup status`, a header backup against the file of `cryptsetup luksHeaderBackup`, a key against the key the volume was made from and against `cryptsetup open --test-passphrase`, and a memory image against the image that AVML takes of the same machine. The pipeline runs this on its own two machines on every change, and in guests of ten distribution releases whenever the program or its checks change.
 
 ```bash
 tests/compat-guest.sh -m /path/to/work fedora-45
 ```
 
 A statement on these pages about a kernel, a cryptsetup release or a distribution comes from the source of that version or from a run, and says which.
+
+## Tested on { #tested }
+
+Keep was run on these x86-64 systems, on kernels from 4.18 to 7.3.
+
+**By the check.** The pipeline runs `tests/compat-check.sh` with 2.0 in a guest booted from the cloud image of each distribution, and on its own two runners: volumes made from known keys, every result held against `cryptsetup` and `dmsetup`, with memory images. On openSUSE Leap 16.1 the part with LUKS2 integrity was not run.
+
+<table>
+<colgroup><col style="width: 38%"><col style="width: 42%"><col style="width: 20%"></colgroup>
+<thead><tr><th>System</th><th>Kernel</th><th>cryptsetup</th></tr></thead>
+<tbody>
+<tr><td>Debian 13</td><td>6.12.117+deb13-amd64</td><td>2.7.5</td></tr>
+<tr><td>Debian 12</td><td>6.1.0-56-amd64</td><td>2.6.1</td></tr>
+<tr><td>Ubuntu 26.04.1</td><td>7.0.0-43-generic</td><td>2.8.4</td></tr>
+<tr><td>Ubuntu 24.04.5</td><td>6.8.0-147-generic</td><td>2.7.0</td></tr>
+<tr><td>Fedora 45</td><td>7.2.11-300.fc45.x86_64</td><td>2.8.9</td></tr>
+<tr><td>AlmaLinux 10.3</td><td>6.12.0-264.16.1.el10_3.x86_64</td><td>2.8.6</td></tr>
+<tr><td>AlmaLinux 9.9</td><td>5.14.0-741.22.1.el9_9.x86_64</td><td>2.8.6</td></tr>
+<tr><td>Rocky Linux 10.3</td><td>6.12.0-264.16.1.el10_3.x86_64</td><td>2.8.6</td></tr>
+<tr><td>openSUSE Leap 16.1</td><td>6.12.0-160100.9-default</td><td>2.8.4</td></tr>
+<tr><td>Arch Linux</td><td>7.3.4-arch1-2</td><td>2.8.9</td></tr>
+<tr><td>Ubuntu 24.04.5, runner</td><td>7.0.0-1020-azure</td><td>2.7.0</td></tr>
+<tr><td>Ubuntu 22.04.5, runner</td><td>6.8.0-1070-azure</td><td>2.4.3</td></tr>
+</tbody>
+</table>
+
+**By hand.** Systems with Secure Boot on and kernel lockdown `integrity`. On each, a LUKS2 volume with its key in the kernel keyring got <span class="reached">captured and proven</span>, a memory image was taken, and the key was proven once more from a memory image alone. These runs were made with 2.0 on Tails and with pre-releases of 2.0 on the others.
+
+<table>
+<colgroup><col style="width: 38%"><col style="width: 42%"><col style="width: 20%"></colgroup>
+<thead><tr><th>System</th><th>Kernel</th><th>cryptsetup</th></tr></thead>
+<tbody>
+<tr><td>Red Hat Enterprise Linux 8.10</td><td>4.18.0-553.el8_10.x86_64</td><td>2.3.7</td></tr>
+<tr><td>Red Hat Enterprise Linux 9.9</td><td>5.14.0-741.20.1.el9_9.x86_64</td><td>2.8.6</td></tr>
+<tr><td>Red Hat Enterprise Linux 10.3</td><td>6.12.0-264.14.1.el10_3.x86_64</td><td>2.8.6</td></tr>
+<tr><td>Ubuntu Server 26.04.1</td><td>7.0.0-44-generic</td><td>2.8.4</td></tr>
+<tr><td>Linux Mint 22.3</td><td>6.14.0-37-generic</td><td>not noted</td></tr>
+<tr><td>Tails 7.18</td><td>6.12.118+deb13-amd64</td><td>2.7.5</td></tr>
+</tbody>
+</table>
+
+The runs met four XTS drivers of the kernel, and the two halves of the key lay 496 bytes apart with each: `xts-aes-aesni`, `xts-aes-vaes-avx2`, `xts-aes-vaes-avx512` and `xts-aes-vaes-avx10_512`.
 
 ## Version 1 and version 2 { #versions }
 
@@ -123,7 +165,7 @@ The pages have no scrollbar and no menu. The position stands on the lower line o
 | `gg` `G` | To the start and to the end of the page. |
 | `h` `l` | To the heading before and after. |
 | `0` | The home page. |
-| `1` to `4` | Installation, usage, systems, about. |
+| `1` to `3` | Installation, usage, about. |
 | `t` | The next theme: terminal, system light, system dark, phosphor, nord. |
 
 ## References { #references }

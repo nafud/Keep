@@ -123,5 +123,4 @@ plugins: []
 nav:
   - Installation: installation.md
   - Usage: usage.md
-  - Systems: systems.md
   - About: about.md

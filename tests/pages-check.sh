@@ -8,8 +8,8 @@
 # --strict, so that a link between the pages without its target ends the build. Then the built
 # pages are read:
 #
-#   pages      the home page, the four sections and the page for an address that is not there
-#   frame      every page has the four sections on its frame in the order of mkdocs.yml, and
+#   pages      the home page, the three sections and the page for an address that is not there
+#   frame      every page has the three sections on its frame in the order of mkdocs.yml, and
 #              its own marked
 #   own        a page loads nothing from another host: every script, stylesheet, font and
 #              picture is a file of the site itself
@@ -62,7 +62,7 @@ built() {
     python3 -I - "$T/site" "$1" << 'EOF'
 import glob, os, re, sys
 site, what = sys.argv[1], sys.argv[2]
-SECTIONS = ["installation", "usage", "systems", "about"]
+SECTIONS = ["installation", "usage", "about"]
 HOME = "https://nafud.github.io/Keep/"      # site_url: the page for a missing address names its files by it
 bad = []
 def page(name):
@@ -175,8 +175,8 @@ sys.exit("\n".join(bad) or 0)
 EOF
 }
 
-check "the home page, the four sections and 404.html are built" built pages
-check "every page has the four sections on its frame, and its own marked" built frame
+check "the home page, the three sections and 404.html are built" built pages
+check "every page has the three sections on its frame, and its own marked" built frame
 check "a page loads nothing from another host" built own
 check "what the stylesheet and the scripts hook in the theme is there, and no sidebar, search or palette" built theme
 check "the pages name the version of the C program and no other" built version

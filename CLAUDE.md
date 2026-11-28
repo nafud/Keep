@@ -40,7 +40,7 @@ README.
 | `tests/selftest.sh` | test, workstation and pipeline | Runs the checks of the scanner and of the verifier, which need neither root nor device-mapper, and the static checks of every script, and ends with `RESULT: PASS` or `RESULT: FAIL` |
 | `tests/unit-check.sh` | test, workstation and pipeline | Builds `keep` and its parts twice, statically and with the sanitizers of the compiler, and checks each against an independent source: `hashlib`, Python's `json`, `cryptsetup`, AVML |
 | `tests/keep-unit.c` | test | Runs one part of the program at a time, for `unit-check.sh`, and counts the pages of a file or of a block device that lie in the page cache, for `compat-check.sh` as well |
-| `docs/`, `overrides/`, `mkdocs.yml` | GitHub Pages | The pages of Keep, built with Material for MkDocs: the home page `index.md` and the sections `installation.md`, `usage.md`, `systems.md` and `about.md`, the stylesheet `stylesheets/extra.css`, the page scripts in `javascripts/`, the fonts in `assets/fonts/`, and the templates in `overrides/` |
+| `docs/`, `overrides/`, `mkdocs.yml` | GitHub Pages | The pages of Keep, built with Material for MkDocs: the home page `index.md` and the sections `installation.md`, `usage.md` and `about.md`, the stylesheet `stylesheets/extra.css`, the page scripts in `javascripts/`, the fonts in `assets/fonts/`, and the templates in `overrides/` |
 | `requirements.in`, `requirements.txt` | pipeline, workstation | The packages that build the pages: MkDocs and Material, and in the second file every package they bring along, each with its version and its SHA-256 |
 | `tests/pages-check.sh` | test, workstation and pipeline | Builds the pages with `mkdocs build --strict` and reads what was built: the pages, the frame, that nothing is loaded from another host, the version, the references |
 | `.github/workflows/` | GitHub | `checks.yml` runs the self-test and the unit checks, builds and reads the pages, builds `keep` and keeps the file, and runs `compat-check.sh` on two runner images on every push. `distros.yml` runs it in guests of ten distribution releases. `pages.yml` builds the pages and publishes them from `main`. `release.yml` publishes a release: `keep` as the pipeline builds it from `main`, with its SHA-256 |
@@ -1295,6 +1295,38 @@ image of its own:
     Of the 1043544 pages of that image the cache held none, counted in the same way as
     for the file of AVML, after the search of a dump and a second run of AVML.
 
+Tails 7.18 was started from its USB image as a guest under KVM, with UEFI and Secure Boot on
+and 4 GiB of memory, and `keep` 2.0 of the release was run there by hand: kernel
+6.12.118+deb13-amd64, cryptsetup 2.7.5, lockdown `integrity`, the daemon of udisks2
+2.10.1 running. Root is there only with an administration password, which is set at the
+Welcome Screen and cannot be added later. The Persistent Storage was unlocked, the medium
+of the examiner was a second disk with ext4 that was mounted by hand, and Tor was not
+connected. It is one run, minutes after the start:
+
+- The Persistent Storage, the mapping `TailsData_unlocked` on the second partition of the
+  stick, LUKS2 with `aes-xts-plain64` and its key in the keyring, got `captured and proven`
+  on the memory route. The search of `/proc/kcore` listed 15 schedules, the driver of the
+  highest priority is `xts-aes-vaes-avx2`, and the run took 21 s with its image.
+- Tails mounts the volume at four places and each once more below `/run/nosymfollow`, so
+  the line `in use` names eight mounts.
+- The LiME image had 4274372928 bytes in 10 ranges and was written with direct writes to
+  ext4 in 8 s. 16384 bytes of RAM were in no segment of `/proc/kcore`. Tails has no
+  `System.map`.
+- After Tails was shut down, the image was searched on another machine with no file. It
+  held the digests of the header at one place, and the key was proven from them at the
+  first attempt, in 14 s: the key of the scene. With the image of the stick as the `FILE`,
+  the header was found at the start of the second partition and the key proven, in 18 s.
+- The digests began 0x8df bytes after the start of a page, which is not where they lie in
+  the block of the metadata on the partition. Which copy that was, was not looked at.
+  Before any tool had read the partition, its cache held the blocks 0, 1, 3 and 7 of its
+  first eight.
+- `cryptsetup open --volume-key-file` of the other machine opened the partition in the
+  image of the stick with the key file of the run, read-only and without a passphrase, and
+  a file that had been written into the Persistent Storage before was read. The header
+  protects its passphrase with Argon2id, which a volume key passes.
+- The kernel of Tails is started with `init_on_free=1`, `slab_nomerge` and `slub_debug=FZ`.
+  What they cost a search of memory was not looked at: the key in use was found.
+
 ### Not handled or not checked
 
 - LUKS2 with integrity is run with `--integrity hmac-sha256`. With a cipher that authenticates
@@ -1316,7 +1348,7 @@ image of its own:
   key run on one LUKS2 volume with its key in the keyring, a LiME image and the search of
   a dump. A key in the table, LUKS1, a volume with integrity and one in re-encryption are
   not run there.
-- A memory image under lockdown `integrity` is taken by hand, on one machine and on four
+- A memory image under lockdown `integrity` is taken by hand, on one machine and on five
   guests (see above), and not by the check. In the mode `confidentiality` the kernel refuses
   `/proc/kcore`, which the run then says, and that is not run.
 - RAM that a driver added is a case of `unit-check.sh`. No machine with such RAM was run.
@@ -1790,9 +1822,8 @@ from each the disk byte for byte and prove both keys.
     (`widgets.js`). `mkdocs.yml` has `plugins: []`, and the header template renders no search
     form.
   - Added to Kiln's stylesheet, in one block before its rules for narrow screens: the tones
-    of a sample of the screen of `keep` (three colours that every theme sets), the cards of
-    the systems, the sentence of the home page and its button to the released file, and the
-    size of a citation.
+    of a sample of the screen of `keep` (three colours that every theme sets), the sentence
+    of the home page and its button to the released file, and the size of a citation.
   - Where Kiln's frame shows the path `~` on the home page, the frame of Keep shows the
     version of the program, as `v2.0`. It is `extra.keep_version` of `mkdocs.yml`, which
     `overrides/main.html` hands to the page in a `meta` element and `page-chrome.js` shows.
@@ -1800,14 +1831,14 @@ from each the disk byte for byte and prove both keys.
   - The themes are Kiln's five in its order: `terminal`, which a reader gets first, `system
     light`, `system dark`, `phosphor` and `nord`. The key `t` goes to the next.
   - The keys are Kiln's: `j` and `k` a step, `gg` and `G` the start and the end, `h` and `l`
-    the heading before and after, `0` the home page, `1` to `4` the sections, `t` the theme.
+    the heading before and after, `0` the home page, `1` to `3` the sections, `t` the theme.
     The About page lists them for the reader, because the palette that lists them in Kiln is
     not there.
   - As in Kiln, a page has no sidebar and no table of contents, the frame has the sections
     on its upper line and the path of the page and the position in it on its lower line, the
     first heading shimmers under the pointer, a code block has a copy button and a link to
     another site opens in a tab of its own.
-- There are five pages, written in Markdown:
+- There are four pages, written in Markdown:
   - `index.md`, the home page: the word Keep, drawn in characters by `ascii-logo.js` from a
     blackletter typeface whose three glyphs are embedded in that script, one sentence on
     what Keep is, a button that fetches `keep` from the release of the version, with a link
@@ -1817,15 +1848,19 @@ from each the disk byte for byte and prove both keys.
     to the same file, with a clone of the tag of the release, and the way to the scene with
     what follows from the choice of the destination. It is kept short: what the program is
     made of, how a release is published and the tool of the lab stand on the other pages.
-  - `usage.md`: the three runs with samples of the screen, the verdicts, the files of a run,
-    the options and the exit status. A sample of the screen is HTML inside the Markdown, a
-    `div` with the classes `highlight keep-screen`, so that it can carry the tones.
-  - `systems.md`: one card for each system on which Keep was run, with its kernel, its
-    cryptsetup, the XTS driver of the latest run and whether a `System.map` is kept there.
-    The program and its commands are the same on every distribution, so the distributions
-    have cards of what differs and no page of their own in the other sections.
+  - `usage.md`: the two forms of the command, the run on the scene and the search in the
+    lab, each with the screen of the run on Tails 7.18 as it was, the verdicts, the image,
+    the files of a run, the options and the exit status. In the screen of the lab the paths
+    are shortened. A sample of the screen is HTML inside the Markdown, a `div` with the
+    classes `highlight keep-screen`, so that it can carry the tones. How the program works
+    inside stands on the About page and not here.
   - `about.md`: what Keep does, the ideas behind it, safeguards, limits, how it is checked,
-    the keys of the pages, and the references, numbered and cited in the text.
+    the systems it was tested on, the keys of the pages, and the references, numbered and
+    cited in the text. The systems are two tables, those of the check and those that were
+    run by hand: a row names the kernel and the cryptsetup of the latest run.
+  - A page `systems.md` with a card for each system existed up to 2026-11-28. Its list is
+    in the tables of the About page now, and what a card said beyond that stands in this
+    file.
 - A page loads nothing from another host: the fonts are in `docs/assets/fonts/` with their
   licences, and `font: false` keeps the theme from loading its own. `pages-check.sh` reads
   every built page and every stylesheet for it. A link to another site is a link for the
@@ -1888,9 +1923,9 @@ the four XTS drivers that the runs met: `xts-aes-aesni`, `xts-aes-vaes-avx2`,
 `System.map`, and the Arch image has none, so no symbol table is kept beside the image there.
 
 Linux Mint has no cloud image and is not in the list: `compat-check.sh` has not run there.
-`keep` was run by hand on Linux Mint 22.3 and on guests installed from Red Hat
-Enterprise Linux 8.10, 9.9 and 10.3 and from Ubuntu Server 26.04.1, under Secure Boot (see
-"Where it has run"). openSUSE Tumbleweed has no dated build to pin and is not checked.
+`keep` was run by hand on Linux Mint 22.3, on guests installed from Red Hat
+Enterprise Linux 8.10, 9.9 and 10.3 and from Ubuntu Server 26.04.1, and on a guest started
+from Tails 7.18, all under Secure Boot (see "Where it has run"). openSUSE Tumbleweed has no dated build to pin and is not checked.
 `compat-check.sh` has run on no system with Secure Boot on, where lockdown is `integrity`.
 
 ## Known limits

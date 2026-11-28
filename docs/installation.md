@@ -49,7 +49,7 @@ On the examined system, mount the medium without `noexec` and start the file as 
 sudo /media/tools/keep -d /media/evidence
 ```
 
-It needs x86-64 Linux and root, and nothing else. [Systems](systems.md) lists where it has run.
+It needs x86-64 Linux and root, and nothing else. [About](about.md#tested) lists the systems it was tested on.
 
 Keep writes into the destination only: the directory of `-d`, or the current one. Where that lies is the examiner's decision, and Keep does not test it:
 
