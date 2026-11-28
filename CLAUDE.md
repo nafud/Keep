@@ -43,6 +43,7 @@ README.
 | `docs/`, `overrides/`, `mkdocs.yml` | GitHub Pages | The pages of Keep, built with Material for MkDocs: the home page `index.md` and the sections `installation.md`, `usage.md` and `about.md`, the stylesheet `stylesheets/extra.css`, the page scripts in `javascripts/`, the fonts in `assets/fonts/`, and the templates in `overrides/` |
 | `requirements.in`, `requirements.txt` | pipeline, workstation | The packages that build the pages: MkDocs and Material, and in the second file every package they bring along, each with its version and its SHA-256 |
 | `tests/pages-check.sh` | test, workstation and pipeline | Builds the pages with `mkdocs build --strict` and reads what was built: the pages, the frame, that nothing is loaded from another host, the version, the references |
+| `LICENSE` | | The MIT licence of Keep, with the name of its author |
 | `.github/workflows/` | GitHub | `checks.yml` runs the self-test and the unit checks, builds and reads the pages, builds `keep` and keeps the file, and runs `compat-check.sh` on two runner images on every push. `distros.yml` runs it in guests of ten distribution releases. `pages.yml` builds the pages and publishes them from `main`. `release.yml` publishes a release: `keep` as the pipeline builds it from `main`, with its SHA-256 |
 
 `kcore-keyscan.c` includes `src/keyscan.h`, and the `Makefile` at the root builds `keep` from
@@ -1798,8 +1799,10 @@ from each the disk byte for byte and prove both keys.
   the same compiler and musl. The pages of that commit were published by
   `pages.yml`. They could not be fetched from where the release was checked, so the page
   that names the release was read as it is built and not as it is served.
-- Keep has no licence file of its own yet. The release states the terms of musl and none
-  for Keep. The release carries `musl-copyright.txt`, and the pages do not name that file.
+- Keep is under the MIT licence, the file `LICENSE`, from 2026-11-28 on. The tag `v2.0` is
+  older than that file, and the notes of release 2.0 state the terms of musl and none for
+  Keep: `release.yml` does not name the licence of Keep in the notes it writes. The release
+  carries `musl-copyright.txt`, which the About page names in its section on the licence.
 - Actions are pinned by commit hash with the release in a comment. `dependabot.yml` proposes
   their updates.
 - `pages.yml` builds the pages with `mkdocs build --strict` and publishes `site/`, from `main`
@@ -1854,10 +1857,13 @@ from each the disk byte for byte and prove both keys.
     are shortened. A sample of the screen is HTML inside the Markdown, a `div` with the
     classes `highlight keep-screen`, so that it can carry the tones. How the program works
     inside stands on the About page and not here.
-  - `about.md`: what Keep does, the ideas behind it, safeguards, limits, how it is checked,
-    the systems it was tested on, the keys of the pages, and the references, numbered and
-    cited in the text. The systems are two tables, those of the check and those that were
-    run by hand: a row names the kernel and the cryptsetup of the latest run.
+  - `about.md`: the need that Keep answers, the earlier work it builds on, what it adds to
+    that, what it does, the ideas behind it, safeguards, limits, how it is checked, the
+    systems it was tested on, the licence, the keys of the pages, and the references. A
+    reference has the number of its first citation in the text. `pages-check.sh` does not
+    look at that order: it looks that each reference is cited and each citation has its
+    reference. The systems are two tables, those of the check and those that were run by
+    hand: a row names the kernel and the cryptsetup of the latest run.
   - A page `systems.md` with a card for each system existed up to 2026-11-28. Its list is
     in the tables of the About page now, and what a card said beyond that stands in this
     file.
@@ -1878,6 +1884,28 @@ from each the disk byte for byte and prove both keys.
     musl.libc.org could not be fetched from where the pages were written, and the files of
     the kernel are named by their release and path on GitHub and were not fetched there. The
     others were fetched and their titles compared.
+  - Of the 31 references eight are research papers. What the About page says of each rests
+    on this, and on no more:
+    - Halderman and others: sections 6 and 7 of the paper were read on the pages of USENIX,
+      the search by the key schedule with its tolerance for bit errors, and the dm-crypt
+      volume of Linux 2.6.20 whose key the search found in a memory image.
+    - Casey and others, Hargreaves and Chivers, Maartmann-Moe and others, Vömel and
+      Freiling, Gruhn and Freiling: the abstract, as a web search gave it. The papers were
+      not read in full, and the pages that hold them could not be fetched from where the
+      pages were written.
+    - Latzo and others, Sylve and others: the record that Crossref has for the DOI, which
+      has no abstract. The page says of them what their titles say.
+    - The authors, the title, the journal or the proceedings, the volume, the pages and
+      the year of each are those of its Crossref record.
+  - RFC 3227, RFC 9106, the release notes of cryptsetup 2.4.0, the README files of LiME
+    and of AVML and the case study of drgn were read from their own pages. That LiME was
+    first presented for Android devices is from its README, which names the talk and not
+    the paper of Sylve and others.
+  - What the page says of Passware Kit is what a web search gave of the vendor's release
+    notes. The pages of the vendor could not be fetched, and the tool was not used. A
+    plugin `dm_dump` of Volatility 2 was looked for and not found in its wiki or in the
+    repository of its community plugins, so the page does not name one.
+  - The section on earlier work is no systematic review, which it says.
   - The build of Material for MkDocs 9.8.2 says of itself that it reaches its end of life
     on May 5, 2027, with fixes until then, and names Zensical as its successor. Keep took
     the setup of Kiln over with 9.8.1. 9.8.2 came as a proposal of dependabot: its two
