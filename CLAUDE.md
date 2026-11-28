@@ -22,8 +22,9 @@ program gave what the script gave on every system of the list. The script, its m
 its driver for the lab are removed with 2.0-rc1. The history of the repository keeps them:
 the last commit that has them is `8305ec0`, with `keytriage.sh` 1.5.1.
 
-This file is the repository's description and the working rules for it. The repository has no
-README.
+This file is the repository's description and the working rules for it. `README.md` is the
+front of the repository and holds no description: the word Keep, one sentence and four
+badges, as the README of Kiln has them.
 
 ## Layout
 
@@ -44,6 +45,7 @@ README.
 | `requirements.in`, `requirements.txt` | pipeline, workstation | The packages that build the pages: MkDocs and Material, and in the second file every package they bring along, each with its version and its SHA-256 |
 | `tests/pages-check.sh` | test, workstation and pipeline | Builds the pages with `mkdocs build --strict` and reads what was built: the pages, the frame, that nothing is loaded from another host, the version, the references |
 | `LICENSE` | | The MIT licence of Keep, with the name of its author |
+| `README.md` | GitHub | The front of the repository: the word Keep as `docs/assets/images/keep-logo-readme.svg`, the sentence of the home page, and badges for the pages, the stars, the forks and the licence |
 | `.github/workflows/` | GitHub | `checks.yml` runs the self-test and the unit checks, builds and reads the pages, builds `keep` and keeps the file, and runs `compat-check.sh` on two runner images on every push. `distros.yml` runs it in guests of ten distribution releases. `pages.yml` builds the pages and publishes them from `main`. `release.yml` publishes a release: `keep` as the pipeline builds it from `main`, with its SHA-256 |
 
 `kcore-keyscan.c` includes `src/keyscan.h`, and the `Makefile` at the root builds `keep` from
@@ -1871,6 +1873,12 @@ from each the disk byte for byte and prove both keys.
     page and the section on the need say it.
   - The icon of the pages is the one of the site of Kiln, the same file, as
     `docs/assets/images/keep-logo-favicon.png`.
+  - The word Keep of the README, `docs/assets/images/keep-logo-readme.svg`, is the three
+    glyphs of the typeface that `ascii-logo.js` embeds, written out as outlines, so that it
+    needs no font. It is laid out by the advance widths of the glyphs, 50 units to the em
+    as the word of Kiln is, black, and near white for a reader with a dark scheme. The
+    badges of the README are pictures of shields.io, which the page of GitHub loads: the
+    pages of Keep load nothing from another host, and the README is no page of them.
   - A page `systems.md` with a card for each system existed up to 2026-11-28. Its list is
     in the tables of the About page now, and what a card said beyond that stands in this
     file.
