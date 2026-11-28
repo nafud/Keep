@@ -1,8 +1,14 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0.856 3.709 97.397 45.449" role="img" aria-label="Keep">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0.856 3.709 104.118 50.902" role="img" aria-label="Keep">
   <!-- "Keep" in UnifrakturMaguntia (SIL OFL), converted to outlines so it
        renders identically everywhere without loading the font. Black on
        light backgrounds; near-white for dark-scheme viewers, where pure
-       black would be invisible. -->
+       black would be invisible.
+       The box is wider and taller than the ink. The bodies of the
+       letters, from the bowl of the K to the p, stand in its middle, so
+       the tail of the K hangs out to the left and the same room is left
+       on the right. Below the descender of the p is the room that puts
+       the baseline as far above the next line as the word of Kiln has
+       it, with nothing between the picture and that line. -->
   <style>
     path { fill: #000000; }
     @media (prefers-color-scheme: dark) { path { fill: #e6edf3; } }

@@ -1876,7 +1876,15 @@ from each the disk byte for byte and prove both keys.
   - The word Keep of the README, `docs/assets/images/keep-logo-readme.svg`, is the three
     glyphs of the typeface that `ascii-logo.js` embeds, written out as outlines, so that it
     needs no font. It is laid out by the advance widths of the glyphs, 50 units to the em
-    as the word of Kiln is, black, and near white for a reader with a dark scheme. The
+    as the word of Kiln is, black, and near white for a reader with a dark scheme. Its box
+    is not the box of its ink. The bodies of the letters stand in the middle of the box,
+    so that they stand over the sentence below, which is as wide as they are, and the tail
+    of the K hangs out to the left. The README shows the picture 458 pixels wide, which is
+    the size of the letters of Kiln, and has no line break below it: the room below the
+    descender of the p is part of the picture, 24 pixels, which puts the baseline 81 pixels
+    above the sentence as in Kiln. This was measured on a page laid out with the rules of
+    GitHub for a README, which gave the 77 pixels that two screenshots of GitHub show
+    between a picture and the sentence with two line breaks. The
     badges of the README are pictures of shields.io, which the page of GitHub loads: the
     pages of Keep load nothing from another host, and the README is no page of them.
   - A page `systems.md` with a card for each system existed up to 2026-11-28. Its list is

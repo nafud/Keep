@@ -1,8 +1,6 @@
 <div align="center">
 
-<img src="docs/assets/images/keep-logo-readme.svg" alt="Keep" width="400">
-
-<br><br>
+<img src="docs/assets/images/keep-logo-readme.svg" alt="Keep" width="458">
 
 **dm-crypt volume key triage for live Linux forensics.**
 
