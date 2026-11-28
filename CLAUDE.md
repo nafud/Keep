@@ -1761,11 +1761,13 @@ from each the disk byte for byte and prove both keys.
   then fetched from the release as the installation page says: `sha256sum -c keep.sha256`
   accepted the file, the file was byte for byte a build of the tag on another machine, it
   named its version and refused a wrong option with status 2, and `musl-copyright.txt` was
-  the `copyright` file of `musl-dev` 1.2.4-2. The pages of that commit were published by
+  the `copyright` file of `musl-dev` 1.2.4-2. A clone of the tag alone, as the installation
+  page has it (`git clone --branch v2.0`), built that file once more on 2026-11-28, with
+  the same compiler and musl. The pages of that commit were published by
   `pages.yml`. They could not be fetched from where the release was checked, so the page
   that names the release was read as it is built and not as it is served.
 - Keep has no licence file of its own yet. The release states the terms of musl and none
-  for Keep.
+  for Keep. The release carries `musl-copyright.txt`, and the pages do not name that file.
 - Actions are pinned by commit hash with the release in a comment. `dependabot.yml` proposes
   their updates.
 - `pages.yml` builds the pages with `mkdocs build --strict` and publishes `site/`, from `main`
@@ -1811,8 +1813,10 @@ from each the disk byte for byte and prove both keys.
     what Keep is, a button that fetches `keep` from the release of the version, with a link
     beside it to the section of the installation page that says how to check the file, and
     the name of the author.
-  - `installation.md`: the released file and how to check it, what the build needs, the
-    build, its check and the way to the scene.
+  - `installation.md`: the released file and how to check it, the build as the other way
+    to the same file, with a clone of the tag of the release, and the way to the scene with
+    what follows from the choice of the destination. It is kept short: what the program is
+    made of, how a release is published and the tool of the lab stand on the other pages.
   - `usage.md`: the three runs with samples of the screen, the verdicts, the files of a run,
     the options and the exit status. A sample of the screen is HTML inside the Markdown, a
     `div` with the classes `highlight keep-screen`, so that it can carry the tones.
