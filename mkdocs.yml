@@ -41,7 +41,7 @@ markdown_extensions:
 theme:
   name: material
   custom_dir: overrides
-  favicon: assets/favicon.svg
+  favicon: assets/images/keep-logo-favicon.png
   # JetBrains Mono is self-hosted (docs/assets/fonts), so the theme
   # loads no font from another host.
   font: false

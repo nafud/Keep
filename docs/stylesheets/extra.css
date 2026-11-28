@@ -959,7 +959,7 @@ tt {
 }
 
 /* The way to the released file, below the sentence: the file itself
-   as a button, and beside it the place that says how to check it. */
+   as a button. */
 .md-typeset .home-get {
   margin: 1.6rem 0 0;
   text-align: center;
@@ -982,12 +982,6 @@ tt {
   opacity: 1; /* cancel the generic link hover fade */
   border-color: var(--color-accent);
   color: var(--color-accent);
-}
-
-.md-typeset a.home-verify {
-  margin-left: 0.9rem;
-  color: var(--color-text-muted);
-  font-size: 0.7rem;
 }
 
 /* A sample of the screen of keep, as a terminal shows it (src/run.c):

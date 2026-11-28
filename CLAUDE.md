@@ -1844,9 +1844,8 @@ from each the disk byte for byte and prove both keys.
 - There are four pages, written in Markdown:
   - `index.md`, the home page: the word Keep, drawn in characters by `ascii-logo.js` from a
     blackletter typeface whose three glyphs are embedded in that script, one sentence on
-    what Keep is, a button that fetches `keep` from the release of the version, with a link
-    beside it to the section of the installation page that says how to check the file, and
-    the name of the author.
+    what Keep is, a button that fetches `keep` from the release of the version, and the name
+    of the author. How to check the file stands on the installation page.
   - `installation.md`: the released file and how to check it, the build as the other way
     to the same file, with a clone of the tag of the release, and the way to the scene with
     what follows from the choice of the destination. It is kept short: what the program is
@@ -1864,6 +1863,14 @@ from each the disk byte for byte and prove both keys.
     look at that order: it looks that each reference is cited and each citation has its
     reference. The systems are two tables, those of the check and those that were run by
     hand: a row names the kernel and the cryptsetup of the latest run.
+  - The text of the pages has no colon, no semicolon and no dash: a sentence ends, and the
+    next one says how it follows. This is said of the prose. Code, the screens of a run,
+    the names of options and of systems, and the titles of the works in the references
+    stay as they are, and a hyphen inside a word or a name is no dash. The installation
+    page and the About page open without a paragraph that says what Keep is: the home
+    page and the section on the need say it.
+  - The icon of the pages is the one of the site of Kiln, the same file, as
+    `docs/assets/images/keep-logo-favicon.png`.
   - A page `systems.md` with a card for each system existed up to 2026-11-28. Its list is
     in the tables of the About page now, and what a card said beyond that stands in this
     file.
